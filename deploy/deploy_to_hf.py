@@ -62,6 +62,9 @@ UPLOAD_MAP: dict[str, str] = {
     "webapp/styles.css": "webapp/styles.css",
     "webapp/manifest.webmanifest": "webapp/manifest.webmanifest",
     "webapp/icon.svg": "webapp/icon.svg",
+    "webapp/icon.png": "webapp/icon.png",
+    "webapp/icon-192.png": "webapp/icon-192.png",
+    "webapp/icon-512.png": "webapp/icon-512.png",
 }
 
 # بطاقة المساحة (ترويسة YAML التي تعرّف المساحة)

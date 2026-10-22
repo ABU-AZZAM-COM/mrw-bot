@@ -34,6 +34,7 @@ body {
   display: flex;
   flex-direction: column;
   padding-bottom: env(safe-area-inset-bottom);
+  overflow-x: hidden;          /* منع أي تجاوز أفقي */
 }
 
 /* ---------------- الترويسة ---------------- */
@@ -47,10 +48,22 @@ body {
   padding-top: calc(14px + env(safe-area-inset-top));
 }
 
-.brand { display: flex; align-items: center; gap: 12px; }
-.shield { font-size: 30px; }
-.brand h1 { margin: 0; font-size: 17px; color: var(--gold-soft); }
-.brand p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.brand > div { min-width: 0; }
+.shield { font-size: 30px; flex: none; }
+.brand h1 {
+  margin: 0;
+  font-size: 17px;
+  color: var(--gold-soft);
+  overflow-wrap: anywhere;
+}
+.brand p { margin: 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 
 .steps { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-start; }
 .dot {
@@ -64,7 +77,13 @@ body {
 .dot.done { background: var(--ok); color: #08251a; }
 
 /* ---------------- المحتوى ---------------- */
-main { flex: 1; padding: 16px; max-width: 640px; width: 100%; margin: 0 auto; }
+main {
+  flex: 1;
+  padding: 16px;
+  max-width: 640px;
+  width: 100%;
+  margin-inline: auto;   /* توسيط يعمل مع اتجاه RTL */
+}
 
 .card {
   background: var(--card);
