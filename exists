@@ -1,0 +1,7 @@
+=== 5) γ§§Ά ιΆα οη ===
+browserIntegrationEnabled = True
+browserIntegrationPort     = 15151
+defaultDownloadFolder      = D:\Users\AZZAM\Downloads\ABDM
+  - True
+autoStartOnBoot            = False
+ignoreSSLCertificates      = False
