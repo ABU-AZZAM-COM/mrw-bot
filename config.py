@@ -71,6 +71,67 @@ MAX_REPORTS_PER_DAY: int = int(os.getenv("MAX_REPORTS_PER_DAY", "10"))  # حد �
 LOCAL_UTC_OFFSET: float = float(os.getenv("LOCAL_UTC_OFFSET", "3") or 3)
 
 # ------------------------------------------------------------------
+# طبقة الحماية: الإساءة، الإغراق، البلاغات الكيدية والتخريب
+# ------------------------------------------------------------------
+# حدود زمنية سريعة لكل مبلّغ (تمنع الإغراق والسبام)
+MAX_REPORTS_PER_MINUTE: int = int(os.getenv("MAX_REPORTS_PER_MINUTE", "2"))
+MAX_REPORTS_PER_HOUR: int = int(os.getenv("MAX_REPORTS_PER_HOUR", "5"))
+
+# حدود عامة للنظام كله (لو تجاوزها الجميع = إغراق أو هجوم → إيقاف تلقائي)
+MAX_REPORTS_PER_HOUR_GLOBAL: int = int(os.getenv("MAX_REPORTS_PER_HOUR_GLOBAL", "60"))
+MAX_REPORTS_PER_DAY_GLOBAL: int = int(os.getenv("MAX_REPORTS_PER_DAY_GLOBAL", "300"))
+
+# مدة التجميد التصاعدي عند تجاوز الحدود (بالدقائق)
+FREEZE_MINUTES_FIRST: int = int(os.getenv("FREEZE_MINUTES_FIRST", "60"))
+FREEZE_MINUTES_SECOND: int = int(os.getenv("FREEZE_MINUTES_SECOND", "1440"))
+
+# حدود المحتوى: الحد الأدنى من Substance في الوصف (لرفض البلاغات الفارغة)
+MIN_DESC_LEN: int = int(os.getenv("MIN_DESC_LEN", "40"))
+MIN_DESC_WORDS: int = int(os.getenv("MIN_DESC_WORDS", "6"))
+
+# تشابه النص لكشف البلاغات المكررة/الكيدية (0..1)
+DUPLICATE_TEXT_SIMILARITY: float = float(os.getenv("DUPLICATE_TEXT_SIMILARITY", "0.82"))
+
+# نطاقات محجوبة (كلمة لكل نطاق) — تُرفض روابطها فورًا
+BLOCKED_DOMAINS: tuple[str, ...] = tuple(
+    part.strip().lower()
+    for part in os.getenv("BLOCKED_DOMAINS", "").replace(";", ",").split(",")
+    if part.strip()
+)
+
+# هل يسمح بتلقي البلاغات من المجموعات/القنوات؟ (لا: المحادثات الخاصة فقط)
+ALLOW_GROUP_REPORTS: bool = os.getenv("ALLOW_GROUP_REPORTS", "0").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+
+# أقصى عدد رسائل يرسلها البوت لمستخدم واحد في الدقيقة (حماية من علامة السبام)
+MAX_BOT_MESSAGES_PER_MINUTE: int = int(os.getenv("MAX_BOT_MESSAGES_PER_MINUTE", "6"))
+
+# ------------------------------------------------------------------
+# تطبيق Mini App داخل تلغرام (اختياري — يعمل فقط عند ضبط الرابط)
+# ------------------------------------------------------------------
+# رابط التطبيق المنشور (GitHub Pages أو Cloudflare Pages أو أي استضافة ثابتة):
+MINI_APP_URL: str = os.getenv("MINI_APP_URL", "").strip()
+
+# أنواع المخالفات المعتمدة (تظهر في التطبيق وفي التقارير)
+VIOLATION_TYPES: tuple[str, ...] = (
+    "تجاوز السرعة",
+    "مخالفة إشارة",
+    "إعاقة الطريق",
+    "مخالفة زي",
+    "مواد ممنوعة",
+    "سلاح أو عنيف",
+    "تصوير في مكان ممنوع",
+    "أخرى",
+)
+
+# هل يُنشر البلاغ في القناة الرسمية تلقائيًا بعد الحفظ؟
+# 0 = لا (يلزم موافقة المشرف) — وهو الخيار الآمن ضد البلاغات الكيدية.
+AUTO_PUBLISH_TO_ARCHIVE: bool = os.getenv("AUTO_PUBLISH_TO_ARCHIVE", "0").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
+# ------------------------------------------------------------------
 # إعدادات الأرشفة السحابية (اختيارية — تعمل فقط عند ضبط القيم)
 # ------------------------------------------------------------------
 # معرّف القناة الرسمية الخاصة (مثل -1001234567890):

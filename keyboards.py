@@ -3,14 +3,23 @@
 """
 from __future__ import annotations
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    WebAppInfo,
+)
 
 from database import STATUS_NEW, STATUS_REVIEW, STATUS_APPROVED, STATUS_REJECTED
+import config
 import texts
 
 # نصوص أزرار لوحة المفاتيح العادية (تُرسل كنص عادي)
 CANCEL_TEXT = "❌ إلغاء"
 CONFIRM_TEXT = "✅ إرسال البلاغ"
+
+# نص زر فتح التطبيق داخل تيليغرام
+APP_BUTTON_TEXT = "🚀 فتح تطبيق البلاغ"
 
 # كود الحالة (يُستخدم في callback_data) -> الرمز التعبيري
 STATUS_EMOJI = {
@@ -74,6 +83,18 @@ def confirm_kb() -> ReplyKeyboardMarkup:
         [[CONFIRM_TEXT, CANCEL_TEXT]],
         resize_keyboard=True,
         input_field_placeholder="اختر زرًا 👇",
+    )
+
+
+def app_kb() -> InlineKeyboardMarkup | None:
+    """زر فتح تطبيق البلاغ (Mini App) — يظهر فقط بعد ضبط رابط التطبيق."""
+    if not config.MINI_APP_URL:
+        return None
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(
+            text=APP_BUTTON_TEXT,
+            web_app=WebAppInfo(url=config.MINI_APP_URL),
+        )]]
     )
 
 

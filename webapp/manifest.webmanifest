@@ -1,0 +1,21 @@
+{
+  "name": "بلاغ مخالفة عسكرية",
+  "short_name": "بلاغ",
+  "description": "تطبيق داخل تلغرام لاستقبال بلاغات رصد المخالفات العسكرية",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d1b16",
+  "theme_color": "#0b3d2c",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

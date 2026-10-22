@@ -29,7 +29,7 @@ import handlers  # noqa: E402
 import health_server  # noqa: E402
 from database import Database  # noqa: E402
 
-from telegram import BotCommand, BotCommandScopeChat, Update
+from telegram import BotCommand, BotCommandScopeChat, MenuButtonWebApp, Update, WebAppInfo
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -86,6 +86,30 @@ async def post_init(app) -> None:
             logger.warning("تعذر ضبط أوامر المشرف %s: %s", admin_id, exc)
 
     logger.info("✅ البوت جاهز ويستقبل الرسائل …")
+
+    # ------------------------------------------------------------------
+    # التطبيق (Mini App): زر القائمة الدائم + أمر فتح التطبيق
+    # الزر يظهر بجانب مربع الكتابة لكل مستخدم → سهولة الوصول (المهم: أن يعرف
+    # الجميع وجود التطبيق دون شرح).
+    # ------------------------------------------------------------------
+    if config.MINI_APP_URL:
+        try:
+            await app.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="🚀 فتح تطبيق البلاغ",
+                    web_app=WebAppInfo(url=config.MINI_APP_URL),
+                )
+            )
+            base_commands.append(BotCommand("app", "فتح تطبيق إرسال البلاغ"))
+            await app.bot.set_my_commands(base_commands)
+            for admin_id in config.ADMIN_IDS:
+                await app.bot.set_my_commands(
+                    [*base_commands, BotCommand("admin", "لوحة إدارة البلاغات")],
+                    scope=BotCommandScopeChat(chat_id=admin_id),
+                )
+            logger.info("🧩 تطبيق البلاغ جاهز: %s", config.MINI_APP_URL)
+        except Exception as exc:
+            logger.warning("تعذر ضبط زر التطبيق: %s", exc)
 
     # ------------------------------------------------------------------
     # القناة الرسمية: التحقق من الصلاحيات فقط (لا تُرسل أي رسالة)
@@ -165,9 +189,29 @@ def main() -> None:
     # 1) محادثة إدخال البلاغ (أولوية أولى عند نشاطها)
     app.add_handler(handlers.build_conversation())
 
+    # 1-ب) بيانات التطبيق (Mini App) ثم الصورة — قبل المحادثة حتى لا يبتلعها
+    app.add_handler(
+        MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handlers.app_data_received)
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & handlers.AppPhotoPending()
+            & (filters.PHOTO | filters.Document.ALL),
+            handlers.app_photo_received,
+        )
+    )
+
+    # 1-ج) أمر /app لفتح التطبيق
+    app.add_handler(CommandHandler("app", handlers.cmd_app))
+
     # 2) لوحة المشرف
     app.add_handler(CommandHandler(["admin", "reports"], admin.cmd_admin))
     app.add_handler(CallbackQueryHandler(admin.on_callback, pattern=r"^adm:"))
+
+    # 2-ب) أوامر المشرف: الإيقاف الطارئ وسجل التدقيق
+    app.add_handler(CommandHandler("panic", admin.cmd_panic))
+    app.add_handler(CommandHandler("resume", admin.cmd_resume))
+    app.add_handler(CommandHandler("audit", admin.cmd_audit))
 
     # 3) أي رسالة خاصة خارج محادثة نشطة → تلميح ترحيبي
     app.add_handler(

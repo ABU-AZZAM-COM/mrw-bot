@@ -1,0 +1,209 @@
+/* ==========================================================
+   تطبيق بلاغات المخالفات العسكرية — واجهة عربية RTL
+   ========================================================== */
+
+:root {
+  --bg: #0d1b16;
+  --bg-soft: #12271f;
+  --card: #163026;
+  --line: #1f4436;
+  --gold: #d9a441;
+  --gold-soft: #f0c674;
+  --text: #eef6f1;
+  --muted: #9ab8aa;
+  --danger: #d9534f;
+  --ok: #3fa66b;
+  --radius: 16px;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", Tahoma, "Noto Naskh Arabic", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ---------------- الترويسة ---------------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: linear-gradient(180deg, var(--bg-soft), rgba(13, 27, 22, .92));
+  border-bottom: 1px solid var(--line);
+  padding: 14px 16px calc(14px + env(safe-area-inset-top));
+  padding-top: calc(14px + env(safe-area-inset-top));
+}
+
+.brand { display: flex; align-items: center; gap: 12px; }
+.shield { font-size: 30px; }
+.brand h1 { margin: 0; font-size: 17px; color: var(--gold-soft); }
+.brand p { margin: 0; font-size: 12.5px; color: var(--muted); }
+
+.steps { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-start; }
+.dot {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700;
+  background: var(--line); color: var(--muted);
+  transition: .2s;
+}
+.dot.active { background: var(--gold); color: #10241c; }
+.dot.done { background: var(--ok); color: #08251a; }
+
+/* ---------------- المحتوى ---------------- */
+main { flex: 1; padding: 16px; max-width: 640px; width: 100%; margin: 0 auto; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 16px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .28);
+}
+
+h2 { font-size: 16px; color: var(--gold-soft); margin: 18px 0 10px; }
+.card > h2:first-child { margin-top: 0; }
+
+.howto { margin: 0 0 14px; padding-inline-start: 22px; }
+.howto li { margin-bottom: 8px; }
+.howto b { color: var(--gold-soft); }
+
+.note {
+  background: rgba(217, 164, 65, .08);
+  border-inline-start: 3px solid var(--gold);
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  color: var(--muted);
+  margin: 12px 0;
+}
+
+.hint { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+
+/* ---------------- الأزرار ---------------- */
+.btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 13px 18px;
+  font-size: 15px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: transform .08s ease, opacity .2s;
+}
+.btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.primary {
+  background: linear-gradient(180deg, var(--gold), #b8862b);
+  color: #14281f;
+  border-color: #b8862b;
+}
+.btn.ghost { background: transparent; }
+.btn.big { width: 100%; padding: 16px; font-size: 17px; }
+
+.nav { display: flex; gap: 10px; margin-top: 20px; }
+.nav .btn { flex: 1; }
+
+/* ---------------- أنواع المخالفات ---------------- */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 9px 14px;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.chip.on { background: var(--gold); color: #14281f; border-color: var(--gold); font-weight: 700; }
+
+/* ---------------- الموقع ---------------- */
+.location-box {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  background: var(--bg-soft); border: 1px dashed var(--line);
+  border-radius: 12px; padding: 12px;
+}
+.loc-status { flex: 1; min-width: 180px; font-size: 13.5px; color: var(--muted); }
+.loc-status.ok { color: var(--ok); }
+.loc-map { color: var(--gold-soft); font-size: 13px; display: block; margin-top: 4px; }
+
+/* ---------------- الحقول ---------------- */
+.field { display: block; margin: 14px 0 0; }
+.field > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.field input, .field textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 15px;
+  font-family: inherit;
+  resize: vertical;
+}
+.field input:focus, .field textarea:focus { outline: 2px solid var(--gold); border-color: transparent; }
+
+.req { color: var(--danger); font-size: 12px; }
+.req-note { display: block; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.req-note.good { color: var(--ok); }
+.req-note.warn { color: var(--gold-soft); }
+.req-note.bad { color: var(--danger); }
+
+/* ---------------- الصورة ---------------- */
+.drop {
+  display: grid; place-items: center;
+  min-height: 170px;
+  border: 2px dashed var(--line);
+  border-radius: 14px;
+  background: var(--bg-soft);
+  cursor: pointer;
+  text-align: center;
+  padding: 14px;
+  color: var(--muted);
+}
+.drop img { max-width: 100%; max-height: 260px; border-radius: 10px; }
+.drop.filled { border-style: solid; border-color: var(--ok); color: var(--ok); }
+
+/* ---------------- الملخص ---------------- */
+.summary { display: grid; gap: 10px; }
+.summary .row {
+  display: flex; justify-content: space-between; gap: 12px;
+  background: var(--bg-soft); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px; font-size: 14px;
+}
+.summary .row b { color: var(--muted); font-weight: 600; }
+.summary .row span { text-align: start; word-break: break-word; }
+
+/* ---------------- النتيجة ---------------- */
+.done { text-align: center; padding: 18px 6px; }
+.done-icon { font-size: 56px; }
+.done h2 { color: var(--ok); margin: 8px 0; }
+.done p { color: var(--muted); margin: 0 0 18px; }
+
+/* ---------------- التذييل ---------------- */
+.foot {
+  padding: 12px 16px calc(16px + env(safe-area-inset-bottom));
+  text-align: center; font-size: 12px; color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+.foot .sep { margin: 0 8px; opacity: .5; }
+
+.err { color: var(--danger); font-size: 13.5px; margin-top: 10px; }

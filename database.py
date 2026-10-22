@@ -45,11 +45,72 @@ CREATE TABLE IF NOT EXISTS reports (
     created_at    TEXT NOT NULL,                     -- وقت الإرسال (UTC, ISO)
     reviewed_by   INTEGER,                           -- رقم ID للمشرف الذي راجع
     reviewed_at   TEXT,                              -- وقت المراجعة
-    admin_note    TEXT                               -- ملاحظات المشرف
+    admin_note    TEXT,                              -- ملاحظات المشرف
+    violation_type TEXT,                             -- نوع المخالفة (من التطبيق)
+    place        TEXT,                              -- وصف الموقع
+    latitude     REAL,                              -- خط العرض (من التطبيق)
+    longitude    REAL,                              -- خط الطول (من التطبيق)
+    source       TEXT NOT NULL DEFAULT 'chat',      -- مصدر البلاغ: chat | app
+    platform     TEXT,                              -- منصة التواصل التي نُشر عليها
+    needs_review INTEGER NOT NULL DEFAULT 0,        -- يحتاج مراجعة (تكرار/شك)
+    published    INTEGER NOT NULL DEFAULT 0         -- هل نُشر في القناة الرسمية
 );
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_id);
+
+-- ==================================================================
+-- جداول طبقة الحماية (إساءة / إغراق / كيد / تخريب)
+-- ==================================================================
+
+-- سجل كل محاولة بلاغ (لكل مستخدم) — يخدم تحديد المعدلات وكشف الإغراق
+CREATE TABLE IF NOT EXISTS user_events (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,               -- صاحب المحاولة
+    ts      TEXT NOT NULL,                  -- وقت المحاولة (UTC ISO)
+    kind    TEXT NOT NULL DEFAULT 'report'  -- نوع الحدث (report / attempt / admin)
+);
+CREATE INDEX IF NOT EXISTS idx_events_user_ts ON user_events(user_id, ts);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON user_events(ts);
+
+-- حالة المبلّغ: عدد المخالفات + مدة التجميد بعد تجاوز الحدود
+CREATE TABLE IF NOT EXISTS user_blocks (
+    user_id     INTEGER PRIMARY KEY,
+    strikes     INTEGER NOT NULL DEFAULT 0, -- عدد المخالفات التراكمية
+    frozen_until TEXT,                      -- نهاية التجميد (UTC ISO) أو NULL
+    reason      TEXT,                       -- سبب آخر تجميد
+    updated_at  TEXT NOT NULL
+);
+
+-- سجل تدقيق: كل عملية حساسة (تغيير حالة، تجميد، إيقاف عام، تصدير…)
+CREATE TABLE IF NOT EXISTS audit_log (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       TEXT NOT NULL,                -- وقت العملية (UTC ISO)
+    actor_id INTEGER,                      -- من قام بالعملية (رقم تيليغرام)
+    action   TEXT NOT NULL,                -- اسم العملية
+    target   TEXT,                         -- الهدف (رقم بلاغ / معرّف مستخدم)
+    details  TEXT                          -- تفاصيل إضافية
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+
+-- حالة النظام العامة (متغير مفتاح/قيمة): example: emergency = 1
+CREATE TABLE IF NOT EXISTS system_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- بصمات المحتوى لكشف التكرار (رابط مطبَّع + تشابه الوصف)
+CREATE TABLE IF NOT EXISTS report_fingerprints (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id   INTEGER NOT NULL,           -- رقم البلاغ المرتبط
+    link_hash   TEXT,                      -- بصمة الرابط المطبَّع
+    text_hash   TEXT,                      -- بصمة الوصف
+    photo_hash  TEXT,                      -- بصمة الصورة (sha256 أو pHash)
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fp_link ON report_fingerprints(link_hash);
+CREATE INDEX IF NOT EXISTS idx_fp_text ON report_fingerprints(text_hash);
+CREATE INDEX IF NOT EXISTS idx_fp_photo ON report_fingerprints(photo_hash);
 """
 
 
@@ -73,6 +134,33 @@ class Database:
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
+            self._migrate()
+
+    # --------------------------------------------------------------
+    # الترحيل: إضافة الأعمدة الجديدة إن لم تكن موجودة
+    # (مهم لأن القواعد المنشأة سابقًا لا تتغيّر تلقائيًا)
+    # --------------------------------------------------------------
+    _MIGRATIONS: tuple[tuple[str, str], ...] = (
+        ("violation_type", "TEXT"),
+        ("place", "TEXT"),
+        ("latitude", "REAL"),
+        ("longitude", "REAL"),
+        ("source", "TEXT NOT NULL DEFAULT 'chat'"),
+        ("platform", "TEXT"),
+        ("needs_review", "INTEGER NOT NULL DEFAULT 0"),
+        ("published", "INTEGER NOT NULL DEFAULT 0"),
+    )
+
+    def _migrate(self) -> None:
+        existing = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(reports)").fetchall()
+        }
+        for column, ddl in self._MIGRATIONS:
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE reports ADD COLUMN {column} {ddl}")
+                print(f"🗄️ تمت إضافة العمود الجديد: {column}")
+        self._conn.commit()
 
     # --------------------------------------------------------------
     # إضافة بلاغ جديد
@@ -86,6 +174,13 @@ class Database:
         photo_file_id: str | None,
         post_link: str,
         description: str,
+        violation_type: str | None = None,
+        place: str | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        source: str = "chat",
+        platform: str | None = None,
+        needs_review: int = 0,
     ) -> dict[str, Any]:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
@@ -93,11 +188,15 @@ class Database:
                 """
                 INSERT INTO reports
                     (user_id, username, full_name, photo_path, photo_file_id,
-                     post_link, description, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     post_link, description, status, created_at,
+                     violation_type, place, latitude, longitude, source, platform,
+                     needs_review)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (user_id, username, full_name, photo_path, photo_file_id,
-                 post_link, description, STATUS_NEW, now_iso),
+                 post_link, description, STATUS_NEW, now_iso,
+                 violation_type, place, latitude, longitude, source, platform,
+                 needs_review),
             )
             rid = cur.lastrowid
             # توليد الرقم التسلسلي الفريد MRV-YYYY-NNNN اعتمادًا على id الصف
@@ -210,6 +309,207 @@ class Database:
 
     async def update_status(self, rid: int, new_status: str, admin_id: int) -> bool:
         return await asyncio.to_thread(self._update_status, rid, new_status, admin_id)
+
+    # ==================================================================
+    # طبقة الحماية: أحداث، تجميد، تدقيق، حالة النظام، البصمات
+    # ==================================================================
+    def _log_event(self, user_id: int, kind: str = "report") -> None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO user_events (user_id, ts, kind) VALUES (?, ?, ?)",
+                (user_id, now_iso, kind),
+            )
+            self._conn.commit()
+
+    async def log_event(self, user_id: int, kind: str = "report") -> None:
+        await asyncio.to_thread(self._log_event, user_id, kind)
+
+    def _count_events(self, since_iso: str, user_id: Optional[int] = None,
+                      kind: Optional[str] = None) -> int:
+        with self._lock:
+            query = "SELECT COUNT(*) AS c FROM user_events WHERE ts >= ?"
+            params: list[Any] = [since_iso]
+            if user_id is not None:
+                query += " AND user_id = ?"
+                params.append(user_id)
+            if kind:
+                query += " AND kind = ?"
+                params.append(kind)
+            return int(self._conn.execute(query, params).fetchone()["c"])
+
+    async def count_events(self, since_iso: str, user_id: Optional[int] = None,
+                           kind: Optional[str] = None) -> int:
+        return await asyncio.to_thread(self._count_events, since_iso, user_id, kind)
+
+    def _prune_events(self, before_iso: str) -> int:
+        """حذف الأحداث القديمة حتى لا تنمو القاعدة بلا حد."""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM user_events WHERE ts < ?", (before_iso,))
+            self._conn.commit()
+            return cur.rowcount
+
+    async def prune_events(self, before_iso: str) -> int:
+        return await asyncio.to_thread(self._prune_events, before_iso)
+
+    def _get_block(self, user_id: int) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM user_blocks WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return _row_to_dict(row) if row else {}
+
+    async def get_block(self, user_id: int) -> dict[str, Any]:
+        return await asyncio.to_thread(self._get_block, user_id)
+
+    def _save_block(self, user_id: int, strikes: int, frozen_until: Optional[str],
+                    reason: str) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO user_blocks (user_id, strikes, frozen_until, reason, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    strikes=excluded.strikes,
+                    frozen_until=excluded.frozen_until,
+                    reason=excluded.reason,
+                    updated_at=excluded.updated_at
+                """,
+                (user_id, strikes, frozen_until, reason, now_iso),
+            )
+            self._conn.commit()
+
+    async def save_block(self, user_id: int, strikes: int, frozen_until: Optional[str],
+                         reason: str) -> None:
+        await asyncio.to_thread(self._save_block, user_id, strikes, frozen_until, reason)
+
+    def _clear_block(self, user_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE user_blocks SET strikes = 0, frozen_until = NULL, reason = NULL,"
+                " updated_at = ? WHERE user_id = ?",
+                (datetime.now(timezone.utc).isoformat(timespec="seconds"), user_id),
+            )
+            self._conn.commit()
+
+    async def clear_block(self, user_id: int) -> None:
+        await asyncio.to_thread(self._clear_block, user_id)
+
+    def _audit(self, actor_id: Optional[int], action: str, target: Optional[str],
+               details: Optional[str]) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO audit_log (ts, actor_id, action, target, details)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (now_iso, actor_id, action, target, details),
+            )
+            self._conn.commit()
+
+    async def audit(self, actor_id: Optional[int], action: str, target: Optional[str] = None,
+                    details: Optional[str] = None) -> None:
+        await asyncio.to_thread(self._audit, actor_id, action, target, details)
+
+    def _recent_audit(self, limit: int = 30) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows]
+
+    async def recent_audit(self, limit: int = 30) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._recent_audit, limit)
+
+    def _get_state(self, key: str) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM system_state WHERE key = ?", (key,)
+            ).fetchone()
+            return row["value"] if row else None
+
+    async def get_state(self, key: str) -> Optional[str]:
+        return await asyncio.to_thread(self._get_state, key)
+
+    def _set_state(self, key: str, value: Optional[str]) -> None:
+        with self._lock:
+            if value is None:
+                self._conn.execute("DELETE FROM system_state WHERE key = ?", (key,))
+            else:
+                self._conn.execute(
+                    "INSERT INTO system_state (key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value),
+                )
+            self._conn.commit()
+
+    async def set_state(self, key: str, value: Optional[str]) -> None:
+        await asyncio.to_thread(self._set_state, key, value)
+
+    def _add_fingerprint(self, report_id: int, link_hash: Optional[str],
+                         text_hash: Optional[str], photo_hash: Optional[str]) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO report_fingerprints"
+                " (report_id, link_hash, text_hash, photo_hash, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (report_id, link_hash, text_hash, photo_hash, now_iso),
+            )
+            self._conn.commit()
+
+    async def add_fingerprint(self, report_id: int, link_hash: Optional[str],
+                              text_hash: Optional[str], photo_hash: Optional[str]) -> None:
+        await asyncio.to_thread(self._add_fingerprint, report_id, link_hash, text_hash, photo_hash)
+
+    def _find_fingerprints(self, link_hash: Optional[str] = None,
+                           text_hash: Optional[str] = None,
+                           photo_hash: Optional[str] = None) -> list[dict[str, Any]]:
+        clauses, params = [], []
+        for column, value in (("link_hash", link_hash), ("text_hash", text_hash),
+                              ("photo_hash", photo_hash)):
+            if value:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        if not clauses:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM report_fingerprints WHERE {' OR '.join(clauses)}", params
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows]
+
+    async def find_fingerprints(self, link_hash: Optional[str] = None,
+                                text_hash: Optional[str] = None,
+                                photo_hash: Optional[str] = None) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._find_fingerprints, link_hash, text_hash, photo_hash)
+
+    def _recent_descriptions(self, limit: int = 60) -> list[tuple[int, str, int]]:
+        """آخر الأوصاف (رقم البلاغ، النص، معرّف المبلّغ) — لكشف التشابه."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, description, user_id FROM reports ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [(int(r["id"]), r["description"], int(r["user_id"])) for r in rows]
+
+    async def recent_descriptions(self, limit: int = 60) -> list[tuple[int, str, int]]:
+        return await asyncio.to_thread(self._recent_descriptions, limit)
+
+    def _count_user_reports(self, user_id: int) -> tuple[int, int]:
+        """(عدد المعتمدة، عدد المرفوضة) لمستخدم معيّن — أساس حساب السمعة."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT"
+                " SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS ok,"
+                " SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS rejected"
+                " FROM reports WHERE user_id = ?",
+                (STATUS_APPROVED, STATUS_REJECTED, user_id),
+            ).fetchone()
+            return int(row["ok"] or 0), int(row["rejected"] or 0)
+
+    async def count_user_reports(self, user_id: int) -> tuple[int, int]:
+        return await asyncio.to_thread(self._count_user_reports, user_id)
 
     # --------------------------------------------------------------
     # إغلاق الاتصال عند إيقاف البوت

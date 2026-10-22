@@ -27,6 +27,7 @@ from telegram.ext import (
 import admin
 import archive
 import config
+import guards
 import texts
 import utils
 from database import Database
@@ -41,6 +42,19 @@ ASK_PHOTO, ASK_LINK, ASK_DESC, CONFIRM = range(4)
 CANCEL_RE = r"^\s*❌\s*إلغاء\s*$"
 CONFIRM_RE = r"^\s*✅\s*إرسال\s+البلاغ\s*$"
 
+# ==================================================================
+# طلبات التطبيق (Mini App): المستخدم الذي أرسل بياناته وينتظر الصورة
+# ==================================================================
+_pending_app_users: set[int] = set()
+
+
+class AppPhotoPending(filters.MessageFilter):
+    """يسمّي الرسائل التي تخصّ طلبًا مفتوحًا من التطبيق."""
+
+    def filter(self, message) -> bool:
+        user = message.from_user
+        return bool(user and user.id in _pending_app_users)
+
 
 def _db(context: ContextTypes.DEFAULT_TYPE) -> Database:
     return context.bot_data["db"]
@@ -52,15 +66,37 @@ def _db(context: ContextTypes.DEFAULT_TYPE) -> Database:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """الترحيب وبدء جمع عناصر البلاغ — مع تطبيق الحد اليومي لكل مبلّغ."""
     user = update.effective_user
+    chat = update.effective_chat
     db = _db(context)
 
-    # حساب بداية اليوم المحلي وتحويله إلى UTC لمقارنته بوقت التسجيل
-    if await db.count_since(utils.local_day_start_iso(), user_id=user.id) >= config.MAX_REPORTS_PER_DAY:
+    # ------------------------------------------------------------------
+    # الحماية ③: الاستقبال في المحادثات الخاصة فقط
+    # (يمنع استعمال البوت داخل المجموعات، وهو أقوى وسيلة ضد الإبلاغ الجماعي)
+    # ------------------------------------------------------------------
+    if not guards.is_private_chat(chat.type):
         await update.effective_message.reply_text(
-            texts.LIMIT_REACHED.format(limit=config.MAX_REPORTS_PER_DAY),
-            parse_mode=ParseMode.HTML,
+            texts.PRIVATE_ONLY.format(bot=config.BOT_USERNAME), parse_mode=ParseMode.HTML
         )
         return ConversationHandler.END
+
+    # ------------------------------------------------------------------
+    # الحماية: حدود المعدّل (دقيقة/ساعة) + الإيقاف الطارئ + الحد اليومي
+    # ------------------------------------------------------------------
+    verdict = await guards.check_rate_limits(db, user.id)
+    if verdict.blocked:
+        await update.effective_message.reply_text(
+            verdict.message, parse_mode=ParseMode.HTML
+        )
+        return ConversationHandler.END
+
+    daily = await guards.check_daily_limit(db, user.id)
+    if daily.blocked:
+        await update.effective_message.reply_text(
+            daily.message, parse_mode=ParseMode.HTML
+        )
+        return ConversationHandler.END
+
+    await db.log_event(user.id, "report")
 
     # بداية نظيفة لكل بلاغ جديد
     context.user_data.clear()
@@ -76,8 +112,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================================================================
 # الحالة 1: الصورة التوثيقية
 # ==================================================================
-async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """استقبال الصورة (مضغوطة أو كملف) وحفظها في مجلد media/."""
+async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يحفظ الصورة ويعيد (المسار المحلي، file_id، الاسم) — مشترك بين المسارين."""
     msg = update.message
     user = update.effective_user
 
@@ -91,7 +127,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 texts.PHOTO_TOO_BIG.format(mb=config.MAX_PHOTO_MB),
                 parse_mode=ParseMode.HTML,
             )
-            return ASK_PHOTO
+            return "", None, ""
         ext = mimetypes.guess_extension(doc.mime_type or "") or ".jpg"
         media = doc
 
@@ -110,22 +146,29 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             logger.exception("فشل تحميل الصورة للمستخدم %s", user.id)
             await msg.reply_text(texts.PHOTO_FAILED, parse_mode=ParseMode.HTML)
-            return ASK_PHOTO
+            return "", None, ""
 
         if not path.exists() or path.stat().st_size == 0:
             await msg.reply_text(texts.PHOTO_FAILED, parse_mode=ParseMode.HTML)
-            return ASK_PHOTO
+            return "", None, ""
 
-        photo_path = str(path)
-        photo_name = path.name
-    else:
-        # لا نسخة محلية — نعتمد على file_id الموجود في تلغرام
-        photo_path = ""
-        photo_name = media.file_id
+        return str(path), media.file_id, path.name
+
+    # لا نسخة محلية — نعتمد على file_id الموجود في تلغرام
+    return "", media.file_id, media.file_id
+
+
+async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """استقبال الصورة (مضغوطة أو كملف) وحفظها في مجلد media/."""
+    msg = update.message
+
+    photo_path, photo_file_id, photo_name = await _save_photo(update, context)
+    if not photo_file_id:
+        return ASK_PHOTO
 
     context.user_data.update(
         photo_path=photo_path,
-        photo_file_id=media.file_id,
+        photo_file_id=photo_file_id,
         photo_name=photo_name,
     )
     await msg.reply_text(texts.ASK_LINK, parse_mode=ParseMode.HTML, reply_markup=cancel_kb())
@@ -147,7 +190,26 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(texts.LINK_INVALID, parse_mode=ParseMode.HTML)
         return ASK_LINK
 
+    # تحديد منصة التواصل + تنبيه إن كان المصدر غير معروف
+    verdict = guards.check_link(text)
+    if verdict.blocked:
+        await update.message.reply_text(verdict.message, parse_mode=ParseMode.HTML)
+        return ASK_LINK
+
+    platform = verdict.extra.get("platform") or ""
     context.user_data["post_link"] = text
+    context.user_data["platform"] = platform
+
+    if verdict.code == "unknown_platform":
+        await update.message.reply_text(
+            verdict.message, parse_mode=ParseMode.HTML
+        )
+    elif platform:
+        await update.message.reply_text(
+            texts.PLATFORM_DETECTED.format(platform=utils.esc(platform)),
+            parse_mode=ParseMode.HTML,
+        )
+
     await update.message.reply_text(
         texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
         parse_mode=ParseMode.HTML,
@@ -233,14 +295,231 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # الأرشفة الرسمية:
     #   1) نشر البلاغ في القناة الرسمية الموحّدة (سجل زمني واحد لكل البلاغات)
     #   2) رفع نسخة من قاعدة البيانات إلى القناة (حماية البيانات من فقدان القرص)
-    # الخطوة الثانية اختيارية وتعمل فقط عند ضبط ARCHIVE_CHAT_ID.
+    # الحماية ⑤: النشر لا يتم تلقائيًا — يُنتظر رأي المشرف
+    # (يمنع وصول بلاغ كيدي أو مخالف إلى القناة الرسمية).
     # ------------------------------------------------------------------
-    await archive.post_report(context.bot, report)
+    if config.AUTO_PUBLISH_TO_ARCHIVE:
+        await archive.post_report(context.bot, report)
     await archive.backup_database(context.bot, config.DB_PATH)
 
     ud.clear()
     ud["last_saved"] = utils.utc_now_iso()
     return ConversationHandler.END
+
+
+# ==================================================================
+# أمر /app — فتح التطبيق
+# ==================================================================
+async def cmd_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يرسل زر فتح التطبيق (Mini App) للمستخدم."""
+    keyboard = keyboards_app_kb()
+    if keyboard is None:
+        await update.effective_message.reply_text(
+            texts.APP_NOT_READY, parse_mode=ParseMode.HTML
+        )
+        return
+
+    await update.effective_message.reply_text(
+        texts.APP_INTRO, parse_mode=ParseMode.HTML, reply_markup=keyboard
+    )
+
+
+def keyboards_app_kb():
+    """اختصار آمن لاستدعاء keyboards.app_kb (يتعامل مع غياب المكتبة)."""
+    from keyboards import app_kb
+
+    return app_kb()
+
+
+# ==================================================================
+# استقبال بيانات التطبيق (Mini App) ثم الصورة وإتمام البلاغ
+# ==================================================================
+async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يستقبل ما ملأه المستخدم في التطبيق (نوع المخالفة، الموقع، الوصف، الرابط).
+
+    ملاحظة أمنية: البيانات تصل عبر تلغرام نفسها (web_app_data) فهي موثّقة
+    النسبة للمستخدم، وكل الفحوص الأمنية (المعدّل، التكرار، المضمون) تُطبَّق هنا
+    تمامًا كما في مسار المحادثة العادي.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+    db = _db(context)
+
+    # الحماية ③: التطبيق يعمل من المحادثة الخاصة فقط
+    if not guards.is_private_chat(chat.type):
+        await update.effective_message.reply_text(
+            texts.PRIVATE_ONLY.format(bot=config.BOT_USERNAME), parse_mode=ParseMode.HTML
+        )
+        return None
+
+    # الحماية: الإيقاف الطارئ + حدود المعدّل
+    if await guards.is_emergency(db):
+        await update.effective_message.reply_text(
+            texts.EMERGENCY_ON, parse_mode=ParseMode.HTML
+        )
+        return None
+
+    verdict = await guards.check_rate_limits(db, user.id)
+    if verdict.blocked:
+        await update.effective_message.reply_text(verdict.message, parse_mode=ParseMode.HTML)
+        return None
+
+    daily = await guards.check_daily_limit(db, user.id)
+    if daily.blocked:
+        await update.effective_message.reply_text(daily.message, parse_mode=ParseMode.HTML)
+        return None
+
+    # قراءة البيانات وتحويلها إلى قاموس آمن
+    raw = update.effective_message.web_app_data.data or "{}"
+    try:
+        import json
+
+        data = json.loads(raw)
+    except Exception:
+        logger.warning("بيانات تطبيق غير صالحة من المستخدم %s", user.id)
+        await update.effective_message.reply_text(
+            texts.APP_BAD_DATA, parse_mode=ParseMode.HTML
+        )
+        return None
+
+    violation_type = str(data.get("type") or "")[:60]
+    place = str(data.get("place") or "")[:120]
+    description = str(data.get("desc") or "")[: config.MAX_DESC_LEN]
+    link = str(data.get("link") or "").strip()
+    lat = data.get("lat")
+    lon = data.get("lon")
+
+    # فحص الرابط (إلزامي في نظامنا: المنشور على وسائل التواصل هو الدليل)
+    link_verdict = guards.check_link(link) if link else guards.Verdict(
+        allowed=False, code="missing_link", severity="block",
+        message=(
+            "🔗 <b>رابط المنشور إلزامي.</b>\n\n"
+            "هذا النظام يستقبل مخالفات <b>منشورة على مواقع التواصل الاجتماعي</b>، "
+            "والرابط هو الدليل الأساسي الذي يُبنى عليه التحقق.\n"
+            "أرسل رابط المنشور الأصلي من فضلك."
+        ),
+    )
+    if link_verdict.blocked:
+        await update.effective_message.reply_text(
+            link_verdict.message, parse_mode=ParseMode.HTML
+        )
+        return None
+
+    platform = link_verdict.extra.get("platform") or ""
+    if link_verdict.code == "unknown_platform":
+        await update.effective_message.reply_text(
+            link_verdict.message, parse_mode=ParseMode.HTML
+        )
+
+    # فحص مضمون الوصف
+    substance = guards.check_substance(description)
+    if substance.blocked:
+        await update.effective_message.reply_text(
+            substance.message, parse_mode=ParseMode.HTML
+        )
+        return None
+
+    # كشف التكرار
+    duplicate = await guards.check_duplicate(db, link, description)
+    await db.log_event(user.id, "report")
+
+    context.user_data.clear()
+    context.user_data["app_draft"] = {
+        "violation_type": violation_type,
+        "place": place,
+        "description": description,
+        "post_link": link,
+        "platform": platform,
+        "lat": float(lat) if isinstance(lat, (int, float)) else None,
+        "lon": float(lon) if isinstance(lon, (int, float)) else None,
+        "suspect_duplicate": duplicate.code in {"exact_duplicate", "similar_duplicate"},
+        "duplicate_of": duplicate.extra.get("duplicate_of"),
+    }
+    _pending_app_users.add(user.id)
+
+    await update.effective_message.reply_text(
+        texts.APP_DATA_OK.format(
+            vtype=utils.esc(violation_type or "غير محدد"),
+            place=utils.esc(place or "غير محدد"),
+            dup="⚠️ " if duplicate.code in {"exact_duplicate", "similar_duplicate"} else "",
+        ),
+        parse_mode=ParseMode.HTML,
+    )
+    await update.effective_message.reply_text(
+        texts.APP_SEND_PHOTO, parse_mode=ParseMode.HTML
+    )
+    return None
+
+
+async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يستقبل الصورة بعد إرسال بيانات التطبيق ثم يُنشئ البلاغ كاملًا."""
+    user = update.effective_user
+    db = _db(context)
+    ud = context.user_data
+    draft = ud.pop("app_draft", None)
+    _pending_app_users.discard(user.id)
+
+    if not draft:
+        return None
+
+    # حفظ الصورة بنفس المنطق المستخدم في المحادثة العادية
+    photo_path, photo_file_id, photo_name = await _save_photo(update, context)
+    if not photo_file_id:
+        await update.effective_message.reply_text(
+            texts.PHOTO_FAILED, parse_mode=ParseMode.HTML
+        )
+        return None
+
+    try:
+        report = await db.add_report(
+            user_id=user.id,
+            username=user.username,
+            full_name=user.full_name,
+            photo_path=photo_path,
+            photo_file_id=photo_file_id,
+            post_link=draft["post_link"],
+            description=draft["description"],
+            violation_type=draft["violation_type"],
+            place=draft["place"],
+            latitude=draft["lat"],
+            longitude=draft["lon"],
+            source="app",
+            platform=draft.get("platform") or "",
+            needs_review=1 if draft["suspect_duplicate"] else 0,
+        )
+    except Exception:
+        logger.exception("فشل حفظ بلاغ التطبيق للمستخدم %s", user.id)
+        await update.effective_message.reply_text(
+            texts.GENERAL_ERROR, parse_mode=ParseMode.HTML
+        )
+        return None
+
+    logger.info("بلاغ جديد (تطبيق) %s من المستخدم %s", report["seq"], user.id)
+    await update.effective_message.reply_text(
+        texts.SAVED.format(
+            seq=report["seq"],
+            time=utils.fmt_local(report["created_at"]),
+            status=texts.badge(report["status"]),
+        ),
+        parse_mode=ParseMode.HTML,
+    )
+    await _notify_admins(context, report)
+
+    # البصمات لكشف التكرار مستقبلًا
+    await db.add_fingerprint(
+        report["id"],
+        guards.link_hash(draft["post_link"]) if draft["post_link"] else None,
+        guards.text_hash(draft["description"]),
+        None,
+    )
+
+    if config.AUTO_PUBLISH_TO_ARCHIVE:
+        await archive.post_report(context.bot, report)
+    await archive.backup_database(context.bot, config.DB_PATH)
+
+    ud.clear()
+    ud["last_saved"] = utils.utc_now_iso()
+    return None
 
 
 # ==================================================================
@@ -410,7 +689,10 @@ def build_conversation() -> ConversationHandler:
             CommandHandler("cancel", cmd_cancel),
             CommandHandler(["start", "report"], cmd_start),
             CommandHandler(["admin", "reports"], exit_to_admin),
-            MessageHandler(filters.ALL, unmatched),
+            CommandHandler("app", cmd_app),
+            # ملاحظة: نستثني الأوامر من المصيدة الشاملة حتى لا تبتلع
+            # أوامر المشرف (/panic /resume /audit) والأوامر الأخرى.
+            MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
         ],
         allow_reentry=True,
         per_user=True,

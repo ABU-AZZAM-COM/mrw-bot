@@ -23,6 +23,7 @@ from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 
 import config
 import exporters
+import guards
 import texts
 import utils
 from database import (
@@ -43,6 +44,69 @@ from keyboards import (
 
 logger = logging.getLogger(__name__)
 PAGE_SIZE = 5  # عدد البلاغات في صفحة واحدة داخل القائمة
+
+
+# ==================================================================
+# أوامر المشرف: الإيقاف الطارئ + سجل التدقيق
+# ==================================================================
+def _is_admin_update(update: Update) -> bool:
+    """هل مرسل الأمر من المشرفين المعتمدين؟ (تستقبل كائن التحديث)"""
+    user = update.effective_user
+    return bool(user and _is_admin(user.id))
+
+
+async def cmd_panic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/panic — إيقاف طارئ لاستقبال البلاغات (حماية من الإغراق أو الاختراق)."""
+    if not _is_admin_update(update):
+        await update.effective_message.reply_text(texts.ADMIN_ONLY, parse_mode=ParseMode.HTML)
+        return
+
+    db = context.bot_data["db"]
+    await guards.set_emergency(db, True, update.effective_user.id, "أمر يدوي من المشرف")
+    await update.effective_message.reply_text(
+        texts.PANIC_ON, parse_mode=ParseMode.HTML
+    )
+
+
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/resume — إعادة تشغيل استقبال البلاغات بعد الإيقاف الطارئ."""
+    if not _is_admin_update(update):
+        await update.effective_message.reply_text(texts.ADMIN_ONLY, parse_mode=ParseMode.HTML)
+        return
+
+    db = context.bot_data["db"]
+    await guards.set_emergency(db, False, update.effective_user.id, "أمر يدوي من المشرف")
+    await update.effective_message.reply_text(
+        texts.PANIC_OFF, parse_mode=ParseMode.HTML
+    )
+
+
+async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/audit — عرض آخر عمليات التدقيق (من فعل ماذا ومتى)."""
+    if not _is_admin_update(update):
+        await update.effective_message.reply_text(texts.ADMIN_ONLY, parse_mode=ParseMode.HTML)
+        return
+
+    db = context.bot_data["db"]
+    rows = await db.recent_audit(limit=20)
+    if not rows:
+        await update.effective_message.reply_text(
+            texts.AUDIT_EMPTY, parse_mode=ParseMode.HTML
+        )
+        return
+
+    lines = ["🧾 <b>آخر عمليات التدقيق</b>", "━━━━━━━━━━━━━━━"]
+    for row in rows:
+        actor = row.get("actor_id") or "النظام"
+        target = f" → {row['target']}" if row.get("target") else ""
+        detail = f" — {utils.esc(row['details'])}" if row.get("details") else ""
+        lines.append(
+            f"• <code>{utils.fmt_local(row['ts'])}</code> · "
+            f"<b>{utils.esc(row['action'])}</b> · {actor}{target}{detail}"
+        )
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML
+    )
 
 
 def _db(context: ContextTypes.DEFAULT_TYPE) -> Database:
@@ -103,7 +167,9 @@ async def _render_list(db: Database, code: str, page: int):
     text = texts.ADMIN_LIST_HEADER.format(
         label=label, total=total, items="\n".join(items)
     )
-    markup_rows = admin_item_buttons(rows) + admin_list_buttons(code, page, pages).inline_keyboard
+    # ملاحظة: inline_keyboard في مكتبة تيليغرام أصبح tuple، لذا نحوّله إلى قائمة
+    nav_rows = list(admin_list_buttons(code, page, pages).inline_keyboard)
+    markup_rows = admin_item_buttons(rows) + nav_rows
     return text, InlineKeyboardMarkup(markup_rows)
 
 

@@ -52,9 +52,16 @@ UPLOAD_MAP: dict[str, str] = {
     "utils.py": "utils.py",
     "exporters.py": "exporters.py",
     "archive.py": "archive.py",
+    "guards.py": "guards.py",          # طبقة الحماية (إساءة/كيّد/تخريب)
     "health_server.py": "health_server.py",
     # Hugging Face يقرأ الاعتماديات من requirements.txt فقط
     "requirements-space.txt": "requirements.txt",
+    # التطبيق (Mini App) — نسخة داخل مستودع المساحة أيضًا
+    "webapp/index.html": "webapp/index.html",
+    "webapp/app.js": "webapp/app.js",
+    "webapp/styles.css": "webapp/styles.css",
+    "webapp/manifest.webmanifest": "webapp/manifest.webmanifest",
+    "webapp/icon.svg": "webapp/icon.svg",
 }
 
 # بطاقة المساحة (ترويسة YAML التي تعرّف المساحة)
@@ -70,6 +77,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--archive-chat-id", default=os.getenv("ARCHIVE_CHAT_ID", ""), help="معرّف القناة الرسمية")
     parser.add_argument("--bot-username", default=os.getenv("BOT_USERNAME", "@blgh_bot"), help="اسم البوت للعرض")
     parser.add_argument("--keepalive-url", default=os.getenv("KEEPALIVE_URL", ""), help="رابط المساحة العامة")
+    parser.add_argument("--mini-app-url", default=os.getenv("MINI_APP_URL", ""),
+                        help="رابط تطبيق البلاغ (GitHub Pages) — يُفعّل زر التطبيق")
     return parser.parse_args()
 
 
@@ -147,6 +156,8 @@ def main() -> int:
         secrets["ARCHIVE_CHAT_ID"] = args.archive_chat_id
     if args.keepalive_url:
         variables["KEEPALIVE_URL"] = args.keepalive_url
+    if args.mini_app_url:
+        variables["MINI_APP_URL"] = args.mini_app_url
 
     if secrets or variables:
         print("▶ ضبط الأسرار والمتغيرات …")

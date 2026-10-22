@@ -1,0 +1,51 @@
+# ============================================================
+#  pages.yml — نشر تطبيق البلاغ (Mini App) على GitHub Pages
+# ============================================================
+#  ينشر محتويات مجلد webapp/ على Pages عند كل دفعة إلى main.
+#  Pages مجاني تمامًا وبلا بطاقة، ويوفّر HTTPS — وهو شرط تيليغرام
+#  لتشغيل Mini App.
+#
+#  التفعيل (مرة واحدة): في المستودع:
+#    Settings ← Pages ← Source: "GitHub Actions"
+# ============================================================
+name: pages
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "webapp/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: نشر التطبيق
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: جلب الكود
+        uses: actions/checkout@v4
+
+      - name: إعداد Pages
+        uses: actions/configure-pages@v5
+
+      - name: رفع التطبيق
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: webapp
+
+      - name: النشر
+        id: deployment
+        uses: actions/deploy-pages@v4
