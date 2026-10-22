@@ -200,7 +200,7 @@ async def post_report(bot: Bot, report: dict) -> bool:
 async def keepalive_loop(url: str, interval_seconds: int | None = None) -> None:
     """ينادي رابط الخدمة دوريًا حتى لا تُوقَف المنصة السحابية تلقائيًا.
 
-    المنصات المجانية تُوقف أي خدمة لا تصل إليها طلبات了一段时间، لذلك نُبقي
+    المنصات المجانية تُوقف أي خدمة لا تصل إليها طلبات عبر الإنترنت، لذلك نُبقي
     الخدمة حيّة بنبضة خفيفة كل بضع دقائق (من متغير KEEPALIVE_INTERVAL_SEC).
     """
     if not url:

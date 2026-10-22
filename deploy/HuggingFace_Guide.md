@@ -93,13 +93,36 @@ git push -u origin main
 
 ## 5) رفع الكود
 
+### الطريقة السريعة (آلية بالكامل) — `deploy/deploy_to_hf.py`
+
+السكربت جاهز في المشروع ويقوم بكل الخطوات: إنشاء المساحة، رفع الملفات،
+رفع بطاقة المساحة، وضبط الأسرار والمتغيرات.
+
+```powershell
+# 1) أنشئ رمز وصول (Write) من: https://huggingface.co/settings/tokens
+$env:HF_TOKEN  = "hf_xxxxxxxxxxxxxxxxxxxx"
+$env:HF_SPACE  = "اسم-المستخدم/mrw-bot"
+
+# 2) شغّل النشر
+.\.venv\Scripts\python.exe deploy\deploy_to_hf.py `
+    --bot-token "8860507439:AAFvla8GegpsJl5ZNbdhIop5k0GmJyeApYE" `
+    --admin-ids "1557513643" `
+    --archive-chat-id "-100xxxxxxxxxx" `
+    --keepalive-url "https://اسم-المستخدم-mrw-bot.hf.space"
+```
+
+> ملاحظة: `requirements-space.txt` يُرفع باسم `requirements.txt` تلقائيًا،
+> لأن Hugging Face يقرأ الاعتماديات من `requirements.txt` فقط.
+
+### الطريقة اليدوية (عبر المتصفح)
+
 من صفحة المساحة: تبويب **Files and versions** ← **Add file** ← **Upload files**، وارفع:
 
 ```
 space_app.py
 main.py  config.py  texts.py  handlers.py  admin.py  database.py
 keyboards.py  utils.py  exporters.py  archive.py  health_server.py
-requirements-space.txt
+requirements-space.txt   ←  Rename it to: requirements.txt
 ```
 
 > **مهم:** ملف `README.md` في جذر المساحة هو بطاقة المساحة، ويجب أن يحتوي ترويسة YAML
