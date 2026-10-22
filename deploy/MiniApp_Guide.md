@@ -20,21 +20,37 @@
 
 ---
 
-## 1) النشر (مرة واحدة)
+## 1) النشر — **من داخل مساحة Hugging Face** (بلا GitHub)
 
-### 1-أ) ارفع الكود إلى GitHub
-```powershell
-git remote add origin https://github.com/<اسمك>/mrw-bot.git
-git push -u origin main
+التطبيق يُقدَّم من المساحة نفسها عبر خادم FastAPI بسيط:
+
+| المسار | المحتوى |
+|---|---|
+| `/` | تطبيق البلاغ (Mini App) — **هذا هو رابط التطبيق** |
+| `/status` | صفحة حالة بسيطة (HTML خفيف) |
+| `/health` | فحص آلي: `{"status": "ok", ...}` |
+
+### كيف صُنِّعت البنية؟
+
+```
+المساحة (HF Space — Gradio SDK)
+   └── space_app.py
+         ├── خيط خلفي  → البوت (يستقبل البلاغات)
+         └── خادم FastAPI/uvicorn على PORT
+                ├── "/"        → ملفات webapp/ (التطبيق)
+                ├── "/status"  → صفحة الحالة
+                └── "/health"  → فحص المنصة
 ```
 
-### 1-ب) فعّل GitHub Pages
-من المستودع: **Settings ← Pages ← Source: `GitHub Actions`** (نقرة واحدة).
-سير العمل `.github/workflows/pages.yml` سينشر مجلد `webapp/` تلقائيًا عند كل دفعة.
+> **لماذا لم نُبقِ Gradio؟** لأن وكيل Gradio (Node) يعترض كل المسارات على نفس المنفذ
+> ويخدم صفحته هو، فلا يبقى مكان لتطبيقنا. لذلك استُبدل بخادم مباشر + صفحة حالة بسيطة.
 
-> الرابط الناتج على الشكل: `https://<اسمك>.github.io/mrw-bot/`
+> **تقرير إقلاع ZeroGPU:** شرط لتشغيل أي مساحة ZeroGPU (وإلا أوقفتها المنصة برسالة
+> `No @spaces.GPU function detected`). نُرسله يدويًا في `_zerogpu_startup_report()`
+> لأننا لا نمرّ على مسار إقلاع Gradio الرسمي.
 
-### 1-ج) اضبط رابط التطبيق في المساحة السحابية
+### التحقق من النشر
+
 ```powershell
 $env:HF_TOKEN='hf_...'
 $env:HF_SPACE='azzam1992/mrw-bot'
@@ -42,12 +58,22 @@ $env:HF_SPACE='azzam1992/mrw-bot'
   --bot-token '8860507439:AAFvla8GegpsJl5ZNbdhIop5k0GmJyeApYE' `
   --admin-ids '1557513643' `
   --keepalive-url 'https://azzam1992-mrw-bot.hf.space' `
-  --mini-app-url 'https://<اسمك>.github.io/mrw-bot/'
+  --mini-app-url 'https://azzam1992-mrw-bot.hf.space/'
 ```
-أو يدويًا من صفحة المساحة: **Settings ← Variables and secrets ← New variable**:
-`MINI_APP_URL = https://<اسمك>.github.io/mrw-bot/` ثم **Restart**.
 
----
+ثم من صفحة المساحة ← **Logs** تأكّد من ظهور:
+```
+✅ تم إرسال تقرير إقلاع ZeroGPU
+🚀 تشغيل خادم الويب على المنفذ 7860
+🧩 تطبيق البلاغ متاح على المسار /
+✅ البوت جاهز ويستقبل الرسائل …
+🧩 تطبيق البلاغ جاهز: https://azzam1992-mrw-bot.hf.space/
+```
+
+### شرط أساسي: المساحة يجب أن تكون **عامة**
+
+لأن تلغرام يفتح التطبيق من داخل المحادثة بلا مصادقة → المساحة الخاصة تردّ 404.
+(الخصوصية محفوظة: الكود بلا سرّ، والأسرار في HF Secrets.)
 
 ## 2) بعد التفعيل — ماذا يتغيّر؟
 
