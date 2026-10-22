@@ -1,0 +1,8 @@
+[Unit]
+Description=نشاط خفيف لمنع استرداد النسخة المجانية من Oracle
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/mrw-bot/deploy/keepalive.py
+Nice=10
+IOSchedulingClass=idle

@@ -1,0 +1,64 @@
+# ============================================================
+#  watchdog.yml — مراقب خارجي يبقي الخدمة السحانية مستيقظة
+# ============================================================
+#  لماذا هذا الملف؟
+#  المنصات المجانية (Hugging Face Spaces / Zeabur) تُوقف الخدمة الخاملة.
+#  النبضة الداخلية داخل الحاوية لا تنفع إذا أُوقف الحاوية نفسها،
+#  لذلك نحتاج منفذًا خارجيًا (GitHub Actions) يطلب رابط الخدمة كل 10 دقائق.
+#
+#  المتطلبات (Secrets في المستودع):
+#    SERVICE_URL   = رابط الخدمة العام (مثل https://mrw-bot-xxxx.hf.space)
+#    BOT_TOKEN     = توكن البوت (اختياري: لإرسال تنبيه عند تعطّل الخدمة)
+#    ADMIN_IDS     = معرّف المشرف (اختياري: لمن يصله التنبيه)
+#
+#  ملاحظة: المستودع العام يستهلك دقائق بلا حد، والخاص يستهلك نحو
+#  1440 دقيقة شهريًا (وهو ضمن الحد المجاني 2000 دقيقة).
+# ============================================================
+name: keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    name: إبقاء الخدمة مستيقظة
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: طلب رابط الخدمة
+        env:
+          SERVICE_URL: ${{ secrets.SERVICE_URL }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
+        run: |
+          set -u
+          URL="${SERVICE_URL:-}"
+          if [ -z "$URL" ]; then
+            echo "SERVICE_URL غير مضبوط — لا حاجة لأي إجراء."
+            exit 0
+          fi
+
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$URL" || echo "000")
+          echo "الاستجابة الأولى: $code"
+
+          # لو لم تستجب، تكون نائمة: أعد المحاولة بعد 25 ثانية (وقت الاستيقاظ)
+          if [ "$code" != "200" ]; then
+            sleep 25
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$URL" || echo "000")
+            echo "الاستجابة بعد الاستيقاظ: $code"
+          fi
+
+          # تنبيه اختياري للمشرف عند تعطّل الخدمة
+          if [ "$code" != "200" ] && [ -n "${BOT_TOKEN:-}" ] && [ -n "${ADMIN_IDS:-}" ]; then
+            first_admin=$(printf '%s' "$ADMIN_IDS" | cut -d, -f1)
+            curl -s --max-time 20 -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d chat_id="$first_admin" \
+              -d text="⚠️ تنبيه: الخدمة السحابية لا تستجيب (رمز $code). يرجى مراجعة سجلات المنصة." \
+              > /dev/null || true
+            echo "أُرسل التنبيه للمشرف."
+          fi

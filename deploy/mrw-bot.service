@@ -1,0 +1,33 @@
+# =====================================================================
+#  خدمة نظام بلاغات المخالفات العسكرية (systemd)
+#  التشغيل:  systemctl status mrw-bot  |  إيقاف: systemctl stop mrw-bot
+#  السجلات: journalctl -u mrw-bot -f
+# =====================================================================
+[Unit]
+Description=نظام استقبال وتوثيق بلاغات المخالفات العسكرية
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mrw
+Group=mrw
+WorkingDirectory=/opt/mrw-bot
+EnvironmentFile=/opt/mrw-bot/.env
+ExecStart=/opt/mrw-bot/.venv/bin/python /opt/mrw-bot/main.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mrw-bot
+
+# حماية نظام الملفات: النظام والبرنامج للقراءة فقط، والمجلدات الأربعة قابلة للكتابة
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/mrw-bot/data /opt/mrw-bot/media /opt/mrw-bot/exports /opt/mrw-bot/logs
+
+[Install]
+WantedBy=multi-user.target
