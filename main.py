@@ -10,6 +10,7 @@
 import asyncio
 import logging
 import sys
+import threading
 from logging.handlers import RotatingFileHandler
 
 # ------------------------------------------------------------------
@@ -182,7 +183,20 @@ def main() -> None:
     # بدء الاستقبال.
     # drop_pending_updates=False مقصود: أي بلاغ يصل البوت أثناء انقطاعه
     # يبقى في طابور تلغرام (حتى 24 ساعة) ويُسلَّم فور عودة التشغيل — فلا تضيع بلاغات.
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
+    #
+    # ملاحظة مهمة: تثبيت معالجات الإشارات (للإيقاف النظيف) يعمل في الخيط الرئيسي
+    # فقط. لذلك نلغيها عند التشغيل داخل خيط خلفي (مثل غلاف Gradio في
+    # Hugging Face Space)، ونترك السلوك الافتراضي كما هو في التشغيل العادي.
+    in_main_thread = threading.current_thread() is threading.main_thread()
+
+    if in_main_thread:
+        app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
+    else:
+        app.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=False,
+            stop_signals=(),
+        )
 
 
 if __name__ == "__main__":

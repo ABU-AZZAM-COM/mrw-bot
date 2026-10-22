@@ -86,23 +86,25 @@ python main.py
 
 | المسار | الحالة | الدليل |
 |---|---|---|
-| **Hugging Face Space — ZeroGPU** (مجاني للأبد بحساب قديم + بريد مُفعّل) | ✅ **المعتمد** | `deploy/HuggingFace_Guide.md` |
-| **Zeabur — Free Plan** ($0/شهر، بلا بطاقة بنكية) | ✅ بديل فوري | `deploy/Zeabur_Guide.md` |
+| **Hugging Face Space — ZeroGPU** | ✅ **منشور فعليًا**: `azzam1992/mrw-bot` (خاصة + ZeroGPU) | `deploy/HuggingFace_Guide.md` |
+| **Zeabur — Free Plan** | ✅ بديل فوري | `deploy/Zeabur_Guide.md` |
 
 **كيف تُحمى البيانات بلا قرص دائم؟**
 القناة الرسمية في تلغرام هي مخزن الاستمرارية: يُنشر فيها كل بلاغ تلقائيًا، وتُرفع نسخة من قاعدة البيانات داخلها كل 30 دقيقة، وعند كل إقلاع يستعيد البوت آخر نسخة تلقائيًا.
 
 **كيف لا تنام الخدمة المجانية؟**
-مراقب خارجي (`.github/workflows/keepalive.yml`) يطلب رابط الخدمة كل 10 دقائق، فيمنع النوم التلقائي ويوقظها إن توقفت — مع نبضة داخلية كل 5 دقائق (`KEEPALIVE_INTERVAL_SEC`) كطبقة أمان ثانية.
+مراقب خارجي (`deploy/keepalive_watchdog.py` عبر `.github/workflows/keepalive.yml`) يفحص المساحة عبر واجهة Hugging Face كل 10 دقائق ويوقظها إن نامت — حتى وهي خاصة (يُصادق نفسه برمز الوصول). مع نبضة داخلية كل 5 دقائق (`KEEPALIVE_INTERVAL_SEC`) كطبقة أمان ثانية.
 
-**ملفات النشر الجاهزة:**
+**أدوات النشر والتحكم الجاهزة:**
 
-| الملف | الوظيفة |
+| الأداة | الوظيفة |
 |---|---|
-| `space_app.py` | غلاف Gradio لتشغيل البوت داخل Hugging Face Space |
-| `requirements-space.txt` | مكتبات المساحة (Gradio) |
+| `deploy/deploy_to_hf.py` | ينشئ المساحة ويرفع الملفات ويضبط الأسرار (أمر واحد) |
+| `deploy/space_control.py` | `status` / `logs` / `restart` للمساحة |
+| `deploy/keepalive_watchdog.py` | المراقب الخارجي (فحص + إيقاظ + تنبيه) |
+| `space_app.py` | غلاف Gradio الذي يشغّل البوت داخل المساحة |
+| `requirements-space.txt` | مكتبات المساحة (تُرفع باسم requirements.txt) |
 | `Dockerfile` + `.dockerignore` | صورة Docker (تُستخدم في Zeabur) |
-| `.github/workflows/keepalive.yml` | المراقب الخارجي (GitHub Actions) |
 
 المتغيرات المطلوبة في المنصة:
 

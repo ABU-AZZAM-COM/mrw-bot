@@ -286,17 +286,41 @@ async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, report: dict) -> No
 # أداة الإعداد: معرفة معرّف المحادثة (يُستخدم لضبط القناة الرسمية)
 # ==================================================================
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يردّ بمعرّف المحادثة الحالية — ضروري لمعرفة ARCHIVE_CHAT_ID."""
+    """يردّ بمعرّف المحادثة الحالية — ضروري لمعرفة ARCHIVE_CHAT_ID.
+
+    وعند تنفيذ الأمر داخل قناة، يُرسَل المعرّف أيضًا إلى أول مشرف في محادثته
+    الخاصة، فيصله مباشرة دون حاجة لنسخه يدويًا.
+    """
     chat = update.effective_chat
     user = update.effective_user
-    await update.effective_message.reply_text(
-        texts.CHAT_ID.format(
-            chat_id=chat.id,
-            title=utils.esc(chat.title or chat.full_name or "-"),
-            chat_type=chat.type,
-            user_id=user.id,
-        ),
-        parse_mode=ParseMode.HTML,
+    message = texts.CHAT_ID.format(
+        chat_id=chat.id,
+        title=utils.esc(chat.title or chat.full_name or "-"),
+        chat_type=chat.type,
+        user_id=user.id,
+    )
+    await update.effective_message.reply_text(message, parse_mode=ParseMode.HTML)
+
+    # إرسال المعرّف إلى المشرف في محادثة خاصة (تسهيل خطوة الإعداد)
+    if chat.type != "private" and config.ADMIN_IDS:
+        note = message + texts.CHAT_ID_ADMIN_NOTE.format(chat_id=chat.id)
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=note,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("تعذر إرسال معرّف المحادثة إلى المشرف %s: %s", admin_id, exc)
+            break
+
+    # تسجيل المعرّف في السجل ليكون بالإمكان قراءته آليًا أثناء الإعداد
+    logger.info(
+        "📌 معرّف المحادثة الحالي (للإعداد): %s | النوع: %s | الاسم: %s",
+        chat.id,
+        chat.type,
+        chat.title or chat.full_name or "-",
     )
 
 

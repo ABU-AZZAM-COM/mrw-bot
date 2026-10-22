@@ -2,7 +2,7 @@
 title: نظام بلاغات المخالفات العسكرية
 emoji: 🛡️
 colorFrom: blue
-colorTo: navy
+colorTo: indigo
 sdk: gradio
 app_file: space_app.py
 hardware: zero-a10g

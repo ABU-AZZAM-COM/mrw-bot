@@ -1,0 +1,34 @@
+TargetPath      : C:\Users\AZZAM\AppData\Local\ABDownloadManager\ABDownloadManager.exe
+Arguments       : 
+WorkingDir      : C:\Users\AZZAM\AppData\Local\ABDownloadManager
+IconLocation    : ,0
+Description     : 
+WindowStyle     : 1
+
+=== Target exists? ===
+True
+=== WorkingDir exists? ===
+True
+=== Icon file exists? ===
+(uses default from exe)
+
+=== FileInfo ===
+
+[32;1mFullName      : [0mC:\Users\AZZAM\AppData\Local\ABDownloadManager\ABDownloadManager.exe
+[32;1mLength        : [0m553984
+[32;1mVersionInfo   : [0mFile:             C:\Users\AZZAM\AppData\Local\ABDownloadManager\ABDownloadManager.exe
+                InternalName:     ABDownloadManager.exe
+                OriginalFilename: ABDownloadManager.exe
+                FileVersion:      1.11.1
+                FileDescription:  ABDownloadManager
+                Product:          ABDownloadManager
+                ProductVersion:   1.11.1
+                Debug:            False
+                Patched:          False
+                PreRelease:       False
+                PrivateBuild:     False
+                SpecialBuild:     False
+                Language:         ¥ïŸ§ï  Ÿéë« ¡ ééä¡
+                
+[32;1mLastWriteTime : [0m03/05/48 04:32:30 ­
+

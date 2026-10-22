@@ -129,37 +129,38 @@ def main() -> int:
         print("   ✅ بطاقة المساحة (README.md)")
 
     # 4) ضبط الأسرار والمتغيرات
-    secrets: list[dict[str, str]] = []
-    variables: list[dict[str, str]] = [
-        {"key": "SAVE_MEDIA_LOCALLY", "value": "0"},
-        {"key": "BACKUP_INTERVAL_MIN", "value": "30"},
-        {"key": "KEEPALIVE_INTERVAL_SEC", "value": "300"},
-        {"key": "LOCAL_UTC_OFFSET", "value": "3"},
-        {"key": "BOT_USERNAME", "value": args.bot_username},
-    ]
+    # ملاحظة: نستخدم الدوال المخصّصة (add_space_secret / add_space_variable)
+    # لأن تمريرها داخل create_repo لا يُطبَّق على المساحات المُنشأة مسبقًا.
+    secrets: dict[str, str] = {}
+    variables: dict[str, str] = {
+        "SAVE_MEDIA_LOCALLY": "0",
+        "BACKUP_INTERVAL_MIN": "30",
+        "KEEPALIVE_INTERVAL_SEC": "300",
+        "LOCAL_UTC_OFFSET": "3",
+        "BOT_USERNAME": args.bot_username,
+    }
     if args.bot_token:
-        secrets.append({"key": "BOT_TOKEN", "value": args.bot_token})
+        secrets["BOT_TOKEN"] = args.bot_token
     if args.admin_ids:
-        secrets.append({"key": "ADMIN_IDS", "value": args.admin_ids})
+        secrets["ADMIN_IDS"] = args.admin_ids
     if args.archive_chat_id:
-        secrets.append({"key": "ARCHIVE_CHAT_ID", "value": args.archive_chat_id})
+        secrets["ARCHIVE_CHAT_ID"] = args.archive_chat_id
     if args.keepalive_url:
-        variables.append({"key": "KEEPALIVE_URL", "value": args.keepalive_url})
+        variables["KEEPALIVE_URL"] = args.keepalive_url
 
     if secrets or variables:
         print("▶ ضبط الأسرار والمتغيرات …")
-        api.create_repo(
-            repo_id=args.space,
-            repo_type="space",
-            space_sdk="gradio",
-            space_hardware=SpaceHardware.ZERO_A10G,
-            private=True,
-            exist_ok=True,
-            space_secrets=secrets,
-            space_variables=variables,
-        )
-        print(f"   ✅ أسرار: {[s['key'] for s in secrets]}")
-        print(f"   ✅ متغيرات: {[v['key'] for v in variables]}")
+        for key, value in secrets.items():
+            api.add_space_secret(repo_id=args.space, key=key, value=value)
+            print(f"   🔒 سر: {key}")
+        for key, value in variables.items():
+            api.add_space_variable(repo_id=args.space, key=key, value=value)
+            print(f"   ⚙️ متغير: {key}")
+        # تأكيد ما استُقبل فعلًا
+        stored_secrets = list(api.get_space_secrets(args.space).keys())
+        stored_variables = list(api.get_space_variables(args.space).keys())
+        print(f"   ✅ الأسرار المخزّنة: {stored_secrets}")
+        print(f"   ✅ المتغيرات المخزّنة: {stored_variables}")
 
     url = f"https://{args.space.replace('/', '-')}.hf.space"
     print("\n🎉 اكتمل النشر بنجاح")

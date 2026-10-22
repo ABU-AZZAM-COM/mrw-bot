@@ -1,0 +1,5 @@
+  File "<string>", line 1
+    from huggingface_hub import HfApi; from huggingface_hub._space_api import SpaceHardware; a=HfApi(token='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'); r=a.request_space_hardware('azzam1992/mrw-bot', SpaceHardware.CPU_BASIC); print('OK -, r.stage, r.hardware)
+                                                                                                                                                                                                                                     ^
+SyntaxError: unterminated string literal (detected at line 1)
+
