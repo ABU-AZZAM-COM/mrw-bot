@@ -1,0 +1,40 @@
+# ============================================================
+#  quality.yml — بوابة الجودة: لا يُدمج كسر ولا نص مشوّه
+# ============================================================
+#  يعمل تلقائيًا عند كل رفع (push) ويشغّل:
+#    1) الاختبار الذاتي للنظام (_selftest.py)
+#    2) فحص سلامة النصوص العربية (check_integrity.py)
+#
+#  هذا يمنع عودة أخطاء مثل: حروف صينية داخل النص العربي، أو محارف تالفة،
+#  أو كسر في قاعدة البيانات/المصدّرات/طبقة الأرشفة.
+# ============================================================
+name: quality
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: فحص الجودة
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: جلب الكود
+        uses: actions/checkout@v4
+
+      - name: تهيئة بايثون
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: تثبيت المتطلبات
+        run: pip install -r requirements.txt
+
+      - name: الاختبار الذاتي
+        run: python _selftest.py
+
+      - name: فحص سلامة النصوص العربية
+        run: python check_integrity.py
