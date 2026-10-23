@@ -1,11 +1,23 @@
 """
-معالجات المستخدم العادي: ترحيب، استقبال عناصر البلاغ (صورة/رابط/وصف)، حفظ، وإشعار المشرفين.
+معالجات المستخدم العادي: قائمة رئيسية بأزرار مضمنة، استقبال بلاغ عبر التطبيق أو المحادثة،
+استقبال عناصر البلاغ (صورة/رابط/وصف)، حفظ، وإشعار المشرفين.
 
 مسار المحادثة (ConversationHandler)، أربع حالات:
   1) ASK_PHOTO : استقبال الصورة التوثيقية
   2) ASK_LINK  : استقبال رابط المنشور
   3) ASK_DESC  : استقبال وصف المخالفة
   4) CONFIRM   : تأكيد الحفظ النهائي
+
+استدعاءات الأزرار المضمنة للمستخدم (prefix usr:):
+  usr:menu     → القائمة الرئيسية
+  usr:report   → بدء بلاغ جديد (يفتح الصورة)
+  usr:app      → فتح تطبيق البلاغ (Mini App)
+  usr:status   → حالة بلاغي الأخير
+  usr:about    → عن النظام
+  usr:contact  → تواصل مع الإدارة
+  usr:type:X   → اختيار نوع المخالفة (في التطبيق)
+  usr:confirm  → تأكيد إرسال البلاغ
+  usr:cancel   → إلغاء العملية
 """
 from __future__ import annotations
 
@@ -14,9 +26,10 @@ import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
 
-from telegram import Update
+from telegram import InlineKeyboardButton, Update, WebAppInfo
 from telegram.constants import ParseMode
 from telegram.ext import (
+    CallbackQueryHandler,
     CommandHandler,
     ConversationHandler,
     ContextTypes,
@@ -31,7 +44,13 @@ import guards
 import texts
 import utils
 from database import Database
-from keyboards import cancel_kb, confirm_kb
+from keyboards import (
+    back_to_menu_kb,
+    cancel_kb,
+    confirm_report_kb,
+    main_menu_kb,
+    report_type_kb,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +60,9 @@ ASK_PHOTO, ASK_LINK, ASK_DESC, CONFIRM = range(4)
 # نصوص الأزرار (أنماط regex) لإلغاء العملية وتأكيد الحفظ
 CANCEL_RE = r"^\s*❌\s*إلغاء\s*$"
 CONFIRM_RE = r"^\s*✅\s*إرسال\s+البلاغ\s*$"
+
+# بادئة استدعاءات المستخدم (للتحقق السريع)
+USR_PREFIX = "usr:"
 
 # ==================================================================
 # طلبات التطبيق (Mini App): المستخدم الذي أرسل بياناته وينتظر الصورة
@@ -64,7 +86,7 @@ def _db(context: ContextTypes.DEFAULT_TYPE) -> Database:
 # نقطة الدخول: /start أو /report
 # ==================================================================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """الترحيب وبدء جمع عناصر البلاغ — مع تطبيق الحد اليومي لكل مبلّغ."""
+    """القائمة الرئيسية الاحترافية — كل التنقل بأزرار مضمنة، لا أوامر كتابية."""
     user = update.effective_user
     chat = update.effective_chat
     db = _db(context)
@@ -80,33 +102,27 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     # ------------------------------------------------------------------
-    # الحماية: حدود المعدّل (دقيقة/ساعة) + الإيقاف الطارئ + الحد اليومي
+    # الحماية: الإيقاف الطارئ فقط (المعدّل واليوميّ يُفحصان عند الضغط على "بلاغ جديد")
     # ------------------------------------------------------------------
-    verdict = await guards.check_rate_limits(db, user.id)
-    if verdict.blocked:
+    if await guards.is_emergency(db):
         await update.effective_message.reply_text(
-            verdict.message, parse_mode=ParseMode.HTML
+            texts.EMERGENCY_ON, parse_mode=ParseMode.HTML
         )
         return ConversationHandler.END
 
-    daily = await guards.check_daily_limit(db, user.id)
-    if daily.blocked:
-        await update.effective_message.reply_text(
-            daily.message, parse_mode=ParseMode.HTML
-        )
-        return ConversationHandler.END
+    await db.log_event(user.id, "start")
 
-    await db.log_event(user.id, "report")
-
-    # بداية نظيفة لكل بلاغ جديد
     context.user_data.clear()
     name = utils.esc(user.first_name or "زائر")
+    welcome = texts.WELCOME.format(name=name)
+    if config.MINI_APP_URL:
+        welcome = f"{welcome}\n\n{texts.WELCOME_APP_HINT}"
     await update.effective_message.reply_text(
-        texts.WELCOME.format(name=name),
+        welcome,
         parse_mode=ParseMode.HTML,
-        reply_markup=cancel_kb(),
+        reply_markup=main_menu_kb(),
     )
-    return ASK_PHOTO
+    return ConversationHandler.END
 
 
 # ==================================================================
@@ -241,7 +257,7 @@ async def receive_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         texts.SUMMARY.format(link=anchor, desc=utils.esc(text)),
         parse_mode=ParseMode.HTML,
-        reply_markup=confirm_kb(),
+        reply_markup=confirm_report_kb(),
     )
     return CONFIRM
 
@@ -271,6 +287,7 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo_file_id=ud.get("photo_file_id"),
             post_link=ud["post_link"],
             description=ud["description"],
+            violation_type=ud.get("violation_type"),
         )
     except Exception:
         logger.exception("فشل حفظ البلاغ للمستخدم %s", user.id)
@@ -613,6 +630,168 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==================================================================
+# معالج استدعاءات الأزرار المضمنة للمستخدم (usr:*)
+# ==================================================================
+async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    """يعالج كل ضغطة على زر مخصص للمستخدم في القائمة الرئيسية أو أثناء الإبلاغ."""
+    query = update.callback_query
+    db = _db(context)
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith(USR_PREFIX):
+        return
+    parts = data.split(":")
+
+    # --- القائمة الرئيسية ---
+    if parts[1] == "menu":
+        name = utils.esc(query.from_user.first_name or "زائر")
+        await query.edit_message_text(
+            texts.WELCOME.format(name=name) + "\n\n" + texts.MENU_HINT,
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    # --- بلاغ جديد ---
+    if parts[1] == "report":
+        verdict = await guards.check_rate_limits(db, query.from_user.id)
+        if verdict.blocked:
+            await query.edit_message_text(
+                verdict.message, parse_mode=ParseMode.HTML,
+                reply_markup=back_to_menu_kb(),
+            )
+            return
+        daily = await guards.check_daily_limit(db, query.from_user.id)
+        if daily.blocked:
+            await query.edit_message_text(
+                daily.message, parse_mode=ParseMode.HTML,
+                reply_markup=back_to_menu_kb(),
+            )
+            return
+
+        await db.log_event(query.from_user.id, "report")
+        context.user_data.clear()
+        # الخطوة الأولى: نوع المخالفة (اختياري) ثم الصورة
+        await query.edit_message_text(
+            texts.ASK_TYPE, parse_mode=ParseMode.HTML, reply_markup=report_type_kb()
+        )
+        return ASK_PHOTO
+
+    # --- فتح التطبيق ---
+    if parts[1] == "app":
+        if not config.MINI_APP_URL:
+            await query.edit_message_text(
+                texts.APP_NOT_READY, parse_mode=ParseMode.HTML,
+                reply_markup=back_to_menu_kb(),
+            )
+            return ConversationHandler.END
+        await query.edit_message_text(
+            texts.APP_INTRO, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    text="🚀 فتح تطبيق البلاغ",
+                    web_app=WebAppInfo(url=config.MINI_APP_URL),
+                )],
+                [InlineKeyboardButton(
+                    text="🏠 العودة للقائمة الرئيسية", callback_data=f"{USR_PREFIX}menu",
+                )],
+            ]),
+        )
+        return ConversationHandler.END
+
+    # --- حالة بلاغي ---
+    if parts[1] == "status":
+        last = await db.last_report_by_user(query.from_user.id)
+        if not last:
+            await query.edit_message_text(
+                texts.NO_REPORTS_YET, parse_mode=ParseMode.HTML,
+                reply_markup=back_to_menu_kb(),
+            )
+            return ConversationHandler.END
+        await query.edit_message_text(
+            texts.MY_REPORT.format(
+                seq=last["seq"],
+                time=utils.fmt_local(last["created_at"]),
+                status=texts.badge(last["status"]),
+                desc=utils.esc(utils.trunc(last["description"], 200)),
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_to_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    # --- عن النظام ---
+    if parts[1] == "about":
+        await query.edit_message_text(
+            texts.ABOUT_SYSTEM, parse_mode=ParseMode.HTML,
+            reply_markup=back_to_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    # --- تواصل مع الإدارة ---
+    if parts[1] == "contact":
+        await query.edit_message_text(
+            texts.CONTACT_ADMIN.format(admin_id=config.ADMIN_IDS[0] if config.ADMIN_IDS else "—"),
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_to_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    # --- اختيار نوع المخالفة ---
+    if parts[1] == "type" and len(parts) > 2:
+        vtype = ":".join(parts[2:])
+        context.user_data["violation_type"] = vtype
+        await query.edit_message_text(
+            texts.TYPE_SELECTED.format(vtype=utils.esc(vtype))
+            + "\n\n" + texts.ASK_PHOTO,
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_kb(),
+        )
+        return ASK_PHOTO
+
+    # --- تأكيد الإرسال ---
+    if parts[1] == "confirm":
+        draft = context.user_data.get("app_draft")
+        if draft:
+            return await confirm_save_from_draft(update, context, db)
+        # التدفق العادي (محادثة الصورة/الرابط/الوصف) — تحميل الحفظ النهائي
+        return await confirm_save(update, context)
+
+    # --- إلغاء ---
+    if parts[1] == "cancel":
+        context.user_data.clear()
+        _pending_app_users.discard(query.from_user.id)
+        await query.edit_message_text(
+            texts.CANCELLED, parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    logger.warning("استدعاء مستخدم غير معروف: %s", data)
+
+
+async def confirm_save_from_draft(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database) -> None:
+    """حفظ بلاغ من مسودة التطبيق بعد الضغط على زر تأكيد الإرسال."""
+    query = update.callback_query
+    user = query.from_user
+    ud = context.user_data
+    draft = ud.pop("app_draft", None)
+    _pending_app_users.discard(user.id)
+
+    if not draft:
+        await query.answer("لا توجد مسودة صالحة", show_alert=True)
+        return
+
+    # نطلب الصورة لأن التطبيق لا يستطيع رفع الصور مباشرة عبر web_app_data
+    ud["app_draft"] = draft  # إعادة المسودة إلى السياق حتى يقرأها معالج الصورة
+    _pending_app_users.add(user.id)
+    await query.edit_message_text(
+        texts.APP_SEND_PHOTO, parse_mode=ParseMode.HTML
+    )
+
+
+# ==================================================================
 # رسائل خارج المحادثة / خارج السياق المتوقع
 # ==================================================================
 async def welcome_hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -659,7 +838,11 @@ def _stamp_name() -> str:
 
 def build_conversation() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler(["start", "report"], cmd_start)],
+        entry_points=[
+            CommandHandler(["start", "report"], cmd_start),
+            # القائمة الرئيسية تعمل بأزرار مضمنة من أول رسالة
+            CallbackQueryHandler(on_user_callback, pattern=r"^usr:"),
+        ],
         states={
             ASK_PHOTO: [
                 MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
@@ -690,6 +873,8 @@ def build_conversation() -> ConversationHandler:
             CommandHandler(["start", "report"], cmd_start),
             CommandHandler(["admin", "reports"], exit_to_admin),
             CommandHandler("app", cmd_app),
+            # الأزرار المضمنة للمستخدم تعمل حتى داخل المحادثة النشطة
+            CallbackQueryHandler(on_user_callback, pattern=r"^usr:"),
             # ملاحظة: نستثني الأوامر من المصيدة الشاملة حتى لا تبتلع
             # أوامر المشرف (/panic /resume /audit) والأوامر الأخرى.
             MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),

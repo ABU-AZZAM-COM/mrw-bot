@@ -227,6 +227,18 @@ class Database:
     async def get_by_seq(self, seq: str) -> Optional[dict[str, Any]]:
         return await asyncio.to_thread(self._get_by_seq, seq)
 
+    def _last_report_by_user(self, user_id: int) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM reports WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+
+    async def last_report_by_user(self, user_id: int) -> Optional[dict[str, Any]]:
+        """آخر بلاغ لمبلّغ معيّن — لشاشة «حالة بلاغي»."""
+        return await asyncio.to_thread(self._last_report_by_user, user_id)
+
     def _list_reports(self, status: str | None, page: int, size: int) -> tuple[list[dict], int]:
         with self._lock:
             where, params = "", []

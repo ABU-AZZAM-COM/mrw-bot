@@ -66,10 +66,10 @@ txt = exporters.export_text(asyncio.run(DB.all_reports()), out_dir=exports)
 assert xlsx.exists() and txt.exists() and xlsx.stat().st_size > 4000 and txt.stat().st_size > 500
 print("exporters OK:", xlsx.name, "|", txt.name)
 
-# فحص الترحيب/العرض (نصوص جاهزة)
+# فحص الترحيب/العرض (نصوص جاهزة) — الترحيب الآن يقود لقائمة الأزرار
 w = texts.WELCOME.format(name="أحمد")
 v = texts.badge("قيد المراجعة")
-assert "الخطوة 1 من 3" in w and v == "🟠 قيد المراجعة"
+assert "إرسال بلاغ جديد" in w and "فتح تطبيق البلاغ" in w and v == "🟠 قيد المراجعة"
 print("texts OK")
 
 # ------------------------------------------------------------------

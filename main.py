@@ -40,6 +40,9 @@ from telegram.ext import (
 
 logger = logging.getLogger(__name__)
 
+# كائن تطبيق البوت (يُضبط في main) — يستخدمه مسار التطبيق في space_app
+app = None
+
 
 # ==================================================================
 # إعداد السجلات: شاشة + ملف دوّار logs/bot.log
@@ -67,6 +70,13 @@ def setup_logging() -> None:
 # ما بعد التهيئة: ضبط قائمة أوامر البوت في تلغرام
 # ==================================================================
 async def post_init(app) -> None:
+    # نحتفظ بحلقة البوت الحالية: مسار التطبيق الخادمي (/api/app-data) يحتاجها
+    # لحقن التحديث في قائمة المعالجة من خيط خادم الويب (خيط آخر).
+    try:
+        app.bot_data["loop"] = asyncio.get_running_loop()
+    except RuntimeError:  # pragma: no cover
+        pass
+
     base_commands = [
         BotCommand("start", "بدء إرسال بلاغ جديد"),
         BotCommand("cancel", "إلغاء العملية الحالية"),
@@ -149,6 +159,8 @@ async def post_shutdown(app) -> None:
 # التشغيل
 # ==================================================================
 def main() -> None:
+    global app  # يُتاح لخادم التطبيق (space_app) لحقن بيانات الـ Mini App
+
     setup_logging()
     logger.info("🚀 تشغيل نظام استقبال بلاغات المخالفات العسكرية …")
 
@@ -186,10 +198,7 @@ def main() -> None:
     # قاعدة البيانات متاحة لكل المعالجات عبر context.bot_data["db"]
     app.bot_data["db"] = db
 
-    # 1) محادثة إدخال البلاغ (أولوية أولى عند نشاطها)
-    app.add_handler(handlers.build_conversation())
-
-    # 1-ب) بيانات التطبيق (Mini App) ثم الصورة — قبل المحادثة حتى لا يبتلعها
+    # 1) بيانات التطبيق (Mini App) ثم الصورة — تُسجَّل قبل المحادثة حتى لا تبتلعها
     app.add_handler(
         MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handlers.app_data_received)
     )
@@ -200,6 +209,9 @@ def main() -> None:
             handlers.app_photo_received,
         )
     )
+
+    # 1-ب) محادثة إدخال البلاغ العادية
+    app.add_handler(handlers.build_conversation())
 
     # 1-ج) أمر /app لفتح التطبيق
     app.add_handler(CommandHandler("app", handlers.cmd_app))

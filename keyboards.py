@@ -6,6 +6,7 @@ from __future__ import annotations
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     ReplyKeyboardMarkup,
     WebAppInfo,
 )
@@ -36,6 +37,9 @@ STATUS_CODE_TO_NAME = {
     "approved": STATUS_APPROVED,
     "rejected": STATUS_REJECTED,
 }
+
+# بادئة استدعاءات المستخدم العادي (لتمييزها عن أزرار المشرف adm:)
+USR_PREFIX = "usr:"
 
 # نص زر الحالة: رمز تعبيري + اسم الحالة
 STATUS_LABELS = {
@@ -86,16 +90,79 @@ def confirm_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def app_kb() -> InlineKeyboardMarkup | None:
-    """زر فتح تطبيق البلاغ (Mini App) — يظهر فقط بعد ضبط رابط التطبيق."""
+def app_kb() -> ReplyKeyboardMarkup | None:
+    """زر فتح تطبيق البلاغ (Mini App) — في **لوحة الرد** أسفل المحادثة.
+
+    قاعدة تيليغرام الحاسمة (من توثيقها الرسمي):
+        sendData(...) — «This method is only available for Mini Apps
+        launched via a Keyboard button.»
+
+    أي أن التطبيق يستطيع إرجاع البيانات إلى البوت **فقط** إذا فُتح من
+    KeyboardButton (لوحة الرد). أما الأزرار داخل الرسائل (Inline) أو
+    زر القائمة (☰) فتُفتح التطبيق لكنها لا تسمح بإرسال البيانات،
+    فيصل المستخدم إلى طريق مسدود.
+
+    لهذا السبب صار الزر هنا، مع بقاء المسار الخادمي الموثّق
+    (/api/app-data) احتياطًا يعمل من أي طريقة فتح.
+    """
     if not config.MINI_APP_URL:
         return None
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(
-            text=APP_BUTTON_TEXT,
-            web_app=WebAppInfo(url=config.MINI_APP_URL),
-        )]]
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(text=APP_BUTTON_TEXT, web_app=WebAppInfo(url=config.MINI_APP_URL))]],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="✏️ اكتب هنا… أو اضغط زر التطبيق 🚀",
     )
+
+
+# ==================================================================
+# لوحات المستخدم العادي — أزرار مضمنة (بدون أوامر كتابية في المحادثة)
+# ==================================================================
+
+def main_menu_kb() -> InlineKeyboardMarkup:
+    """القائمة الرئيسية الاحترافية: كل شيء بأزرار مضمنة، لا أوامر كتابية."""
+    return InlineKeyboardMarkup([
+        [_cb("📝 إرسال بلاغ جديد", f"{USR_PREFIX}report")],
+        [
+            _cb("🚀 فتح تطبيق البلاغ", f"{USR_PREFIX}app"),
+            _cb("📊 حالة بلاغي", f"{USR_PREFIX}status"),
+        ],
+        [
+            _cb("ℹ️ عن النظام", f"{USR_PREFIX}about"),
+            _cb("📞 تواصل مع الإدارة", f"{USR_PREFIX}contact"),
+        ],
+    ])
+
+
+def report_type_kb() -> InlineKeyboardMarkup:
+    """أزرار أنواع المخالفات للاختيار السريع (صفان في كل صف)."""
+    rows = []
+    for i in range(0, len(config.VIOLATION_TYPES), 2):
+        row = []
+        for j in range(2):
+            if i + j < len(config.VIOLATION_TYPES):
+                vtype = config.VIOLATION_TYPES[i + j]
+                row.append(_cb(f"📌 {vtype}", f"{USR_PREFIX}type:{vtype}"))
+        rows.append(row)
+    rows.append([_cb("❌ إلغاء", f"{USR_PREFIX}cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def confirm_report_kb() -> InlineKeyboardMarkup:
+    """أزرار تأكيد الإرسال النهائي أو الإلغاء."""
+    return InlineKeyboardMarkup([
+        [
+            _cb("✅ إرسال البلاغ", f"{USR_PREFIX}confirm"),
+            _cb("❌ إلغاء", f"{USR_PREFIX}cancel"),
+        ],
+    ])
+
+
+def back_to_menu_kb() -> InlineKeyboardMarkup:
+    """زر العودة للقائمة الرئيسية من أي شاشة."""
+    return InlineKeyboardMarkup([
+        [_cb("🏠 العودة للقائمة الرئيسية", f"{USR_PREFIX}menu")],
+    ])
 
 
 # ------------------------------------------------------------------

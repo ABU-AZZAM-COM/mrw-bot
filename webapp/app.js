@@ -236,31 +236,80 @@
     };
   }
 
-  function send() {
-    var data = JSON.stringify(payload());
+  // المسار الآمن للخادم: يعمل من أي طريقة فتح (زر القائمة ☰ · زر لوحة الرد · رابط مباشر).
+  // الخادم يتحقق من توقيع تيليغرام (initData) فلا يُقبل طلب مزوّر.
+  function postToServer(p) {
+    var initData = (tg && tg.initData) || "";
+    if (!initData) { return Promise.resolve({ ok: false, error: "no_init_data" }); }
+    return fetch("/api/app-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ init_data: initData, payload: p })
+    }).then(function (r) {
+      return r.json().catch(function () { return { ok: false }; });
+    }).catch(function () {
+      return { ok: false, error: "network" };
+    });
+  }
 
-    if (tg && tg.sendData) {
-      // الحد الرسمي لبيانات التطبيق: 4096 بايت
-      if (data.length > 4000) {
-        state.desc = state.desc.slice(0, 600);
-        data = JSON.stringify(payload());
-      }
-      tg.sendData(data);
-      $("done-title").textContent = "تم الإرسال ✅";
-      $("done-body").textContent = "ارجع إلى المحادثة: سيطلب منك البوت إرسال الصورة ثم يعطيك رقم البلاغ.";
-      go("done");
-      return;
+  function showDone(title, body, closeAfter) {
+    $("done-title").textContent = title;
+    $("done-body").textContent = body;
+    go("done");
+    if (closeAfter) {
+      setTimeout(function () {
+        try { if (tg && tg.close) { tg.close(); } } catch (e) { /* تجاهل */ }
+      }, closeAfter);
+    }
+  }
+
+  function send() {
+    var p = payload();
+    var data = JSON.stringify(p);
+
+    // الحد الرسمي لبيانات التطبيق: 4096 بايت
+    if (data.length > 4000) {
+      state.desc = state.desc.slice(0, 600);
+      p = payload();
+      data = JSON.stringify(p);
     }
 
-    // وضع التطبيق المستقل: نستخدم مشاركة تيليغرام
-    var text = "بلاغ جديد عبر التطبيق:\n" + data;
-    var bot = (tg && tg.initDataUnsafe && tg.initDataUnsafe.bot_username) || "blgh_bot";
-    var url = "https://t.me/share/url?url=" + encodeURIComponent("https://t.me/" + bot) +
-              "&text=" + encodeURIComponent(text);
-    window.open(url, "_blank");
-    $("done-title").textContent = "تم فتح تيليغرام";
-    $("done-body").textContent = "أرسل الرسالة إلى @blgh_bot ثم أرسل الصورة، وسيصلك رقم البلاغ.";
-    go("done");
+    status("جارٍ الإرسال…");
+    postToServer(p).then(function (res) {
+      if (res && res.ok) {
+        showDone(
+          "تم الإرسال ✅",
+          "ارجع إلى المحادثة: سيطلب منك البوت إرسال الصورة ثم يعطيك رقم البلاغ.",
+          1400
+        );
+        return;
+      }
+
+      // احتياطي: الإرسال الأصلي عبر تيليغرام (يعمل عند الفتح من زر لوحة الرد)
+      if (tg && tg.sendData) {
+        try {
+          tg.sendData(data);
+          showDone(
+            "تم الإرسال ✅",
+            "ارجع إلى المحادثة: سيطلب منك البوت إرسال الصورة ثم يعطيك رقم البلاغ.",
+            0
+          );
+          return;
+        } catch (e) { /* نكمل إلى الخيار الأخير */ }
+      }
+
+      // وضع التطبيق المستقل (بلا تيليغرام): مشاركة عبر رابط تيليغرام
+      var text = "بلاغ جديد عبر التطبيق:\n" + data;
+      var bot = (tg && tg.initDataUnsafe && tg.initDataUnsafe.bot_username) || "blgh_bot";
+      var url = "https://t.me/share/url?url=" + encodeURIComponent("https://t.me/" + bot) +
+                "&text=" + encodeURIComponent(text);
+      window.open(url, "_blank");
+      showDone(
+        "تم فتح تيليغرام",
+        "أرسل الرسالة إلى @blgh_bot ثم أرسل الصورة، وسيصلك رقم البلاغ.",
+        0
+      );
+    });
   }
 
   /* ---------- التهيئة ---------- */
