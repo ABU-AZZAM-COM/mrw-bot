@@ -45,6 +45,9 @@ from keyboards import (
 logger = logging.getLogger(__name__)
 PAGE_SIZE = 5  # عدد البلاغات في صفحة واحدة داخل القائمة
 
+# آخر حالة أُرسل إشعار عنها لكل بلاغ (لتجنب تكرار الإشعار على نفس الحالة)
+_notified_status: dict[int, str] = {}
+
 
 # ==================================================================
 # أوامر المشرف: الإيقاف الطارئ + سجل التدقيق
@@ -242,6 +245,55 @@ async def _show_report(update: Update, context: ContextTypes.DEFAULT_TYPE, db: D
 
 
 # ==================================================================
+# إشعار المبلّغ بتغيّر حالة بلاغه
+# ==================================================================
+async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
+                           new_status: str) -> None:
+    """يخبر صاحب البلاغ بتغيّر حالته من لوحة المشرف.
+
+    • الإشعار يُرسل مرة واحدة لكل حالة مختلفة (لا يُعاد لنفس الحالة).
+    • إذا حجب المستخدم البوت أو حذف المحادثة، يفشل الإرسال بهدوء
+      (لا يؤثر على تغيير الحالة ولا يصل الخطأ إلى معالج الأخطاء).
+    """
+    r = await _db(context).get_by_id(rid)
+    if not r or not r.get("user_id"):
+        return
+
+    uid = int(r["user_id"])
+    previous = _notified_status.get(rid)
+    if previous == new_status:
+        logger.debug("إشعار البلاغ %s مكرر لنفس الحالة (%s) — تخطٍ", rid, new_status)
+        return
+
+    CODE_TO_KEY = {
+        STATUS_NEW: "new",
+        STATUS_REVIEW: "review",
+        STATUS_APPROVED: "approved",
+        STATUS_REJECTED: "rejected",
+    }
+    key = CODE_TO_KEY.get(new_status)
+    if key is None:
+        logger.debug("حالة غير معروفة في الإشعار: %s", new_status)
+        return
+
+    reviewed_at = r.get("reviewed_at") or utils.utc_now_iso()
+    text = texts.STATUS_UPDATE_NOTIF.format(
+        seq=r["seq"],
+        status=texts.badge(new_status),
+        time=utils.fmt_local(reviewed_at),
+        note=texts.STATUS_FINAL_LINES.get(key, ""),
+    )
+    try:
+        await context.bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.HTML)
+    except Exception as exc:  # noqa: BLE001 — خطأ إرسال لا يوقف العمل
+        logger.warning("لم يُرسل إشعار الحالة للمستخدم %s (ربما حجب البوت): %s", uid, exc)
+        return
+    # نجاح الإرسال فقط يُسجّل لتجنب إعادة الإشعار لنفس الحالة
+    _notified_status[rid] = new_status
+    logger.info("🔔 إشعار الحالة (%s) أُرسل للبلاغ %s", new_status, rid)
+
+
+# ==================================================================
 # تحديث شاشة العرض بعد تغيير الحالة
 # ==================================================================
 async def _refresh_view(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database,
@@ -344,12 +396,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await query.answer(texts.RULE_NOT_KNOWN, show_alert=True)
             return
         rid, code = int(parts[2]), parts[3]
-        ok = await db.update_status(rid, STATUS_CODES[code], update.effective_user.id)
+        new_status = STATUS_CODES[code]
+        ok = await db.update_status(rid, new_status, update.effective_user.id)
         if not ok:
             await query.answer(texts.REPORT_NOT_FOUND, show_alert=True)
             return
         logger.info("المشرف %s غيّر حالة البلاغ %s إلى %s",
-                    update.effective_user.id, rid, STATUS_CODES[code])
+                    update.effective_user.id, rid, new_status)
+        await _notify_reporter(context, rid, new_status)
         await query.answer("✅ تم تحديث الحالة", show_alert=False)
         await _refresh_view(update, context, db, rid)
 
