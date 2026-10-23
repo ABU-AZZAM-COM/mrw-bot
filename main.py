@@ -224,8 +224,10 @@ def main() -> None:
         MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handlers.welcome_hint)
     )
 
-    # 4) أداة الإعداد: /chatid (تعمل في أي محادثة — خاصة أو قناة)
+    # 4) أداة الإعداد + دليل الاستخدام + حالة بلاغاتي
     app.add_handler(CommandHandler("chatid", handlers.cmd_chatid))
+    app.add_handler(CommandHandler(["help", "start"], handlers.cmd_help))
+    app.add_handler(CommandHandler("status", handlers.cmd_status))
 
     # 5) معالج الأخطاء العام
     app.add_error_handler(handlers.error_handler)

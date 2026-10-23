@@ -1,0 +1,32 @@
+{
+  "session_id": "2026-10-23-restore-point",
+  "saved_at": "2026-10-23T08:52:24+03:00",
+  "workspace": "D:\\Users\\AZZAM\\Desktop\\مشروع المخالفات العسكرية",
+  "project": "mrw-bot / @blgh_bot",
+  "status": {
+    "hf_space": "azzam1992/mrw-bot",
+    "hf_state": "RUNNING",
+    "hardware": "zero-a10g",
+    "public": true,
+    "health": "ok",
+    "mini_app": "https://azzam1992-mrw-bot.hf.space/",
+    "bot": "@blgh_bot",
+    "polling": true,
+    "pending_updates": 0,
+    "webhook_url": ""
+  },
+  "local_changes_uncommitted": true,
+  "key_files_modified": ["handlers.py", "keyboards.py", "main.py", "space_app.py", "texts.py", "webapp/app.js"],
+  "stability": {
+    "published": "stable (pre-inline-menu)",
+    "local": "draft with 4 known bugs (not published)"
+  },
+  "known_bugs_local": [
+    {"file": "texts.py", "issue": "missing ASK_PHOTO"},
+    {"file": "database.py", "issue": "missing last_report_by_user"},
+    {"file": "handlers.py", "issue": "missing InlineKeyboardMarkup import"},
+    {"file": "handlers.py/main.py", "issue": "usr:report not entry point in ConversationHandler"}
+  ],
+  "docs": ["جلسة_العمل.md", "تعريف_النظام.md", "آلية_العمل.md", "README.md"],
+  "next_step": "awaiting user approval: fix 4 bugs OR redesign UI as requested"
+}

@@ -1,0 +1,159 @@
+2026-10-22 20:48:50,727 | INFO    | 🚀 تشغيل نظام استقبال بلاغات المخالفات العسكرية …
+2026-10-22 20:48:51,150 | ERROR   | Network Retry Loop (Bootstrap Initialize Application): Invalid token. Aborting retry loop.
+Traceback (most recent call last):
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 865, in initialize
+    await self.get_me()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 2040, in get_me
+    return await super().get_me(
+           ^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 1005, in get_me
+    result = await self._post(
+             ^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 712, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 378, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 741, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.InvalidToken: Unauthorized
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_utils\networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_utils\networkloop.py", line 136, in do_action
+    await action_cb()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_application.py", line 489, in initialize
+    await self.bot.initialize()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 324, in initialize
+    await super().initialize()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 868, in initialize
+    raise InvalidToken(f"The token `{self._token}` was rejected by the server.") from exc
+telegram.error.InvalidToken: The token `123456:TEST` was rejected by the server.
+2026-10-22 20:48:51,164 | INFO    | 🛑 تم إيقاف البوت وإغلاق قاعدة البيانات.
+2026-10-22 20:48:51,165 | ERROR   | توقف البوت داخل المساحة السحابية
+Traceback (most recent call last):
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 865, in initialize
+    await self.get_me()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 2040, in get_me
+    return await super().get_me(
+           ^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 1005, in get_me
+    result = await self._post(
+             ^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 712, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 378, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 741, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\request\_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.InvalidToken: Unauthorized
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\space_app.py", line 80, in _run_bot
+    bot_main.main()
+    ~~~~~~~~~~~~~^^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\main.py", line 251, in main
+    app.run_polling(
+    ~~~~~~~~~~~~~~~^
+        allowed_updates=Update.ALL_TYPES,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        drop_pending_updates=False,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        stop_signals=(),
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_application.py", line 839, in run_polling
+    return self.__run(
+           ~~~~~~~~~~^
+        updater_coroutine=self.updater.start_polling(
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<9 lines>...
+        close_loop=close_loop,
+        ^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_application.py", line 1054, in __run
+    loop.run_until_complete(self._bootstrap_initialize(max_retries=bootstrap_retries))
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python314\Lib\asyncio\base_events.py", line 720, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_application.py", line 1014, in _bootstrap_initialize
+    await network_retry_loop(
+    ...<4 lines>...
+    )
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_utils\networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_utils\networkloop.py", line 136, in do_action
+    await action_cb()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_application.py", line 489, in initialize
+    await self.bot.initialize()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\ext\_extbot.py", line 324, in initialize
+    await super().initialize()
+  File "D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\telegram\_bot.py", line 868, in initialize
+    raise InvalidToken(f"The token `{self._token}` was rejected by the server.") from exc
+telegram.error.InvalidToken: The token `123456:TEST` was rejected by the server.
+D:\Users\AZZAM\Desktop\مشروع المخالفات العسكرية\.venv\Lib\site-packages\spaces\zero\config.py:33: UserWarning: Error while reading infos from Nvidia driver FS
+  warnings.warn("Error while reading infos from Nvidia driver FS")
+2026-10-22 20:48:52,763 | INFO    | 🚀 تشغيل خادم الويب على المنفذ 7879
+2026-10-22 20:48:52,764 | INFO    | 🧩 تطبيق البلاغ متاح على المسار /
+2026-10-22 20:49:08,245 | WARNING | رفض بيانات تطبيق: توقيع غير صحيح
+2026-10-22 20:49:08,277 | WARNING | رفض بيانات تطبيق: توقيع منتهي الصلاحية
+2026-10-22 20:49:08,307 | WARNING | البوت لم يُهيَّأ بعد — تعذر حقن بيانات التطبيق

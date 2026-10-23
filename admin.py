@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from keyboards import (
     admin_item_buttons,
     admin_list_buttons,
     admin_menu_buttons,
+    admin_reject_cancel_kb,
     admin_view_buttons,
     filter_label,
 )
@@ -207,7 +209,7 @@ async def _render_list(db: Database, code: str, page: int):
     )
     # ملاحظة: inline_keyboard في مكتبة تيليغرام أصبح tuple، لذا نحوّله إلى قائمة
     nav_rows = list(admin_list_buttons(code, page, pages).inline_keyboard)
-    markup_rows = admin_item_buttons(rows) + nav_rows
+    markup_rows = list(admin_item_buttons(rows)) + nav_rows
     return text, InlineKeyboardMarkup(markup_rows)
 
 
@@ -282,11 +284,16 @@ async def _show_report(update: Update, context: ContextTypes.DEFAULT_TYPE, db: D
 # ==================================================================
 # إشعار المبلّغ بتغيّر حالة بلاغه
 # ==================================================================
+# مدة صلاحية حافِر سبب الرفض (ثوانٍ) — يُلغى تلقائيًا بعدها حتى لا يَلتهم نصًّا لاحقًا
+REJECT_PROMPT_TTL = 600
+
+
 async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
-                           new_status: str) -> None:
+                           new_status: str, note_extra: str = "") -> None:
     """يخبر صاحب البلاغ بتغيّر حالته من لوحة المشرف.
 
-    • الإشعار يُرسل مرة واحدة لكل حالة مختلفة (لا يُعاد لنفس الحالة).
+    • الإشعار يُرسل مرة واحدة لكل حالة مختلفة (لا يُعاد لنفس الحالة)،
+      إلا الحالة المرفوضة مع سبب جديده — فالسبب لا يوصل إلا عبر هذه الرسالة.
     • إذا حجب المستخدم البوت أو حذف المحادثة، يفشل الإرسال بهدوء
       (لا يؤثر على تغيير الحالة ولا يصل الخطأ إلى معالج الأخطاء).
     """
@@ -296,7 +303,7 @@ async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
 
     uid = int(r["user_id"])
     previous = _notified_status.get(rid)
-    if previous == new_status:
+    if previous == new_status and not note_extra:
         logger.debug("إشعار البلاغ %s مكرر لنفس الحالة (%s) — تخطٍ", rid, new_status)
         return
 
@@ -316,7 +323,7 @@ async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
         seq=r["seq"],
         status=texts.badge(new_status),
         time=utils.fmt_local(reviewed_at),
-        note=texts.STATUS_FINAL_LINES.get(key, ""),
+        note=texts.STATUS_FINAL_LINES.get(key, "") + note_extra,
     )
     try:
         await context.bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.HTML)
@@ -339,14 +346,16 @@ async def _refresh_view(update: Update, context: ContextTypes.DEFAULT_TYPE, db: 
         return
     caption = _report_caption(r)
     markup = admin_view_buttons(rid)
+    # نوع الرسالة يُقرأ من الاستدعاء نفسه (إشعار/عرض/قائمة) — أكثر متانة من الأعلام المخزنة
+    is_photo = query.message is not None and bool(getattr(query.message, "photo", None))
     try:
-        if context.chat_data.get("adm_view_text_only"):
-            await query.edit_message_text(
-                caption, parse_mode=ParseMode.HTML, reply_markup=markup
-            )
-        else:
+        if is_photo:
             await query.edit_message_caption(
                 caption=caption, parse_mode=ParseMode.HTML, reply_markup=markup
+            )
+        else:
+            await query.edit_message_text(
+                caption, parse_mode=ParseMode.HTML, reply_markup=markup
             )
     except Exception:
         # تعديل الرسالة القديمة قد يفشل (جمود رسالة/حدود تلغرام) — لا يؤثر على الحفظ
@@ -397,7 +406,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "adm:noop":
         await query.answer()
         return
-    await query.answer()
+    # إيقاف مؤشر التحميل فورًا؛ والرسائل التوضيحية تُرسل على المحادثة (أمتن)
+    try:
+        await query.answer()
+    except Exception as exc:  # noqa: BLE001 — استدعاء عتيق أو مجاب مسبقًا
+        logger.debug("تعذّرت الإجابة الأولية على الاستدعاء: %s", exc)
 
     parts = data.split(":")  # adm:<operation>:<...>
     op = parts[1] if len(parts) > 1 else ""
@@ -449,6 +462,43 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text(
             texts.ADMIN_STATS.format(**s), parse_mode=ParseMode.HTML
         )
+
+    elif op == "rj":
+        # طلب سبب الرفض (إلزامي) — يدخل في حالة انتظار النص من المشرف
+        if len(parts) < 3 or not parts[2].isdigit():
+            return
+        rid = int(parts[2])
+        r = await db.get_by_id(rid)
+        if not r:
+            await query.answer(texts.REPORT_NOT_FOUND, show_alert=True)
+            return
+        # حفظ ببرمجة الحافِر (rid + timestamp) لاتخاذ نص السبب لاحقًا
+        context.chat_data["adm_reject_rid"] = rid
+        context.chat_data["adm_reject_at"] = time.time()
+        await query.edit_message_text(
+            texts.ADMIN_REJECT_ASK.format(seq=r["seq"]),
+            parse_mode=ParseMode.HTML,
+            reply_markup=admin_reject_cancel_kb(rid),
+        )
+
+    elif op == "rc":
+        # تراجع عن طلب سبب الرفض
+        if len(parts) < 3 or not parts[2].isdigit():
+            return
+        rid = int(parts[2])
+        if context.chat_data.get("adm_reject_rid") == rid:
+            context.chat_data.pop("adm_reject_rid", None)
+            context.chat_data.pop("adm_reject_at", None)
+            await query.edit_message_text(
+                texts.ADMIN_REJECT_CANCELLED,
+                parse_mode=ParseMode.HTML,
+                reply_markup=admin_view_buttons(rid),
+            )
+        else:
+            await query.edit_message_text(
+                texts.ADMIN_REJECT_CANCELLED,
+                parse_mode=ParseMode.HTML,
+            )
 
     elif op == "exp":
         if len(parts) < 3:

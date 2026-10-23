@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "D:\Users\AZZAM\Desktop\┘à╪┤╪▒┘ê╪╣ ╪د┘┘à╪«╪د┘┘╪د╪ز ╪د┘╪╣╪│┘â╪▒┘è╪ر\deploy\deploy_to_hf.py", line 36, in <module>
+    from huggingface_hub import HfApi
+ModuleNotFoundError: No module named 'huggingface_hub'

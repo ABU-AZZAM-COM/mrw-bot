@@ -134,10 +134,15 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def report_type_kb(types: Optional[list] = None) -> InlineKeyboardMarkup:
+def report_type_kb(
+    types: Optional[list] = None,
+    last_type: Optional[str] = None,
+) -> InlineKeyboardMarkup:
     """أزرار أنواع المخالفات للاختيار السريع (صفان في كل صف).
 
     إن مُرّرت قائمة فعلية (متجرّدة من إدارة اللوحة) فتُستعمل بدل الإعداد الافتراضي.
+    وعند وجود تصنيف استعمله المبلّغ سابقًا يُضاف زر اختصار له في ذيل القائمة —
+    نقرة واحدة بدل البحث في القائمة من جديد.
     """
     if types is None:
         types = list(config.VIOLATION_TYPES)
@@ -149,6 +154,10 @@ def report_type_kb(types: Optional[list] = None) -> InlineKeyboardMarkup:
                 vtype = types[i + j]
                 row.append(_cb(f"📌 {vtype}", f"{USR_PREFIX}type:{vtype}"))
         rows.append(row)
+    if last_type and last_type in types:
+        rows.append([
+            _cb(f"🔁 نفس تصنيفي السابق: {last_type}", f"{USR_PREFIX}type:{last_type}"),
+        ])
     rows.append([_cb("❌ إلغاء", f"{USR_PREFIX}cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -167,6 +176,24 @@ def back_to_menu_kb() -> InlineKeyboardMarkup:
     """زر الرجوع الوحيد الذي يبقى بعد تلاشي بقية الأزرار لإعادة إظهار القائمة."""
     return InlineKeyboardMarkup([
         [_cb("↩️ الرجوع للقائمة", f"{USR_PREFIX}menu")],
+    ])
+
+
+def my_reports_kb(items: list[dict]) -> InlineKeyboardMarkup:
+    """شاشة «بلاغاتي»: زر لكل بطاقة بلاغ (رمز الحالة + رقمه) ثم العودة للقائمة."""
+    rows = [
+        [_cb(f"{status_emoji(r['status'])} {r['seq']}", f"{USR_PREFIX}r:{r['id']}")]
+        for r in items
+    ]
+    rows.append([_cb("🏠 العودة إلى القائمة", f"{USR_PREFIX}menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def report_open_kb() -> InlineKeyboardMarkup:
+    """أزرار بطاقة بلاغ مفرد في «بلاغاتي»: عودة للقائمة أو للقائمة الرئيسية."""
+    return InlineKeyboardMarkup([
+        [_cb("⬅️ عودة إلى بلاغاتي", f"{USR_PREFIX}status")],
+        [_cb("🏠 القائمة الرئيسية", f"{USR_PREFIX}menu")],
     ])
 
 
@@ -234,3 +261,28 @@ def admin_view_buttons(rid: int) -> InlineKeyboardMarkup:
             [_cb("⬅️ رجوع للقائمة", "adm:back"), _cb("🏠 الرئيسية", "adm:menu")],
         ]
     )
+
+
+def admin_notify_buttons(rid: int) -> InlineKeyboardMarkup:
+    """أزرار القرار السريع على إشعار البلاغ الجديد لدى المشرف.
+
+    كل زر ينفَّذ آلية اللوحة نفسها (تغيير حالة موثّق بسجل التدقيق وإبلاغ المبلّغ):
+      ✅ اعتماد فوري / 🟠 إحالة للمراجعة → adm:s (موجود)؛
+      ❌ رفض بسبب → adm:rj (يطلب كتابة السبب أولًا)؛
+      ℹ️ التفاصيل → adm:v (افتح عرض بلاغ كامل).
+    """
+    return InlineKeyboardMarkup([
+        [
+            _cb("✅ اعتماد فوري", f"adm:s:{rid}:approved"),
+            _cb("🟠 إحالة للمراجعة", f"adm:s:{rid}:review"),
+        ],
+        [
+            _cb("❌ رفض بسبب", f"adm:rj:{rid}"),
+            _cb("ℹ️ التفاصيل", f"adm:v:{rid}"),
+        ],
+    ])
+
+
+def admin_reject_cancel_kb(rid: int) -> InlineKeyboardMarkup:
+    """زر التراجع عن كتابة سبب الرفض قبل إرساله."""
+    return InlineKeyboardMarkup([[_cb("🚫 إلغاء الرفض", f"adm:rc:{rid}")]])

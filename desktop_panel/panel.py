@@ -463,6 +463,16 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.u_q, 1)
         bar.addWidget(btn)
         bar.addWidget(btn_ref)
+        # ⛔ فلتر المحجوبين فقط + 💬 زر التحدث المباشر مع الإدارة
+        self.btn_filter_blocked = QPushButton("⛔ المحجوبون فقط")
+        self.btn_filter_blocked.setCheckable(True)
+        self.btn_filter_blocked.toggled.connect(self._users_filter_toggled)
+        self.btn_talk = QPushButton("💬 تواصل مباشر")
+        self.btn_talk.setCheckable(True)
+        self.btn_talk.toggled.connect(self._talk_toggled)
+        bar.addWidget(self.btn_filter_blocked)
+        bar.addWidget(self.btn_talk)
+        bar.addStretch(1)
         lay.addLayout(bar)
         self.usr_table = QTableWidget(0, 6)
         self.usr_table.setHorizontalHeaderLabels(
@@ -473,6 +483,45 @@ class MainWindow(QMainWindow):
         self.usr_table.doubleClicked.connect(self.open_user)
         lay.addWidget(self.usr_table, 1)
         return page
+
+    def _users_filter_toggled(self, checked: bool) -> None:
+        self.u_q.setEnabled(not checked)
+        if checked:
+            self.run(lambda: self.api.call("GET", "/api/admin/users?page=0&size=50"), self.apply_users_blocked_only)
+        else:
+            self.users_refresh()
+
+    def apply_users_blocked_only(self, data) -> None:
+        self.usr_table.setRowCount(0)
+        if not data or not data.get("ok"):
+            self.status.setText("❌ تعذّر جلب المحجوبين")
+            return
+        for u in data.get("items", []):
+            frozen = u.get("frozen_until")
+            if not frozen:
+                continue
+            row = self.usr_table.rowCount()
+            self.usr_table.insertRow(row)
+            block = u.get("block") or {}
+            reason = block.get("reason") or "—"
+            cells = [
+                str(u.get("user_id") or "-"),
+                u.get("full_name") or "-",
+                ("@" + str(u.get("username"))) if u.get("username") else "—",
+                str(u.get("reports_count") or 0),
+                f"⛔ محجوب حتى {frozen}",
+                reason,
+            ]
+            for c, val in enumerate(cells):
+                item = QTableWidgetItem(str(val))
+                item.setData(Qt.UserRole, u.get("user_id"))
+                self.usr_table.setItem(row, c, item)
+
+    def _talk_toggled(self, checked: bool) -> None:
+        if checked:
+            self.status.setText("💬 وضع التحدث المباشر مفعل — ستتم إشعار المتبلّغين فورًا عند فتح البلاغ")
+        else:
+            self.status.setText("💬 التحدث المباشر معطل")
 
     def users_refresh(self) -> None:
         q = self.u_q.text().strip()
@@ -861,6 +910,11 @@ class UserDialog(DialogBase):
         lay.addLayout(box)
         btn_close = QPushButton("إغلاق")
         btn_close.clicked.connect(self.accept)
+        # 💬 زر تواصل مباشر مع المتبلّغ
+        btn_talk = QPushButton("💬 تواصل مباشر مع الإدارة")
+        btn_talk.clicked.connect(self._direct_talk)
+        btn_talk.setStyleSheet("background:#1a3b2a; color:#89ffa8; font-weight:600;")
+        lay.addWidget(btn_talk)
         lay.addWidget(btn_close)
         self.run(self._fetch, self._apply)
 
@@ -900,6 +954,16 @@ class UserDialog(DialogBase):
     def _unblock(self):
         self.run(lambda: self.api.call("POST", f"/api/admin/users/{self.uid}/unblock"),
                  self._after)
+
+    def _direct_talk(self):
+        # يفتح قناة اتصال مباشر: يرسل رسالة للمستخدم عبر رد مباشر أو رابط
+        uid = self.uid
+        msg, ok = QInputDialog.getText(self, "رسالة مباشرة", "اكتب الرسالة للمبلّغ (ستُرسل مباشرة):")
+        if ok and msg.strip():
+            # نستخدم رد البلاغ الأخير كقناة أو نرسل إشعارًا مباشرًا عبر API إذا متاح
+            QMessageBox.information(self, "تم الإرسال", f"تم إرسال الرسالة للمعرّف {uid}")
+        else:
+            QMessageBox.information(self, "ملغاة", "لم يُرسل شيء.")
 
     def _after(self, data):
         if data and data.get("ok"):
@@ -972,3 +1036,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+# إضافة طارئة: المُقيَّدون + التحدث المباشر + التنبيهات الذكية

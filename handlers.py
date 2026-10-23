@@ -28,6 +28,7 @@ from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -46,10 +47,13 @@ import texts
 import utils
 from database import Database
 from keyboards import (
+    admin_notify_buttons,
     back_to_menu_kb,
     cancel_kb,
     confirm_report_kb,
     main_menu_kb,
+    my_reports_kb,
+    report_open_kb,
     report_type_kb,
 )
 
@@ -62,8 +66,11 @@ ASK_PHOTO, ASK_LINK, ASK_DESC, CONFIRM = range(4)
 CANCEL_RE = r"^\s*❌\s*إلغاء\s*$"
 CONFIRM_RE = r"^\s*✅\s*إرسال\s+البلاغ\s*$"
 
-# بادئة استدعاءات المستخدم (للتحقق السريع)
+# بادئة استدعاءات المستخدم (تعريف أصلي في keyboards — يُستعمل هنا للفحص السريع)
 USR_PREFIX = "usr:"
+
+# الحد الأقصى للبطاقات المعروضة في شاشة «بلاغاتي» (تُجلب واحدة زيادة للكشف عن المزيد)
+MY_REPORTS_MAX = 6
 
 # ==================================================================
 # طلبات التطبيق (Mini App): المستخدم الذي أرسل بياناته وينتظر الصورة
@@ -252,7 +259,11 @@ async def receive_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     anchor = utils.link_anchor(context.user_data["post_link"])
     await update.message.reply_text(
-        texts.SUMMARY.format(link=anchor, desc=utils.esc(text)),
+        texts.SUMMARY.format(
+            link=anchor,
+            vtype=utils.esc(context.user_data.get("violation_type") or "غير محدد"),
+            desc=utils.esc(text),
+        ),
         parse_mode=ParseMode.HTML,
         reply_markup=confirm_report_kb(),
     )
@@ -559,16 +570,22 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # إشعار المشرفين ببلاغ جديد
 # ==================================================================
 async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, report: dict) -> None:
-    """إرسال صورة البلاغ مع ملخصها إلى كل مشرف معد في ADMIN_IDS."""
+    """إرسال صورة البلاغ مع ملخصها وأزرارها إلى كل مشرف معد في ADMIN_IDS.
+
+    الأزرار تنفّذ أوامر اللوحة نفسها (adm:s / adm:rj / adm:v) — إشعار بقرار فوري
+    دون الانتقال بين الشاشات، وكل إجراء يُسجَّل في سجل التدقيق باسم المدير.
+    """
     caption = texts.ADMIN_NOTIFY.format(
         seq=report["seq"],
         name=utils.esc(report["full_name"] or "-"),
         username=texts.username_display(report["username"]),
         uid=report["user_id"],
+        vtype=utils.esc(report.get("violation_type") or "غير محدد"),
         time=utils.fmt_local(report["created_at"]),
         anchor=utils.link_anchor(report["post_link"]),
         desc=utils.esc(utils.trunc(report["description"], 300)),
     )
+    markup = admin_notify_buttons(report["id"])
     photo = Path(report["photo_path"]) if report["photo_path"] else None
     file_id = report.get("photo_file_id")
 
@@ -578,20 +595,53 @@ async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, report: dict) -> No
                 with open(photo, "rb") as fp:
                     await context.bot.send_photo(
                         chat_id=admin_id, photo=fp, caption=caption,
-                        parse_mode=ParseMode.HTML,
+                        parse_mode=ParseMode.HTML, reply_markup=markup,
                     )
             elif file_id:
                 # لا نسخة محلية على القرص — نرسل الصورة من تخزين تلغرام مباشرة
                 await context.bot.send_photo(
                     chat_id=admin_id, photo=file_id, caption=caption,
-                    parse_mode=ParseMode.HTML,
+                    parse_mode=ParseMode.HTML, reply_markup=markup,
                 )
             else:
                 await context.bot.send_message(
                     chat_id=admin_id, text=caption, parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
                 )
         except Exception:
             logger.warning("تعذر إشعار المشرف %s ببلاغ %s", admin_id, report["seq"])
+
+
+# ==================================================================
+# أمر /help — الدليل السريع
+# ==================================================================
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دليل الاستخدام المختصر — يعمل في أي لحظة (حتى أثناء محادثة نشطة)."""
+    await update.effective_message.reply_text(
+        texts.HELP,
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_kb(),
+    )
+
+
+# ==================================================================
+# أمر /status — نفس زر «📊 حالة بلاغي» في رسالة مباشرة
+# ==================================================================
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بطاقات «بلاغاتي» بأمر كتابي — لمن يخطر له ذلك دون فتح القائمة."""
+    uid = update.effective_user.id
+    reports, total = await _db(context).list_user_reports(uid, limit=MY_REPORTS_MAX + 1)
+    if not reports:
+        await update.effective_message.reply_text(
+            texts.NO_REPORTS_YET, parse_mode=ParseMode.HTML,
+            reply_markup=back_to_menu_kb(),
+        )
+        return
+    await update.effective_message.reply_text(
+        _my_reports_text(reports, total),
+        parse_mode=ParseMode.HTML,
+        reply_markup=my_reports_kb(reports[:MY_REPORTS_MAX]),
+    )
 
 
 # ==================================================================
@@ -648,11 +698,29 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================================================================
 # معالج استدعاءات الأزرار المضمنة للمستخدم (usr:*)
 # ==================================================================
+def _my_reports_text(reports: list, total: int) -> str:
+    """نص شاشة «بلاغاتي»: بطاقة مختصرة لكل بلاغ (رقمها وحالتها وزمنها)."""
+    shown = reports[:MY_REPORTS_MAX]
+    lines = [
+        f"▣ <b><code>{r['seq']}</code></b> — {texts.badge(r['status'])}\n"
+        f"🕒 {utils.fmt_local(r['created_at'])}\n"
+        for r in shown
+    ]
+    more = texts.MY_REPORTS_MORE if total > len(shown) else ""
+    return texts.MY_REPORTS_HEADER.format(
+        count=total, lines="".join(lines) + more
+    )
+
+
 async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
     """يعالج كل ضغطة على زر مخصص للمستخدم في القائمة الرئيسية أو أثناء الإبلاغ."""
     query = update.callback_query
     db = _db(context)
-    await query.answer()
+    # حارس العتيق: استدعاءات قد تكون أُجيبت سابقًا أو فاتتها لوحات قديمة
+    try:
+        await query.answer()
+    except (BadRequest, Forbidden) as exc:
+        logger.debug("استدعاء عتيق أو مجاب مسبقًا (تم تجاهل الإجابة): %s", exc)
 
     data = query.data or ""
     if not data.startswith(USR_PREFIX):
@@ -689,9 +757,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.clear()
         # الخطوة الأولى: نوع المخالفة (اختياري) ثم الصورة — من القائمة الفعلية
         vtypes = await db.effective_vtypes()
+        # ذاكرة الارتياب: تصنيف آخر بلاغ له يظهر كزر اختصار (نقرة أقل)
+        last_type = (await db.last_report_by_user(query.from_user.id) or {}).get("violation_type")
         await query.edit_message_text(
             texts.ASK_TYPE, parse_mode=ParseMode.HTML,
-            reply_markup=report_type_kb(vtypes),
+            reply_markup=report_type_kb(vtypes, last_type),
         )
         return ASK_PHOTO
 
@@ -702,24 +772,41 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.answer(texts.APP_NOT_READY, show_alert=False)
         return
 
-    # --- حالة بلاغي ---
+    # --- بلاغاتي: بطاقات كل بلاغات المتبلّغ (بدل آخر بلاغ فقط) ---
     if parts[1] == "status":
-        last = await db.last_report_by_user(query.from_user.id)
-        if not last:
+        reports, total = await db.list_user_reports(
+            query.from_user.id, limit=MY_REPORTS_MAX + 1
+        )
+        if not reports:
             await query.edit_message_text(
                 texts.NO_REPORTS_YET, parse_mode=ParseMode.HTML,
                 reply_markup=back_to_menu_kb(),
             )
             return ConversationHandler.END
         await query.edit_message_text(
-            texts.MY_REPORT.format(
-                seq=last["seq"],
-                time=utils.fmt_local(last["created_at"]),
-                status=texts.badge(last["status"]),
-                desc=utils.esc(utils.trunc(last["description"], 200)),
+            _my_reports_text(reports, total),
+            parse_mode=ParseMode.HTML,
+            reply_markup=my_reports_kb(reports[:MY_REPORTS_MAX]),
+        )
+        return ConversationHandler.END
+
+    # --- بطاقة تفصيل بلاغ من «بلاغاتي» (usr:r:<id>) ---
+    if parts[1] == "r" and len(parts) > 2 and parts[2].isdigit():
+        rid = int(parts[2])
+        r = await db.get_by_id(rid)
+        # حماية: لا يفتح المتبلّغ بطاقة بلاغٍ ليس له
+        if not r or int(r.get("user_id") or 0) != query.from_user.id:
+            await query.answer(texts.REPORT_NOT_FOUND, show_alert=True)
+            return ConversationHandler.END
+        await query.edit_message_text(
+            texts.MY_REPORT_OPEN.format(
+                seq=r["seq"],
+                time=utils.fmt_local(r["created_at"]),
+                status=texts.badge(r["status"]),
+                desc=utils.esc(utils.trunc(r.get("description") or "-", 200)),
             ),
             parse_mode=ParseMode.HTML,
-            reply_markup=back_to_menu_kb(),
+            reply_markup=report_open_kb(),
         )
         return ConversationHandler.END
 
@@ -780,6 +867,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return ConversationHandler.END
 
     logger.warning("استدعاء مستخدم غير معروف: %s", data)
+    # نبّه المستخدم بهدوء (قد تكون الأزرار من قائمة قديمة)
+    try:
+        await query.answer(texts.UNKNOWN_BUTTON, show_alert=True)
+    except Exception:  # noqa: BLE001 — إجابة ثانية لنفس الاستدعاء متوقعة
+        pass
 
 
 async def confirm_save_from_draft(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database) -> None:
@@ -826,13 +918,28 @@ async def exit_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # معالج الأخطاء العام
 # ==================================================================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("خطأ أثناء معالجة تحديث: %s", context.error, exc_info=context.error)
+    """معالج الأخطاء العام: سجل كامل هنا، وباقة لطيفة للمستخدم دون تفاصيل تقنية."""
+    err = context.error
+
+    # تعديل رسالة إلى نفس المحتوى (أزرار مُتلاشية سابقاً) — ضجيج متوقّع لا يستحق إنذارًا
+    if isinstance(err, BadRequest) and "not modified" in str(err).lower():
+        logger.debug("تعديل رسالة مُتكرّر بلا تغيير — تجاهل: %s", err)
+        return
+
+    logger.error("خطأ أثناء معالجة تحديث: %s", err, exc_info=err)
+
+    # لا رسائل للمستخدم إن لم نعد في محادثة، أو حجب البوت (الرد سيفشل حتماً)
+    if not isinstance(update, Update) or update.effective_message is None:
+        return
+    if isinstance(err, Forbidden):
+        logger.info("المستخدم %s حجب البوت — لم يُرسل إشعار الخطأ",
+                    update.effective_user.id if update.effective_user else "?")
+        return
     try:
-        if isinstance(update, Update) and update.effective_message:
-            await update.effective_message.reply_text(
-                texts.GENERAL_ERROR, parse_mode=ParseMode.HTML
-            )
-    except Exception:
+        await update.effective_message.reply_text(
+            texts.GENERAL_ERROR, parse_mode=ParseMode.HTML
+        )
+    except Exception:  # noqa: BLE001 — فشل الرد لا يهدم من يصلح نفسه
         pass
 
 

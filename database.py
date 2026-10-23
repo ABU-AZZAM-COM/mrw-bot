@@ -240,6 +240,25 @@ class Database:
         """آخر بلاغ لمبلّغ معيّن — لشاشة «حالة بلاغي»."""
         return await asyncio.to_thread(self._last_report_by_user, user_id)
 
+    def _list_user_reports(
+        self, user_id: int, limit: int = 10
+    ) -> tuple[list[dict[str, Any]], int]:
+        with self._lock:
+            total = int(self._conn.execute(
+                "SELECT COUNT(*) AS c FROM reports WHERE user_id = ?", (user_id,)
+            ).fetchone()["c"])
+            rows = self._conn.execute(
+                "SELECT * FROM reports WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows], total
+
+    async def list_user_reports(
+        self, user_id: int, limit: int = 10
+    ) -> tuple[list[dict[str, Any]], int]:
+        """(بلاغات مبلّغ من الأحدث، إجمالي بلاغاته) — لشاشة «بلاغاتي»."""
+        return await asyncio.to_thread(self._list_user_reports, user_id, limit)
+
     def _list_reports(self, status: str | None, page: int, size: int) -> tuple[list[dict], int]:
         with self._lock:
             where, params = "", []

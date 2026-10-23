@@ -1,0 +1,274 @@
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+ظû╢ ╪ح┘╪┤╪د╪ة/┘╪ص╪╡ ╪د┘┘à╪│╪د╪ص╪ر: azzam1992/mrw-bot
+ظ£à ╪د┘┘à╪│╪د╪ص╪ر ╪ش╪د┘ç╪▓╪ر (Gradio + ZeroGPU + Private)
+ظû╢ ╪▒┘╪╣ ┘à┘┘╪د╪ز ╪د┘╪ذ┘ê╪ز ظخ
+   ظ£à space_app.py ظْ space_app.py
+   ظ£à main.py ظْ main.py
+   ظ£à config.py ظْ config.py
+   ظ£à texts.py ظْ texts.py
+   ظ£à handlers.py ظْ handlers.py
+   ظ£à admin.py ظْ admin.py
+   ظ£à database.py ظْ database.py
+   ظ£à keyboards.py ظْ keyboards.py
+   ظ£à utils.py ظْ utils.py
+   ظ£à exporters.py ظْ exporters.py
+   ظ£à archive.py ظْ archive.py
+   ظ£à guards.py ظْ guards.py
+   ظ£à health_server.py ظْ health_server.py
+   ظ£à requirements-space.txt ظْ requirements.txt
+   ظ£à webapp/index.html ظْ webapp/index.html
+   ظ£à webapp/app.js ظْ webapp/app.js
+   ظ£à webapp/styles.css ظْ webapp/styles.css
+   ظ£à webapp/manifest.webmanifest ظْ webapp/manifest.webmanifest
+   ظ£à webapp/icon.svg ظْ webapp/icon.svg
+
+Processing Files (0 / 0)      : |          |  0.00B /  0.00B            
+
+New Data Upload               : |          |  0.00B /  0.00B            [A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+Processing Files (1 / 1)      : 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB,   ???B/s  
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    : ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê| 100%            [A[A[A
+
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    : ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê| 100%            [A[A[A
+Processing Files (1 / 1)      : 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB, 12.9kB/s  
+
+New Data Upload               : |          |  0.00B /  0.00B,  0.00B/s  
+
+Validating                    : ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê| 100%            
+
+  ... ╪د┘╪╣╪│┘â╪▒┘è╪ر\webapp\icon.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+   ظ£à webapp/icon.png ظْ webapp/icon.png
+   ظ£à webapp/icon-192.png ظْ webapp/icon-192.png
+
+Processing Files (0 / 0)      : |          |  0.00B /  0.00B            
+
+New Data Upload               : |          |  0.00B /  0.00B            [A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+Processing Files (1 / 1)      : 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB,   ???B/s  
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    :           |   0%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    : ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê| 100%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    : ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê| 100%            [A[A[A
+
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            [A[A
+
+
+
+Validating                    : ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê| 100%            [A[A[A
+Processing Files (1 / 1)      : 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB, 13.0kB/s  
+
+New Data Upload               : |          |  0.00B /  0.00B,  0.00B/s  
+
+Validating                    : ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê| 100%            
+
+  ...╪│┘â╪▒┘è╪ر\webapp\icon-512.png: 100%|ظûêظûêظûêظûêظûêظûêظûêظûêظûêظûê|  145kB /  145kB            
+No files have been modified since last commit. Skipping to prevent empty commit.
+No files have been modified since last commit. Skipping to prevent empty commit.
+   ظ£à webapp/icon-512.png ظْ webapp/icon-512.png
+   ظ£à ╪ذ╪╖╪د┘é╪ر ╪د┘┘à╪│╪د╪ص╪ر (README.md)
+ظû╢ ╪╢╪ذ╪╖ ╪د┘╪ث╪│╪▒╪د╪▒ ┘ê╪د┘┘à╪ز╪║┘è╪▒╪د╪ز ظخ
+   ≡ا¤ْ ╪│╪▒: BOT_TOKEN
+   ≡ا¤ْ ╪│╪▒: ADMIN_IDS
+   ≡ا¤ْ ╪│╪▒: ARCHIVE_CHAT_ID
+   ظأآي╕ ┘à╪ز╪║┘è╪▒: SAVE_MEDIA_LOCALLY
+   ظأآي╕ ┘à╪ز╪║┘è╪▒: BACKUP_INTERVAL_MIN
+   ظأآي╕ ┘à╪ز╪║┘è╪▒: KEEPALIVE_INTERVAL_SEC
+   ظأآي╕ ┘à╪ز╪║┘è╪▒: LOCAL_UTC_OFFSET
+   ظأآي╕ ┘à╪ز╪║┘è╪▒: BOT_USERNAME
+   ظ£à ╪د┘╪ث╪│╪▒╪د╪▒ ╪د┘┘à╪«╪▓┘ّ┘╪ر: ['BOT_TOKEN', 'ADMIN_IDS', 'HF_TOKEN', 'ADMIN_API_TOKEN', 'ARCHIVE_CHAT_ID']
+   ظ£à ╪د┘┘à╪ز╪║┘è╪▒╪د╪ز ╪د┘┘à╪«╪▓┘ّ┘╪ر: ['SAVE_MEDIA_LOCALLY', 'BACKUP_INTERVAL_MIN', 'KEEPALIVE_INTERVAL_SEC', 'LOCAL_UTC_OFFSET', 'BOT_USERNAME', 'KEEPALIVE_URL', 'MINI_APP_URL']
+
+≡اë ╪د┘â╪ز┘à┘ ╪د┘┘╪┤╪▒ ╪ذ┘╪ش╪د╪ص
+   ╪▒╪د╪ذ╪╖ ╪د┘┘à╪│╪د╪ص╪ر: https://azzam1992-mrw-bot.hf.space
+   ╪د┘╪«╪╖┘ê╪ر ╪د┘╪ز╪د┘┘è╪ر:
+   1) ╪د┘╪ز╪ص ╪ز╪ذ┘ê┘è╪ذ Logs ┘ê╪ز╪ث┘â╪» ┘à┘ ╪╕┘ç┘ê╪▒: ظ£à ╪د┘╪ذ┘ê╪ز ╪ش╪د┘ç╪▓
+   2) ╪ث╪▒╪│┘ /start ┘┘╪ذ┘ê╪ز ┘ê╪ش╪▒┘ّ╪ذ ╪ذ┘╪د╪║┘ï╪د ╪ز╪ش╪▒┘è╪ذ┘è┘ï╪د
+   3) ╪ث╪╢┘ ╪د┘┘à╪▒╪د┘é╪ذ ╪د┘╪«╪د╪▒╪ش┘è: .github/workflows/keepalive.yml ┘à╪╣ ╪│╪▒ SERVICE_URL
+      (╪د┘┘é┘è┘à╪ر: https://azzam1992-mrw-bot.hf.space)

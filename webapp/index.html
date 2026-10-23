@@ -1,130 +1,46 @@
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0b3d2c">
-  <title>بلاغ مخالفة عسكرية</title>
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icon-192.png" type="image/png">
-  <link rel="apple-touch-icon" href="icon-192.png">
-  <!-- سكربت تيليغرام الرسمي: ضروري لعمل التطبيق داخل المحادثة (Mini App) -->
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="styles.css">
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="/admin/">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="لوحة الإدارة — منظومة استقبال البلاغات العسكرية">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="لوحة الإدارة">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>لوحة الإدارة — منظومة البلاغات</title>
+  <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <!--
+    You can customize the "flutter_bootstrap.js" script.
+    This is useful to provide a custom configuration to the Flutter loader
+    or to give the user feedback during the initialization process.
 
-<!-- ====================== الترويسة ====================== -->
-<header class="topbar">
-  <div class="brand">
-    <span class="shield">🛡️</span>
-    <div>
-      <h1>بلاغ مخالفة عسكرية</h1>
-      <p id="whoami">جارٍ التحقق…</p>
-    </div>
-  </div>
-  <div class="steps" id="steps">
-    <span class="dot active" data-step="1">1</span>
-    <span class="dot" data-step="2">2</span>
-    <span class="dot" data-step="3">3</span>
-  </div>
-</header>
-
-<main id="main">
-
-  <!-- ====================== مقدمة ====================== -->
-  <section class="card intro" id="card-intro">
-    <h2>ثلاث خطوات فقط</h2>
-    <ol class="howto">
-      <li><b>اختر نوع المخالفة</b> وحدّد الموقع تلقائيًا</li>
-      <li><b>التقط صورة</b> واكتب وصفًا قصيرًا</li>
-      <li><b>راجع وأرسل</b> — يردّ عليك رقم البلاغ فورًا</li>
-    </ol>
-    <p class="note">
-      🔒 تطبيق داخل تلغرام: لا يُرسل شيء خارج المنصة، ولا يُطلب منك إنشاء حساب.
-    </p>
-    <button class="btn primary big" id="btn-begin">ابدأ الآن</button>
-  </section>
-
-  <!-- ====================== الخطوة 1: النوع والموقع ====================== -->
-  <section class="card step" id="card-step1" hidden>
-    <h2>1️⃣ نوع المخالفة</h2>
-    <div class="chips" id="types"></div>
-
-    <h2>📍 الموقع</h2>
-    <div class="location-box">
-      <div class="loc-status" id="loc-status">لم يُحدَّد الموقع بعد</div>
-      <button class="btn ghost" id="btn-locate">تحديد موقعي الآن</button>
-    </div>
-    <label class="field">
-      <span>مصفوفة / وصف مختصر للموقع (اختياري)</span>
-      <input type="text" id="place" placeholder="مثال: الطريق الحلبي عند دوار الحريص" maxlength="120">
-    </label>
-
-    <div class="nav">
-      <button class="btn ghost" data-back="intro">رجوع</button>
-      <button class="btn primary" id="btn-to-2">التالي</button>
-    </div>
-  </section>
-
-  <!-- ====================== الخطوة 2: الصورة والوصف ====================== -->
-  <section class="card step" id="card-step2" hidden>
-    <h2>2️⃣ الصورة التوثيقية</h2>
-    <label class="drop" id="drop">
-      <input type="file" accept="image/*" capture="environment" id="photo-input" hidden>
-      <span id="drop-label">📷 اضغط لالتقاط الصورة أو اختيارها</span>
-      <img id="preview" alt="" hidden>
-    </label>
-    <p class="hint">تُحفظ الصورة داخل تلغرام (تبقى محفوظة إلى الأبد). لا تُرسل إلى أي جهة خارجية.</p>
-
-    <h2>📝 وصف المخالفة</h2>
-    <label class="field">
-      <span id="desc-counter">0 / 400</span>
-      <textarea id="desc" rows="4" maxlength="400"
-        placeholder="مثال: سيارة سبورت تتجاوز السرعة ليلًا أمام دوار الحريص"></textarea>
-    </label>
-
-    <label class="field">
-      <span>🔗 رابط المنشور على مواقع التواصل <b class="req">(إلزامي)</b></span>
-      <input type="url" id="link" placeholder="https://facebook.com/… أو https://tiktok.com/…" inputmode="url">
-      <small class="req-note" id="link-note">رابط المنشور الأصلي هو الدليل الأساسي للتحقق.</small>
-    </label>
-
-    <div class="nav">
-      <button class="btn ghost" data-back="1">رجوع</button>
-      <button class="btn primary" id="btn-to-3">مراجعة</button>
-    </div>
-  </section>
-
-  <!-- ====================== الخطوة 3: المراجعة والإرسال ====================== -->
-  <section class="card step" id="card-step3" hidden>
-    <h2>3️⃣ المراجعة</h2>
-    <div class="summary" id="summary"></div>
-    <p class="note" id="photo-note"></p>
-    <div class="nav">
-      <button class="btn ghost" data-back="2">رجوع</button>
-      <button class="btn primary" id="btn-send">✅ إرسال البلاغ</button>
-    </div>
-  </section>
-
-  <!-- ====================== النتيجة ====================== -->
-  <section class="card step" id="card-done" hidden>
-    <div class="done">
-      <div class="done-icon">✅</div>
-      <h2 id="done-title">تم استلام بلاغك</h2>
-      <p id="done-body">سيصلك رقم البلاغ في المحادثة.</p>
-      <button class="btn primary" id="btn-again">بلاغ جديد</button>
-    </div>
-  </section>
-
-</main>
-
-<footer class="foot">
-  <span id="status">جاهز</span>
-  <span class="sep">•</span>
-  <span>إرسال داخل تلغرام فقط</span>
-</footer>
-
-<script src="app.js"></script>
+    For more details:
+    * https://docs.flutter.dev/platform-integration/web/initialization
+  -->
+  <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
