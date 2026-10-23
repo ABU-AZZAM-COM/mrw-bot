@@ -280,7 +280,7 @@ def build_app() -> FastAPI:
 
             tg = Bot(token=token)
             await tg.set_my_description(description=full)
-            await tg.set_my_short_description(description=short)
+            await tg.set_my_short_description(short_description=short)
             got_full = (await tg.get_my_description()).description or ""
             got_short = (await tg.get_my_short_description()).short_description or ""
         except Exception as exc:  # noqa: BLE001

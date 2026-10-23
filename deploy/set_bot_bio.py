@@ -103,7 +103,7 @@ async def main() -> int:
         return 1
 
     await bot.set_my_description(description=full)
-    await bot.set_my_short_description(description=short)
+    await bot.set_my_short_description(short_description=short)
     print("✔ أُرسلت النصوص إلى تلغرام، الآن تحقق بالقراءة من المصدر…")
 
     got_full, got_short = await read_current(bot)
