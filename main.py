@@ -27,7 +27,6 @@ import admin   # noqa: E402
 import archive  # noqa: E402
 import handlers  # noqa: E402
 import health_server  # noqa: E402
-import texts  # noqa: E402
 from database import Database  # noqa: E402
 
 from telegram import BotCommand, BotCommandScopeChat, MenuButtonWebApp, Update, WebAppInfo
@@ -84,16 +83,6 @@ async def post_init(app) -> None:
         BotCommand("chatid", "معرّف هذه المحادثة (للإعداد)"),
     ]
     await app.bot.set_my_commands(base_commands)
-
-    # ------------------------------------------------------------------
-    # الهوية الاحترافية في تلغرام: وصف البوت ووصفه المختصر عند فتح محادثته.
-    # الفشل غير قاتل — عادة معلش فقط تُسجّل محاولة لاحقة عند إعادة التشغيل.
-    # ------------------------------------------------------------------
-    try:
-        await app.bot.set_my_description(texts.BOT_DESCRIPTION)
-        await app.bot.set_my_short_description(texts.BOT_SHORT_DESCRIPTION)
-    except Exception as exc:
-        logger.warning("تعذر ضبط وصف البوت في تلغرام: %s", exc)
 
     # للمشرفين فقط: إضافة أمر اللوحة
     admin_commands = [*base_commands, BotCommand("admin", "لوحة إدارة البلاغات")]
