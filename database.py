@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -691,6 +692,93 @@ class Database:
 
     async def user_profile(self, user_id: int):
         return await asyncio.to_thread(self._user_profile, user_id)
+
+    # --------------------------------------------------------------
+    # التغطية الشاملة: تصنيفات قابلة للتعديل، قوالب ردود، إحصاءات، تعميم
+    # --------------------------------------------------------------
+    async def effective_vtypes(self) -> list[str]:
+        """أنواع المخالفات الفعلية: التعديل المحفوظ أو الإعداد الافتراضي إن لم يوجد."""
+        raw = await self.get_state("violation_types_override")
+        try:
+            parsed = json.loads(raw) if raw else []
+        except Exception:  # noqa: BLE001 — قيمة تالفة تعامل كغير موجودة
+            parsed = []
+        clean = [str(t).strip() for t in parsed if str(t).strip()]
+        if clean:
+            return clean
+        import config  # noqa: PLC0415 — داخل الدالة لتفادي الدوران
+
+        return list(config.VIOLATION_TYPES)
+
+    async def set_vtypes_override(self, vtypes: list[str]) -> None:
+        await self.set_state(
+            "violation_types_override",
+            json.dumps(list(vtypes), ensure_ascii=False),
+        )
+
+    async def get_templates(self) -> list[str]:
+        """قوالب الردود الجاهزة (تُخزن كحالة نظام JSON)."""
+        raw = await self.get_state("reply_templates")
+        try:
+            parsed = json.loads(raw) if raw else []
+        except Exception:  # noqa: BLE001
+            parsed = []
+        return [str(x) for x in parsed if str(x).strip()]
+
+    async def set_templates(self, items: list[str]) -> None:
+        await self.set_state(
+            "reply_templates", json.dumps(list(items), ensure_ascii=False)
+        )
+
+    def _count_daily(self, since_date: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n"
+            " FROM reports WHERE substr(created_at, 1, 10) >= ?"
+            " GROUP BY day ORDER BY day",
+            (since_date,),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    async def count_daily(self, since_date: str):
+        return await asyncio.to_thread(self._count_daily, since_date)
+
+    def _count_by_type(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT violation_type AS vtype, COUNT(*) AS n FROM reports"
+            " WHERE violation_type IS NOT NULL AND violation_type != ''"
+            " GROUP BY vtype ORDER BY n DESC"
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    async def count_by_type(self):
+        return await asyncio.to_thread(self._count_by_type)
+
+    def _top_users(self, limit: int = 7) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT user_id, MAX(full_name) AS full_name, COUNT(*) AS n"
+            " FROM reports GROUP BY user_id ORDER BY n DESC LIMIT ?",
+            (max(1, min(int(limit), 20)),),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    async def top_users(self, limit: int = 7):
+        return await asyncio.to_thread(self._top_users, limit)
+
+    def _all_user_ids(self, cap: int = 300) -> tuple[list[int], bool]:
+        """جميع معرافات المبلّغين (من بلغ يوماً) — يمزج cap+1 لكشف الفيض."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT user_id FROM reports ORDER BY user_id LIMIT ?",
+            (int(cap) + 1,),
+        ).fetchall()
+        ids = [int(r[0]) for r in rows]
+        return ids[:cap], len(ids) > cap
+
+    async def all_user_ids(self, cap: int = 300):
+        return await asyncio.to_thread(self._all_user_ids, cap)
+
+    @property
+    def path(self) -> Path:
+        return self._path
 
     # --------------------------------------------------------------
     # إغلاق الاتصال عند إيقاف البوت

@@ -687,9 +687,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         await db.log_event(query.from_user.id, "report")
         context.user_data.clear()
-        # الخطوة الأولى: نوع المخالفة (اختياري) ثم الصورة
+        # الخطوة الأولى: نوع المخالفة (اختياري) ثم الصورة — من القائمة الفعلية
+        vtypes = await db.effective_vtypes()
         await query.edit_message_text(
-            texts.ASK_TYPE, parse_mode=ParseMode.HTML, reply_markup=report_type_kb()
+            texts.ASK_TYPE, parse_mode=ParseMode.HTML,
+            reply_markup=report_type_kb(vtypes),
         )
         return ASK_PHOTO
 

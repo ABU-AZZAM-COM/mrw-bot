@@ -20,3 +20,11 @@ desktop_panel/panel_config.json
 desktop_panel/build/
 desktop_panel/dist/
 desktop_panel/*.spec
+
+# مشروع لوحة الإدارة فلاتر (جيد: dist يُنشر — يعمل كملفات مبنية)
+admin_web/build/
+admin_web/.dart_tool/
+admin_web/.flutter-plugins
+admin_web/.flutter-plugins-dependencies
+admin_web/build_output*
+

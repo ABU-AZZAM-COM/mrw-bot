@@ -327,7 +327,17 @@ def build_app() -> FastAPI:
     admin_api.register(app)
     logger.info("🛡️ واجهة التحكم الإدارية جاهزة (+ADMIN_API_TOKEN)")
 
-    # 6) تطبيق البلاغ (ملفات ثابتة) — يُربط أخيرًا حتى لا يحجب المسارات الأخرى
+    # 6) لوحة الإدارة (Flutter وب) على مسار فرعي خاص — قبل جذر التطبيق
+    ADMIN_WEB_DIR = BASE_DIR / "admin_web" / "dist"
+    if ADMIN_WEB_DIR.is_dir():
+        app.mount(
+            "/admin",
+            StaticFiles(directory=str(ADMIN_WEB_DIR), html=True),
+            name="adminweb",
+        )
+        logger.info("🖥️ لوحة الإدارة (Flutter) متاحة على /admin")
+
+    # 7) تطبيق البلاغ (ملفات ثابتة) — يُربط أخيرًا حتى لا يحجب المسارات الأخرى
     if WEBAPP_DIR.is_dir():
         app.mount("/", StaticFiles(directory=str(WEBAPP_DIR), html=True), name="webapp")
         logger.info("🧩 تطبيق البلاغ متاح على المسار /")

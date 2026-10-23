@@ -190,8 +190,46 @@ assert asyncio.run(pdb.get_block(777)).get("frozen_until") in (None, "")
 # الحذف النهائي يعيد True ثم يختفي البلاغ
 assert asyncio.run(pdb.delete_report(pid["id"])) is True
 assert asyncio.run(pdb.get_by_id(pid["id"])) is None
+
+# --- التغطية الشاملة: تصنيفات/قوالب/إحصاءات/تجميد (منطق القاعدة) ---
+# التصنيفات: الافتراضي من الإعداد ثم تعديل فعل ثم رجوع
+import config as _cfg_mod
+
+_default = asyncio.run(pdb.effective_vtypes())
+assert list(_default) == list(_cfg_mod.VIOLATION_TYPES)
+await_none = asyncio.run(pdb.set_vtypes_override(["نوع أ", "نوع ب", "نوع ج"]))
+assert asyncio.run(pdb.effective_vtypes()) == ["نوع أ", "نوع ب", "نوع ج"]
+await_none = asyncio.run(pdb.set_vtypes_override([]))
+assert asyncio.run(pdb.effective_vtypes()) == list(_cfg_mod.VIOLATION_TYPES)
+
+# القوالب الجاهزة: حفظ/قراءة/فراغ
+await_none = asyncio.run(pdb.set_templates(["تم قبول بلاغك.", "بلاغك مرفوض لأسباب الشروط."]))
+tpl = asyncio.run(pdb.get_templates())
+assert tpl == ["تم قبول بلاغك.", "بلاغك مرفوض لأسباب الشروط."]
+
+# إحصاءات: بلاغان فاعلان ثم يوميات/أنواع/أعلى المتبلّغين/شرائح المستخدمين
+await_none = asyncio.run(pdb.add_report(
+    user_id=888, username="st8", full_name="مستخدم إحصاء",
+    photo_path="m/x.jpg", photo_file_id="f8",
+    post_link="https://t.me/x/22", description="وصف إحصائي",
+    violation_type="مخالفة زي",
+))
+daily = asyncio.run(pdb.count_daily("2000-01-01"))
+assert daily and daily[-1]["n"] >= 1 and len(daily[-1]["day"]) == 10
+by_type = asyncio.run(pdb.count_by_type())
+assert by_type and by_type[0]["vtype"] == "مخالفة زي"
+tops = asyncio.run(pdb.top_users(7))
+assert tops[0]["n"] == 1 and tops[0]["user_id"] == 888
+ids, overflow = asyncio.run(pdb.all_user_ids(cap=300))
+assert 888 in ids and overflow is False
+ids, overflow = asyncio.run(pdb.all_user_ids(cap=1))
+assert len(ids) <= 1
+
+# مسار القاعدة للتنزيل
+assert pdb.path.is_file()
 pdb.close()
 print("admin_api: أدوات اللوحة على القاعدة (بحث/تصنيف/ملاحظة/حجب/حذف) OK")
+print("admin_api: تصنيفات ديناميكية + قوالب + إحصاءات + معرفات التعميم OK")
 
 # خادم الصحة: ليس بيئة سحابية محليًا
 assert health_server.is_space_environment() is False

@@ -529,6 +529,184 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 
         return Response(content=data, media_type="image/jpeg")
 
+    # ------------------------------------------------------------
+    # 5) تشغيل النظام: إيقاف طارئ/استئناف + تعميم + قوالب + تصنيفات
+    # ------------------------------------------------------------
+    @app.post("/api/admin/system/emergency")
+    async def emergency_toggle(request: Request) -> JSONResponse:
+        """الإيقاف الطارئ: يمنع استقبال البلاغات فورًا (نفس آلية غريق الكوارث في البوت)."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        on = bool(body.get("on"))
+        reason = (str(body.get("reason") or "").strip())[:MAX_TEXT]
+        if on and not reason:
+            return bad("reason_required")
+        import guards  # noqa: PLC0415
+
+        db = db_of()
+        await guards.set_emergency(
+            db, on, 0, reason or ("استئناف من لوحة الإدارة")
+        )
+        return JSONResponse({"ok": True, "emergency": on})
+
+    @app.post("/api/admin/broadcast")
+    async def broadcast(request: Request) -> JSONResponse:
+        """تعميم إلى كل من بلغ يوماً (سقف 300 حمايةً من العشوائية)."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        text = (str(body.get("text") or "").strip())
+        if not 3 <= len(text) <= 1000:
+            return bad("text_length")
+        db = db_of()
+        ids, overflow = await db.all_user_ids(cap=300)
+        if overflow:
+            return bad("too_many_users")
+        if not ids:
+            return JSONResponse(
+                {"ok": True, "sent": 0, "failed": 0, "total": 0}
+            )
+        bot, loop = _bot_runtime()
+        if bot is None:
+            return bad("bot_not_ready", 503)
+
+        async def _send_all():
+            sent = failed = 0
+            payload = texts.BROADCAST_NOTIF.format(text=utils.esc(text))
+            for uid in ids:
+                try:
+                    await bot.send_message(chat_id=uid, text=payload,
+                                           parse_mode=_parse_html())
+                    sent += 1
+                except Exception:  # noqa: BLE001 — مستخدم حاجب البوت أو غائب
+                    failed += 1
+                await asyncio.sleep(0.08)  # آداب معدل الإرسال في تلغرام
+            return sent, failed
+
+        fut = asyncio.run_coroutine_threadsafe(_send_all(), loop)
+        try:
+            sent, failed = await asyncio.wrap_future(fut)
+        except Exception:  # noqa: BLE001
+            logger.warning("فشل التعميم", exc_info=True)
+            return bad("broadcast_failed", 503)
+        await db.audit(0, "broadcast", "الجميع", f"أُرسل لـ {sent} وفشل {failed}")
+        return JSONResponse(
+            {"ok": True, "sent": sent, "failed": failed, "total": len(ids)}
+        )
+
+    @app.get("/api/admin/templates")
+    async def templates_get(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        return JSONResponse({"ok": True, "items": await db_of().get_templates()})
+
+    @app.put("/api/admin/templates")
+    async def templates_put(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        items = body.get("items")
+        if not isinstance(items, list):
+            return bad("bad_items")
+        clean = [str(x).strip() for x in items if str(x).strip()]
+        if len(clean) > 30:
+            return bad("too_many")
+        if any(not 2 <= len(t) <= 300 for t in clean):
+            return bad("item_length")
+        await db_of().set_templates(clean)
+        await db_of().audit(0, "templates_changed", "القوالب",
+                            f"عدد القوالب: {len(clean)}")
+        return JSONResponse({"ok": True, "items": clean})
+
+    @app.get("/api/admin/vtypes")
+    async def vtypes_get(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        return JSONResponse({"ok": True, "items": await db.effective_vtypes()})
+
+    @app.put("/api/admin/vtypes")
+    async def vtypes_put(request: Request) -> JSONResponse:
+        """تعديل قائمة أنواع المخالفات نفسها — تتبدل أزرار إرسال البلاغ فورًا."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        items = body.get("items")
+        if not isinstance(items, list):
+            return bad("bad_items")
+        clean, seen = [], set()
+        for t in items:
+            t = str(t).strip()[:40]
+            if t and t not in seen:
+                seen.add(t)
+                clean.append(t)
+        if not 3 <= len(clean) <= 12:
+            return bad("bad_list")
+        db = db_of()
+        await db.set_vtypes_override(clean)
+        await db.audit(0, "vtypes_changed", "التصنيفات",
+                       " / ".join(clean))
+        return JSONResponse({"ok": True, "items": clean})
+
+    # ------------------------------------------------------------
+    # 6) إحصاءات + نسخ القاعدة
+    # ------------------------------------------------------------
+    @app.get("/api/admin/stats")
+    async def stats_api(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        since = (datetime.now(timezone.utc) - timedelta(days=6)).date().isoformat()
+        daily = await db.count_daily(since)
+        week_sum = sum(int(d.get("n") or 0) for d in daily)
+        return JSONResponse({
+            "ok": True,
+            "daily7": daily,
+            "week_avg": round(week_sum / 7, 1),
+            "by_type": await db.count_by_type(),
+            "top_users": await db.top_users(7),
+        })
+
+    @app.get("/api/admin/backup/download")
+    async def backup_download(request: Request):
+        """تنزيل نسخة القاعدة مباشرة (SQLite) — مسجل في التدقيق."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        p = db.path
+        if not p.exists():
+            return bad("no_backup", 404)
+        await db.audit(0, "panel_backup_download", p.name,
+                       "تنزيل نسخة قاعدة البيانات")
+        fname = "reports-{ts}.db".format(
+            ts=datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+        )
+        return FileResponse(str(p), filename=fname,
+                            media_type="application/x-sqlite3")
+
+    @app.post("/api/admin/backup/now")
+    async def backup_now(request: Request) -> JSONResponse:
+        """رفع فوري لقطة متسقة إلى مستودع النسخ الخاص (نفس طبقة طبقة الأمان)."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        import hub_backup  # noqa: PLC0415
+
+        ok = await asyncio.to_thread(hub_backup.upload_backup, db.path)
+        await db.audit(0, "panel_backup_upload", "dataset",
+                       "نجاح" if ok else "غير مُهيأ/فشل")
+        return JSONResponse({"ok": True, "uploaded": bool(ok)})
+
     @app.get("/api/admin/export/{fmt}")
     async def export(fmt: str, request: Request):
         refuse = _auth(request)

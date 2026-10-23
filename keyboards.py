@@ -134,14 +134,19 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def report_type_kb() -> InlineKeyboardMarkup:
-    """أزرار أنواع المخالفات للاختيار السريع (صفان في كل صف)."""
+def report_type_kb(types: Optional[list] = None) -> InlineKeyboardMarkup:
+    """أزرار أنواع المخالفات للاختيار السريع (صفان في كل صف).
+
+    إن مُرّرت قائمة فعلية (متجرّدة من إدارة اللوحة) فتُستعمل بدل الإعداد الافتراضي.
+    """
+    if types is None:
+        types = list(config.VIOLATION_TYPES)
     rows = []
-    for i in range(0, len(config.VIOLATION_TYPES), 2):
+    for i in range(0, len(types), 2):
         row = []
         for j in range(2):
-            if i + j < len(config.VIOLATION_TYPES):
-                vtype = config.VIOLATION_TYPES[i + j]
+            if i + j < len(types):
+                vtype = types[i + j]
                 row.append(_cb(f"📌 {vtype}", f"{USR_PREFIX}type:{vtype}"))
         rows.append(row)
     rows.append([_cb("❌ إلغاء", f"{USR_PREFIX}cancel")])
