@@ -59,6 +59,7 @@ except ImportError:  # pragma: no cover - بيئة محلية بدون Hugging F
         return func
 
 import main as bot_main  # noqa: E402
+import texts  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
 logger = logging.getLogger("space")
@@ -251,7 +252,51 @@ def build_app() -> FastAPI:
             return JSONResponse({"ok": False, "error": "bot_not_ready"}, status_code=503)
         return JSONResponse({"ok": True})
 
-    # 3) صفحة حالة خفيفة (بديل Gradio — لا تحتاج Node proxy)
+    # 3) مسار الإعداد لمرة واحدة: تطبيق بايو البوت من السبيس مباشرة.
+    #    • محمي بمفتاح SETUP_TOKEN من أسرار السبيس — إن غاب فالمسار مغلق.
+    #    • النصان يُقرآن من الكود المعتمد (texts.py)؛ المسار لا يقبل أي نص خارجي.
+    #    • آمن للتكرار، ويعيد قراءة النتيجة من تلغرام نفسها للتأكد.
+    @app.get("/api/set-bio")
+    async def api_set_bio(request: Request) -> JSONResponse:
+        expected = os.getenv("SETUP_TOKEN", "").strip()
+        if not expected:
+            return JSONResponse(
+                {"ok": False, "error": "setup_token_not_configured"}, status_code=503
+            )
+        got = (request.query_params.get("key") or "").strip()
+        if not hmac.compare_digest(got, expected):
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+
+        token = BOT_TOKEN.strip()
+        if not token:
+            return JSONResponse({"ok": False, "error": "no_bot_token"}, status_code=503)
+
+        full, short = texts.BOT_DESCRIPTION, texts.BOT_SHORT_DESCRIPTION
+        if len(full) > 512 or len(short) > 120:
+            return JSONResponse({"ok": False, "error": "text_too_long"}, status_code=500)
+
+        try:
+            from telegram import Bot
+
+            tg = Bot(token=token)
+            await tg.set_my_description(description=full)
+            await tg.set_my_short_description(description=short)
+            got_full = (await tg.get_my_description()).description or ""
+            got_short = (await tg.get_my_short_description()).short_description or ""
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("فشل تطبيق البايو من السبيس")
+            return JSONResponse(
+                {"ok": False, "error": "telegram_error", "detail": str(exc)},
+                status_code=502,
+            )
+
+        return JSONResponse({
+            "ok": (got_full.strip() == full and got_short.strip() == short),
+            "description_now": got_full,
+            "short_description_now": got_short,
+        })
+
+    # 4) صفحة حالة خفيفة (بديل Gradio — لا تحتاج Node proxy)
     @app.get("/status", response_class=HTMLResponse)
     async def status() -> HTMLResponse:
         minutes = int((time.time() - START_TIME) / 60)
@@ -277,7 +322,7 @@ def build_app() -> FastAPI:
   <p><a href="/app/">فتح تطبيق إرسال البلاغ</a></p>
 </div></body></html>""")
 
-    # 4) تطبيق البلاغ (ملفات ثابتة) — يُربط أخيرًا حتى لا يحجب المسارات الأخرى
+    # 5) تطبيق البلاغ (ملفات ثابتة) — يُربط أخيرًا حتى لا يحجب المسارات الأخرى
     if WEBAPP_DIR.is_dir():
         app.mount("/", StaticFiles(directory=str(WEBAPP_DIR), html=True), name="webapp")
         logger.info("🧩 تطبيق البلاغ متاح على المسار /")
