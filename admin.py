@@ -24,6 +24,7 @@ from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 import config
 import exporters
 import guards
+import hub_backup
 import texts
 import utils
 from database import (
@@ -110,6 +111,40 @@ async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "\n".join(lines), parse_mode=ParseMode.HTML
     )
+
+
+async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/backup — رفع نسخة فورية من قاعدة البيانات إلى المستودع السحابي."""
+    if not _is_admin_update(update):
+        await update.effective_message.reply_text(texts.ADMIN_ONLY, parse_mode=ParseMode.HTML)
+        return
+
+    if not hub_backup.is_configured():
+        await update.effective_message.reply_text(
+            texts.BACKUP_OFF, parse_mode=ParseMode.HTML
+        )
+        return
+
+    try:
+        await update.effective_message.chat.send_action("typing")
+    except Exception:  # noqa: BLE001 — تفصيل تجميلي فقط
+        pass
+
+    ok = await asyncio.to_thread(hub_backup.upload_backup, config.DB_PATH)
+    await update.effective_message.reply_text(
+        texts.BACKUP_DONE if ok else texts.BACKUP_FAIL,
+        parse_mode=ParseMode.HTML,
+    )
+    if ok:
+        await db_log_backup(context, update.effective_user.id)
+
+
+async def db_log_backup(context: ContextTypes.DEFAULT_TYPE, admin_id: int) -> None:
+    """إدخال عملية النسخ في سجل التدقيق."""
+    try:
+        await context.bot_data["db"].log_event(admin_id, "backup_upload")
+    except Exception:  # noqa: BLE001 — التدقيق لا يعطّل النسخ
+        logger.debug("تعذر تسجيل عملية النسخ في سجل التدقيق", exc_info=True)
 
 
 def _db(context: ContextTypes.DEFAULT_TYPE) -> Database:

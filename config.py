@@ -155,3 +155,16 @@ KEEPALIVE_INTERVAL_SEC: int = int(os.getenv("KEEPALIVE_INTERVAL_SEC", "300") or 
 
 # عدد الدقائق بين نسختين احتياطيتين تلقائيتين (0 = تعطيل)
 BACKUP_INTERVAL_MIN: int = int(os.getenv("BACKUP_INTERVAL_MIN", "30") or 0)
+
+# ------------------------------------------------------------------
+# النسخ الاحتياطي إلى مخزن Hugging Face Hub (الطبقة الأساسية للحماية)
+# ------------------------------------------------------------------
+# مستودع Dataset خاص يُرفع إليه snapshot متسق من قاعدة البيانات:
+#   latest/reports.db        (النسخة الحالية — يُستبدل دائمًا)
+#   daily/YYYY-MM-DD/reports.db  (لقطة واحدة لكل يوم)
+# الاستعادة عند الإقلاع: فقط إذا كانت القاعدة المحلية فارغة (بلا أي بلاغ).
+# التوكن يُقرأ من بيئة التشغيل (سرّ HF_TOKEN في السبيس) ولا يُكتب في الكود أبدًا.
+HF_BACKUP_TOKEN: str = (
+    os.getenv("HF_BACKUP_TOKEN", "") or os.getenv("HF_TOKEN", "")
+).strip()
+HF_BACKUP_REPO: str = os.getenv("HF_BACKUP_REPO", "azzam1992/mrw-bot-backups").strip()

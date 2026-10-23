@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import sqlite3
 import tempfile
 from datetime import datetime, timezone
@@ -49,57 +48,19 @@ def _has_rows(db_path: Path) -> bool:
 
 
 # ==================================================================
-# استعادة قاعدة البيانات من القناة عند الإقلاع
+# استعادة قاعدة البيانات من القناة عند الإقلاع (مسار قديم — غير نشط)
 # ==================================================================
-async def restore_database_if_needed(bot_token: str, db_path: Path) -> bool:
-    """يبحث عن آخر نسخة (.db) داخل القناة الرسمية ويعيدها إلى المسار المحلي.
+def restore_database_if_needed(bot_token: str, db_path: Path) -> bool:
+    """(موقوف) يبحث عن آخر نسخة من القناة الرسمية ويعيدها.
 
-    تُستدعى قبل فتح قاعدة البيانات، وتعود True إذا تمت الاستعادة فعلًا.
-    ملاحظة: لا نُعيد الكتابة فوق قاعدة محلية تحتوي بيانات — الاستعادة تحدث
-    فقط عند فقدان الملف (وهي الحالة الطبيعية بعد إعادة تشغيل الحاوية السحابية).
+    مهجورة لسببين: (1) واجهة Bot API لا تتيح قراءة تاريخ القناة أساسًا،
+    (2) كانت تستدعي أساليب Pyrogram على كائن python-telegram-bot فتفشل
+    دائمًا. الاستعادة الفعلية الآن عبر `hub_backup.restore_latest_if_needed`
+    (مستودع Dataset خاص على Hugging Face) — انظر `hub_backup.py`.
+    تبقى هنا حتى يُنفَّذ مسار القناة عبر Telethon/MTProto مستقبلاً.
     """
-    if not config.ARCHIVE_CHAT_ID:
-        return False
-
-    # إذا كانت هناك قاعدة محلية فيها بيانات، لا نمسّها
-    if db_path.exists() and _has_rows(db_path):
-        logger.info("توجد قاعدة بيانات محلية تحتوي بيانات — تم تجاوز الاستعادة")
-        return False
-
-    try:
-        bot = Bot(token=bot_token)
-        try:
-            messages = await bot.get_messages(config.ARCHIVE_CHAT_ID, limit=50)
-            target = None
-            for msg in messages:
-                doc = getattr(msg, "document", None)
-                if doc and (doc.file_name or "").endswith(DB_SUFFIX):
-                    target = msg
-                    break
-
-            if target is None:
-                logger.info("لا توجد نسخة سابقة من قاعدة البيانات في القناة — بدء بقاعدة جديدة")
-                return False
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                restored = Path(tmpdir) / "restored.db"
-                await target.download(custom_path=str(restored))
-                db_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(restored, db_path)
-
-            # إزالة ملفات WAL/SHM القديمة حتى لا تتعارض مع النسخة المستعادة
-            for suffix in ("-wal", "-shm"):
-                extra = Path(str(db_path) + suffix)
-                if extra.exists():
-                    extra.unlink()
-
-            logger.info("تمت استعادة قاعدة البيانات من القناة (%s)", target.document.file_name)
-            return True
-        finally:
-            await bot.shutdown()
-    except Exception:
-        logger.exception("تعذّرت استعادة قاعدة البيانات من القناة")
-        return False
+    del bot_token, db_path  # غير مستعملة في الحالة الموقوفة
+    return False
 
 
 # ==================================================================

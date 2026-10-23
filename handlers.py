@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 from datetime import datetime, timezone
@@ -40,6 +41,7 @@ import admin
 import archive
 import config
 import guards
+import hub_backup
 import texts
 import utils
 from database import Database
@@ -321,6 +323,12 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await archive.post_report(context.bot, report)
     await archive.backup_database(context.bot, config.DB_PATH)
 
+    # النسخ إلى مستودع Hugging Face الاحتياطي (الطبقة الأساسية):
+    # رفع في خيط خلفي ولا يحجب رد البوت. فشلُه مُسجّل في السجلات ويُعاد
+    # تلقائياً مع الرفعة الدورية القادمة.
+    if hub_backup.is_configured():
+        asyncio.create_task(asyncio.to_thread(hub_backup.upload_backup, config.DB_PATH))
+
     ud.clear()
     ud["last_saved"] = utils.utc_now_iso()
     return ConversationHandler.END
@@ -535,6 +543,12 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if config.AUTO_PUBLISH_TO_ARCHIVE:
         await archive.post_report(context.bot, report)
     await archive.backup_database(context.bot, config.DB_PATH)
+
+    # النسخ إلى مستودع Hugging Face الاحتياطي (الطبقة الأساسية):
+    # رفع في خيط خلفي ولا يحجب رد البوت. فشلُه مُسجّل في السجلات ويُعاد
+    # تلقائياً مع الرفعة الدورية القادمة.
+    if hub_backup.is_configured():
+        asyncio.create_task(asyncio.to_thread(hub_backup.upload_backup, config.DB_PATH))
 
     ud.clear()
     ud["last_saved"] = utils.utc_now_iso()

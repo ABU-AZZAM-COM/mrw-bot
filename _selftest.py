@@ -109,6 +109,33 @@ assert archive._snapshot(DB_PATH, snap) and snap.exists()
 assert archive._has_rows(snap) is True
 print("archive: النسخ المتسق وفحص الصفوف OK")
 
+# ------------------------------------------------------------------
+# فحص طبقة النسخ إلى Hub (منطق خالص — بلا أي اتصال)
+# ------------------------------------------------------------------
+import hub_backup
+
+import config as _cfg
+
+_tok, _repo = _cfg.HF_BACKUP_TOKEN, _cfg.HF_BACKUP_REPO
+try:
+    # غير مهيأ → كل المسارات ترفض فورًا بلا استثناء
+    _cfg.HF_BACKUP_TOKEN = ""
+    _cfg.HF_BACKUP_REPO = ""
+    assert hub_backup.is_configured() is False
+    assert hub_backup.restore_latest_if_needed(DB_PATH) is False
+    assert hub_backup.upload_backup(DB_PATH) is False
+
+    # مهيأ + القاعدة المحلية فيها بلاغات → لِماذا؟ الحماية الصارمة:
+    # لا استعادة فوق قاعدة حية (يجب ألا يُلمس الملف أبدًا) — وبلا اتصال
+    _cfg.HF_BACKUP_TOKEN = "fake-token-for-test"
+    _cfg.HF_BACKUP_REPO = "fake/repo"
+    assert hub_backup.is_configured() is True
+    assert archive._has_rows(DB_PATH) is True
+    assert hub_backup.restore_latest_if_needed(DB_PATH) is False
+finally:
+    _cfg.HF_BACKUP_TOKEN, _cfg.HF_BACKUP_REPO = _tok, _repo
+print("hub_backup: حرّاس (غير مهيأ / لا استبدال فوق بيانات) OK")
+
 # خادم الصحة: ليس بيئة سحابية محليًا
 assert health_server.is_space_environment() is False
 print("health_server OK")

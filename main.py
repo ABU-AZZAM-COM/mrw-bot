@@ -27,6 +27,7 @@ import admin   # noqa: E402
 import archive  # noqa: E402
 import handlers  # noqa: E402
 import health_server  # noqa: E402
+import hub_backup  # noqa: E402
 from database import Database  # noqa: E402
 
 from telegram import BotCommand, BotCommandScopeChat, MenuButtonDefault, Update
@@ -84,8 +85,12 @@ async def post_init(app) -> None:
     ]
     await app.bot.set_my_commands(base_commands)
 
-    # للمشرفين فقط: إضافة أمر اللوحة
-    admin_commands = [*base_commands, BotCommand("admin", "لوحة إدارة البلاغات")]
+    # للمشرفين فقط: أمر اللوحة + أمر النسخة الفورية
+    admin_commands = [
+        *base_commands,
+        BotCommand("admin", "لوحة إدارة البلاغات"),
+        BotCommand("backup", "رفع نسخة احتياطية فورية"),
+    ]
     for admin_id in config.ADMIN_IDS:
         try:
             await app.bot.set_my_commands(
@@ -131,6 +136,8 @@ async def post_init(app) -> None:
         app.create_task(
             archive.backup_loop(app.bot, config.DB_PATH, config.BACKUP_INTERVAL_MIN)
         )
+    if hub_backup.is_configured() and config.BACKUP_INTERVAL_MIN > 0:
+        app.create_task(hub_backup.backup_loop(config.DB_PATH, config.BACKUP_INTERVAL_MIN))
 
 
 # ==================================================================
@@ -153,18 +160,16 @@ def main() -> None:
     logger.info("🚀 تشغيل نظام استقبال بلاغات المخالفات العسكرية …")
 
     # ------------------------------------------------------------------
-    # الاستعادة من القناة الرسمية قبل فتح قاعدة البيانات:
+    # الاستعادة من مستودع النسخ الاحتياطي (Hugging Face) قبل فتح قاعدة البيانات:
     # في الاستضافة السحابية المجانية يفقد الخادم القرص عند كل إعادة تشغيل،
-    # فنستعيد آخر نسخة محفوظة داخل القناة (مخزن استمرارية مجاني على تلغرام).
+    # فنستعيد آخر نسخة من المستودع الخاص — فقط إذا كانت القاعدة المحلية فارغة.
+    # (دالة متزامنة وآمنة: داخليًا تفحص وتقرر، وبلا توكن لا تفعل شيئًا.)
     # ------------------------------------------------------------------
-    if config.ARCHIVE_CHAT_ID:
-        try:
-            restored = asyncio.run(
-                archive.restore_database_if_needed(config.BOT_TOKEN, config.DB_PATH)
-            )
-            logger.info("♻️ استعادة القاعدة من القناة: %s", "تم" if restored else "لا حاجة")
-        except Exception:
-            logger.exception("خطأ أثناء محاولة استعادة قاعدة البيانات من القناة")
+    restored = hub_backup.restore_latest_if_needed(config.DB_PATH)
+    if restored:
+        logger.info("♻️ استعادة القاعدة من مستودع النسخ الاحتياطي: تم")
+    else:
+        logger.info("لا حاجة لاستعادة القاعدة (لدينا نسخة محلية أو لا نسخة سحابية)")
 
     db = Database(config.DB_PATH)
 
@@ -208,10 +213,11 @@ def main() -> None:
     app.add_handler(CommandHandler(["admin", "reports"], admin.cmd_admin))
     app.add_handler(CallbackQueryHandler(admin.on_callback, pattern=r"^adm:"))
 
-    # 2-ب) أوامر المشرف: الإيقاف الطارئ وسجل التدقيق
+    # 2-ب) أوامر المشرف: الإيقاف الطارئ وسجل التدقيق ونسخة فورية
     app.add_handler(CommandHandler("panic", admin.cmd_panic))
     app.add_handler(CommandHandler("resume", admin.cmd_resume))
     app.add_handler(CommandHandler("audit", admin.cmd_audit))
+    app.add_handler(CommandHandler("backup", admin.cmd_backup))
 
     # 3) أي رسالة خاصة خارج محادثة نشطة → تلميح ترحيبي
     app.add_handler(

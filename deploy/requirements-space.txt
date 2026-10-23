@@ -1,0 +1,12 @@
+# مكتبات المساحة السحابية (Hugging Face Space — Gradio / ZeroGPU)
+# تُستخدم مع space_app.py فقط. لغير ذلك استخدم requirements.txt
+#
+# ملاحظة مهمة: لا تُقيّد هنا حزمتي Gradio و httpx —
+# الصورة الأساسية لمساحة ZeroGPU تُثبّتهما مسبقًا (Gradio 6.x + httpx 0.28)
+# وتثبيت نسخة أقدم منهما يسبب فشل البناء (تعارض في حلّ التبعيات).
+python-telegram-bot~=22.0
+python-dotenv~=1.0
+pandas~=2.2
+openpyxl~=3.1
+# النسخ الاحتياطي إلى مستودع Dataset خاص (رفع/استعادة قاعدة البيانات)
+huggingface_hub~=2.2
