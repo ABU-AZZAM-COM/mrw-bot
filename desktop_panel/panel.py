@@ -146,6 +146,7 @@ class SetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("إعداد الاتصال بلوحة الإدارة")
         self.setLayoutDirection(Qt.RightToLeft)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.setMinimumWidth(430)
         form = QFormLayout(self)
         self.url_edit = QLineEdit(cfg.get("url", DEFAULT_URL))
@@ -263,11 +264,38 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.cards["الإجمالي"], 1, 0)
         grid.addWidget(self.cards["آخر 24 ساعة"], 1, 1)
         hint = QLabel(
-            "انطباع لحظي تلقائي كل 6 ثوانٍ؛ همّة تنبيه صوتي عند وصول بلاغ جديد."
+            "تحديث لحظي تلقائي كل 6 ثوانٍ، مع تنبيه صوتي عند وصول بلاغ جديد."
         )
         hint.setStyleSheet("color:#7d8f88;")
         grid.addWidget(hint, 2, 0, 1, 4)
+        settings_btn = QPushButton("⚙ الإعدادات (الرابط/التوكن)")
+        settings_btn.setStyleSheet("background:#12221e; color:#8ab4ff;")
+        settings_btn.clicked.connect(self._open_settings)
+        grid.addWidget(settings_btn, 3, 0, 1, 4)
         return page
+
+    def _open_settings(self) -> None:
+        dlg = SetupDialog(self.cfg, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        url, token = dlg.values()
+        if not url.startswith("http") or not token:
+            QMessageBox.warning(self, "إعدادات ناقصة", "الرابط والتوكن مطلوبان معًا.")
+            return
+        probe = Api(url, token).call("GET", "/api/admin/overview")
+        if not probe or probe.get("ok") is not True:
+            code = (probe or {}).get("_status") or (probe or {}).get("_error") or "انقطاع"
+            QMessageBox.critical(
+                self, "رفض الاتصال",
+                f"التوكن/الرابط غير مقبولين ({code}). تأكد منهما ثم حاول مجددًا."
+            )
+            return
+        self.cfg["url"], self.cfg["token"] = url, token
+        save_config(self.cfg)
+        self.api = Api(self.cfg["url"], self.cfg["token"])
+        self.last_total = None
+        self.auto_refresh()
+        QMessageBox.information(self, "تم", "حُمّلت الإعدادات وأُعيد الاتصال ✅")
 
     def apply_overview(self, data: dict) -> None:
         if not data.get("ok"):
@@ -908,6 +936,12 @@ def main() -> int:
     cfg = load_config()
     win = None
     while win is None:
+        # ربط تلقائي فوري عند توفر إعدادات محفوظة سابقاً (بدون نافذة الإعداد)
+        if cfg.get("token"):
+            probe = Api(cfg["url"], cfg["token"]).call("GET", "/api/admin/overview")
+            if probe and probe.get("ok") is True:
+                win = MainWindow(cfg)
+                break
         dlg = SetupDialog(cfg)
         if dlg.exec() != QDialog.Accepted:
             return 0
@@ -929,7 +963,10 @@ def main() -> int:
         cfg["url"], cfg["token"] = url, token
         save_config(cfg)
         win = MainWindow(cfg)
-        win.show()
+    win.show()
+    win.raise_()
+    win.activateWindow()
+    QApplication.alert(win)  # وميض أيقونة شريط المهام لضمان ملاحظتها
     return app.exec()
 
 
