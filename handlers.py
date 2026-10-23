@@ -1,5 +1,5 @@
 """
-معالجات المستخدم العادي: قائمة رئيسية بأزرار مضمنة، استقبال بلاغ عبر التطبيق أو المحادثة،
+معالجات المستخدم العادي: قائمة رئيسية بأزرار مضمنة، استقبال بلاغ عبر المحادثة،
 استقبال عناصر البلاغ (صورة/رابط/وصف)، حفظ، وإشعار المشرفين.
 
 مسار المحادثة (ConversationHandler)، أربع حالات:
@@ -10,12 +10,11 @@
 
 استدعاءات الأزرار المضمنة للمستخدم (prefix usr:):
   usr:menu     → القائمة الرئيسية
-  usr:report   → بدء بلاغ جديد (يفتح الصورة)
-  usr:app      → فتح تطبيق البلاغ (Mini App)
+  usr:report   → بدء بلاغ جديد (يفتح اختيار النوع ثم الصورة)
   usr:status   → حالة بلاغي الأخير
   usr:about    → عن النظام
   usr:contact  → تواصل مع الإدارة
-  usr:type:X   → اختيار نوع المخالفة (في التطبيق)
+  usr:type:X   → اختيار نوع المخالفة ثم التلاشي
   usr:confirm  → تأكيد إرسال البلاغ
   usr:cancel   → إلغاء العملية
 """
@@ -26,7 +25,7 @@ import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
 
-from telegram import InlineKeyboardButton, Update, WebAppInfo
+from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     CallbackQueryHandler,
@@ -113,12 +112,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.log_event(user.id, "start")
 
     context.user_data.clear()
-    name = utils.esc(user.first_name or "زائر")
-    welcome = texts.WELCOME.format(name=name)
-    if config.MINI_APP_URL:
-        welcome = f"{welcome}\n\n{texts.WELCOME_APP_HINT}"
     await update.effective_message.reply_text(
-        welcome,
+        texts.WELCOME,
         parse_mode=ParseMode.HTML,
         reply_markup=main_menu_kb(),
     )
@@ -274,6 +269,13 @@ async def remind_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================================================================
 async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """حفظ البلاغ نهائيًا وإشعار المشرفين بوجوده."""
+    # تلاشي أزرار التأكيد فور الضغط عليها (تبقى الرسالة نصًا فقط)
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001 — قد تغيّر الرسالة أو تكون مجمدة
+            logger.debug("تعذر إزالة أزرار التأكيد بعد الضغط")
+
     user = update.effective_user
     ud = context.user_data
     db = _db(context)
@@ -645,9 +647,8 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # --- القائمة الرئيسية ---
     if parts[1] == "menu":
-        name = utils.esc(query.from_user.first_name or "زائر")
         await query.edit_message_text(
-            texts.WELCOME.format(name=name) + "\n\n" + texts.MENU_HINT,
+            texts.WELCOME,
             parse_mode=ParseMode.HTML,
             reply_markup=main_menu_kb(),
         )
@@ -679,26 +680,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return ASK_PHOTO
 
     # --- فتح التطبيق ---
+    # أُزيل زر فتح التطبيق من الأزرار المضمنة (قرار الواجهة الاحترافية)؛
+    # التطبيق يظل متاحًا عبر أمر /app فقط إن وُجد رابطه.
     if parts[1] == "app":
-        if not config.MINI_APP_URL:
-            await query.edit_message_text(
-                texts.APP_NOT_READY, parse_mode=ParseMode.HTML,
-                reply_markup=back_to_menu_kb(),
-            )
-            return ConversationHandler.END
-        await query.edit_message_text(
-            texts.APP_INTRO, parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    text="🚀 فتح تطبيق البلاغ",
-                    web_app=WebAppInfo(url=config.MINI_APP_URL),
-                )],
-                [InlineKeyboardButton(
-                    text="🏠 العودة للقائمة الرئيسية", callback_data=f"{USR_PREFIX}menu",
-                )],
-            ]),
-        )
-        return ConversationHandler.END
+        await query.answer(texts.APP_NOT_READY, show_alert=False)
+        return
 
     # --- حالة بلاغي ---
     if parts[1] == "status":
@@ -742,9 +728,18 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "type" and len(parts) > 2:
         vtype = ":".join(parts[2:])
         context.user_data["violation_type"] = vtype
-        await query.edit_message_text(
-            texts.TYPE_SELECTED.format(vtype=utils.esc(vtype))
-            + "\n\n" + texts.ASK_PHOTO,
+        # تلاشي أزرار الاختيار: تصبح الرسالة نصًا خالصًا بلا لوحة
+        try:
+            await query.edit_message_text(
+                texts.TYPE_SELECTED.format(vtype=utils.esc(vtype)),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:  # noqa: BLE001 — قد تكون الرسالة مجمدة/محررة للتو
+            logger.debug("تعذر إزالة أزرار اختيار النوع")
+        # خطوة الصورة تأتي في رسالة جديدة مع زر إلغاء بلوحة الرد
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=texts.ASK_PHOTO,
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_kb(),
         )

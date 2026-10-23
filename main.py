@@ -29,7 +29,7 @@ import handlers  # noqa: E402
 import health_server  # noqa: E402
 from database import Database  # noqa: E402
 
-from telegram import BotCommand, BotCommandScopeChat, MenuButtonWebApp, Update, WebAppInfo
+from telegram import BotCommand, BotCommandScopeChat, MenuButtonDefault, Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -102,24 +102,12 @@ async def post_init(app) -> None:
     # الزر يظهر بجانب مربع الكتابة لكل مستخدم → سهولة الوصول (المهم: أن يعرف
     # الجميع وجود التطبيق دون شرح).
     # ------------------------------------------------------------------
-    if config.MINI_APP_URL:
-        try:
-            await app.bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(
-                    text="🚀 فتح تطبيق البلاغ",
-                    web_app=WebAppInfo(url=config.MINI_APP_URL),
-                )
-            )
-            base_commands.append(BotCommand("app", "فتح تطبيق إرسال البلاغ"))
-            await app.bot.set_my_commands(base_commands)
-            for admin_id in config.ADMIN_IDS:
-                await app.bot.set_my_commands(
-                    [*base_commands, BotCommand("admin", "لوحة إدارة البلاغات")],
-                    scope=BotCommandScopeChat(chat_id=admin_id),
-                )
-            logger.info("🧩 تطبيق البلاغ جاهز: %s", config.MINI_APP_URL)
-        except Exception as exc:
-            logger.warning("تعذر ضبط زر التطبيق: %s", exc)
+    # زر القائمة الجانبي: عودة إلى الأوامر الافتراضية (☰) — بلا زر تطبيق.
+    # ------------------------------------------------------------------
+    try:
+        await app.bot.set_chat_menu_button(menu_button=MenuButtonDefault())
+    except Exception as exc:
+        logger.warning("تعذر ضبط زر القائمة الافتراضي: %s", exc)
 
     # ------------------------------------------------------------------
     # القناة الرسمية: التحقق من الصلاحيات فقط (لا تُرسل أي رسالة)

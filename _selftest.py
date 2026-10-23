@@ -66,10 +66,17 @@ txt = exporters.export_text(asyncio.run(DB.all_reports()), out_dir=exports)
 assert xlsx.exists() and txt.exists() and xlsx.stat().st_size > 4000 and txt.stat().st_size > 500
 print("exporters OK:", xlsx.name, "|", txt.name)
 
-# فحص الترحيب/العرض (نصوص جاهزة) — الترحيب الآن يقود لقائمة الأزرار
-w = texts.WELCOME.format(name="أحمد")
+# فحص الترحيب/العرض (نصوص جاهزة) — الترحيب يؤدي إلى القائمة ذات الأزرار
+w = texts.WELCOME
 v = texts.badge("قيد المراجعة")
-assert "إرسال بلاغ جديد" in w and "فتح تطبيق البلاغ" in w and v == "🟠 قيد المراجعة"
+assert "منظومة الاستقبال الرقمي" in w and "يرجى اختيار" in w and v == "🟠 قيد المراجعة"
+
+# القائمة الرئيسية: 4 إجراءات بلا زر فتح التطبيق + زر الرجوع يعيد إظهارها
+mm = keyboards.main_menu_kb()
+actions = [b.callback_data for row in mm.inline_keyboard for b in row]
+assert actions == ["usr:report", "usr:status", "usr:about", "usr:contact"], actions
+back = keyboards.back_to_menu_kb()
+assert back.inline_keyboard[0][0].callback_data == "usr:menu"
 print("texts OK")
 
 # ------------------------------------------------------------------

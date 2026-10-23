@@ -120,17 +120,17 @@ def app_kb() -> ReplyKeyboardMarkup | None:
 # ==================================================================
 
 def main_menu_kb() -> InlineKeyboardMarkup:
-    """القائمة الرئيسية الاحترافية: كل شيء بأزرار مضمنة، لا أوامر كتابية."""
+    """القائمة الرئيسية الاحترافية: كل شيء بأزرار مضمنة، لا أوامر كتابية.
+
+    بلا زر فتح التطبيق — التطبيق متاح بأمر /app فقط عند الحاجة.
+    """
     return InlineKeyboardMarkup([
         [_cb("📝 إرسال بلاغ جديد", f"{USR_PREFIX}report")],
         [
-            _cb("🚀 فتح تطبيق البلاغ", f"{USR_PREFIX}app"),
             _cb("📊 حالة بلاغي", f"{USR_PREFIX}status"),
-        ],
-        [
             _cb("ℹ️ عن النظام", f"{USR_PREFIX}about"),
-            _cb("📞 تواصل مع الإدارة", f"{USR_PREFIX}contact"),
         ],
+        [_cb("📞 تواصل مع الإدارة", f"{USR_PREFIX}contact")],
     ])
 
 
@@ -159,9 +159,9 @@ def confirm_report_kb() -> InlineKeyboardMarkup:
 
 
 def back_to_menu_kb() -> InlineKeyboardMarkup:
-    """زر العودة للقائمة الرئيسية من أي شاشة."""
+    """زر الرجوع الوحيد الذي يبقى بعد تلاشي بقية الأزرار لإعادة إظهار القائمة."""
     return InlineKeyboardMarkup([
-        [_cb("🏠 العودة للقائمة الرئيسية", f"{USR_PREFIX}menu")],
+        [_cb("↩️ الرجوع للقائمة", f"{USR_PREFIX}menu")],
     ])
 
 
