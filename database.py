@@ -524,6 +524,175 @@ class Database:
         return await asyncio.to_thread(self._count_user_reports, user_id)
 
     # --------------------------------------------------------------
+    # أدوات لوحة الإدارة (واجهة admin_api) — بحث متقدم + إدارة + مستخدمون
+    # --------------------------------------------------------------
+    def _list_reports_filtered(
+        self,
+        status: Optional[str] = None,
+        vtype: Optional[str] = None,
+        user_id: Optional[int] = None,
+        q: Optional[str] = None,
+        page: int = 0,
+        size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """قائمة بلاغات بفلاتر كامل (الحالة/النوع/المستخدم/نص حر) + العدد الكلي."""
+        clauses, params = [], []
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if vtype:
+            clauses.append("violation_type = ?")
+            params.append(vtype)
+        if user_id:
+            clauses.append("user_id = ?")
+            params.append(int(user_id))
+        if q:
+            like = f"%{q.strip()}%"
+            clauses.append(
+                "(seq LIKE ? OR full_name LIKE ? OR description LIKE ?"
+                " OR post_link LIKE ? OR CAST(user_id AS TEXT) LIKE ?)"
+            )
+            params.extend([like, like, like, like, like])
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        size = max(1, min(int(size), 100))
+        page = max(0, int(page))
+        with self._lock:
+            total = self._conn.execute(
+                f"SELECT COUNT(*) FROM reports{where}", params
+            ).fetchone()[0]
+            rows = self._conn.execute(
+                f"SELECT * FROM reports{where}"
+                " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                [*params, size, page * size],
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows], int(total)
+
+    async def list_reports_filtered(self, **kwargs):
+        return await asyncio.to_thread(self._list_reports_filtered, **kwargs)
+
+    def _set_violation_type(self, rid: int, vtype: Optional[str]) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE reports SET violation_type = ? WHERE id = ?",
+                (vtype, rid),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    async def set_violation_type(self, rid: int, vtype: Optional[str]) -> bool:
+        return await asyncio.to_thread(self._set_violation_type, rid, vtype)
+
+    def _set_admin_note(self, rid: int, note: Optional[str]) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE reports SET admin_note = ? WHERE id = ?",
+                (note, rid),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    async def set_admin_note(self, rid: int, note: Optional[str]) -> bool:
+        return await asyncio.to_thread(self._set_admin_note, rid, note)
+
+    def _delete_report(self, rid: int) -> bool:
+        """حذف نهائي لبلاغ واحد مع بصمته، مع إبقاء الأثر في سجل التدقيق."""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM reports WHERE id = ?", (rid,))
+            if cur.rowcount > 0:
+                self._conn.execute(
+                    "DELETE FROM report_fingerprints WHERE report_id = ?", (rid,)
+                )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    async def delete_report(self, rid: int) -> bool:
+        return await asyncio.to_thread(self._delete_report, rid)
+
+    def _list_users(
+        self, q: Optional[str] = None, page: int = 0, size: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        """قائمة مبلّغين مجملة: آخر اسم/معرف، عدد البلاغات، آخر ظهور + حالة الحجب."""
+        like = f"%{(q or '').strip()}%"
+        having = ""
+        if q and q.strip():
+            having = (
+                " HAVING MAX(r.full_name) LIKE ? OR MAX(r.username) LIKE ?"
+                " OR CAST(r.user_id AS TEXT) LIKE ?"
+            )
+        params = [like, like, like] if having else []
+        base = """
+            SELECT r.user_id AS user_id,
+                   MAX(r.full_name) AS full_name,
+                   MAX(r.username)  AS username,
+                   COUNT(*)         AS reports_count,
+                   MAX(r.created_at) AS last_at,
+                   b.frozen_until   AS frozen_until,
+                   b.reason         AS block_reason
+            FROM reports r
+            LEFT JOIN user_blocks b ON b.user_id = r.user_id
+            GROUP BY r.user_id{having}
+            ORDER BY last_at DESC
+            LIMIT ? OFFSET ?
+        """.format(having=having)
+        total = """
+            SELECT COUNT(*) FROM (
+                SELECT r.user_id AS user_id, MAX(r.full_name) AS u,
+                       MAX(r.username) AS n
+                FROM reports r
+                GROUP BY r.user_id{having}
+            )
+        """.format(having=having)
+        size = max(1, min(int(size), 100))
+        page = max(0, int(page))
+        with self._lock:
+            count = self._conn.execute(total, params).fetchone()[0]
+            rows = self._conn.execute(
+                base, [*params, size, page * size]
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows], int(count)
+
+    async def list_users(self, q: Optional[str] = None, page: int = 0,
+                         size: int = 20):
+        return await asyncio.to_thread(self._list_users, q, page, size)
+
+    def _user_profile(self, user_id: int) -> Optional[dict[str, Any]]:
+        """بطاقة مبلّغ: أحدث بياناته، عدّادات بلاغاته، وحالة الحجب."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM reports WHERE user_id = ?"
+                " ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            stats = self._conn.execute(
+                "SELECT COUNT(*) AS total_reports,"
+                " SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS approved_n,"
+                " SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS rejected_n,"
+                " MIN(created_at) AS first_at"
+                " FROM reports WHERE user_id = ?",
+                (STATUS_APPROVED, STATUS_REJECTED, user_id),
+            ).fetchone()
+            block = self._conn.execute(
+                "SELECT * FROM user_blocks WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        if row is None:
+            return _row_to_dict(block) if block is not None else None
+        profile = _row_to_dict(row)
+        profile.pop("description", None)
+        profile.pop("photo_path", None)
+        profile.pop("post_link", None)
+        profile.update({
+            "total_reports": int(stats["total_reports"] or 0),
+            "approved_n": int(stats["approved_n"] or 0),
+            "rejected_n": int(stats["rejected_n"] or 0),
+            "first_at": stats["first_at"],
+            "block": _row_to_dict(block) if block is not None else None,
+        })
+        return profile
+
+    async def user_profile(self, user_id: int):
+        return await asyncio.to_thread(self._user_profile, user_id)
+
+    # --------------------------------------------------------------
     # إغلاق الاتصال عند إيقاف البوت
     # --------------------------------------------------------------
     def close(self) -> None:

@@ -59,8 +59,8 @@ except ImportError:  # pragma: no cover - بيئة محلية بدون Hugging F
         return func
 
 import main as bot_main  # noqa: E402
+import admin_api  # noqa: E402
 import texts  # noqa: E402
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
 logger = logging.getLogger("space")
 
@@ -322,7 +322,12 @@ def build_app() -> FastAPI:
   <p><a href="/app/">فتح تطبيق إرسال البلاغ</a></p>
 </div></body></html>""")
 
-    # 5) تطبيق البلاغ (ملفات ثابتة) — يُربط أخيرًا حتى لا يحجب المسارات الأخرى
+    # 5) واجهة التحكم الإدارية (Admin API) — نقاط محمية للمشرف، تُربط قبل
+    #    ربط الملفات الثابتة حتى لا تحجبها.
+    admin_api.register(app)
+    logger.info("🛡️ واجهة التحكم الإدارية جاهزة (+ADMIN_API_TOKEN)")
+
+    # 6) تطبيق البلاغ (ملفات ثابتة) — يُربط أخيرًا حتى لا يحجب المسارات الأخرى
     if WEBAPP_DIR.is_dir():
         app.mount("/", StaticFiles(directory=str(WEBAPP_DIR), html=True), name="webapp")
         logger.info("🧩 تطبيق البلاغ متاح على المسار /")

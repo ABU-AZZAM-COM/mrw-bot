@@ -136,6 +136,63 @@ finally:
     _cfg.HF_BACKUP_TOKEN, _cfg.HF_BACKUP_REPO = _tok, _repo
 print("hub_backup: حرّاس (غير مهيأ / لا استبدال فوق بيانات) OK")
 
+# ------------------------------------------------------------------
+# فحص طبقة واجهة الإدارة (منطق خالص — بلا FastAPI وبلا شبكة)
+# ------------------------------------------------------------------
+import admin_api
+import os as _os
+
+# الحماية بالتوكن: فراغ = مرفوض، عدم مطابقة = مرفوض، مطابقة = مقبول
+_os.environ["ADMIN_API_TOKEN"] = "test-token-xyz"
+assert admin_api.expected_token() == "test-token-xyz"
+assert admin_api.token_ok("", "test-token-xyz") is False
+assert admin_api.token_ok("wrong", "test-token-xyz") is False
+assert admin_api.token_ok("  test-token-xyz  ", "test-token-xyz") is True
+_os.environ.pop("ADMIN_API_TOKEN")
+assert admin_api.expected_token() == ""
+print("admin_api: حماية التوكن OK")
+
+# أدوات اللوحة على قاعدة اختبار فعلية (محلية مؤقتة)
+pbase = Path(tempfile.mkdtemp()) / "panel.db"
+pdb = database.Database(pbase)
+pid = asyncio.run(pdb.add_report(
+    user_id=777, username="panel_user", full_name="مستخدم لوحة",
+    photo_path="media/x.jpg", photo_file_id="fid777",
+    post_link="https://t.me/x/9",
+    description="بلاغ لتجربة واجهة الإدارة الكاملة هنا بالتفصيل الشديد",
+    violation_type="مخالفة زي",
+))
+rows, total = asyncio.run(pdb.list_reports_filtered(user_id=777))
+assert total == 1 and rows[0]["id"] == pid["id"]
+rows, total = asyncio.run(pdb.list_reports_filtered(q="واجهة الإدارة"))
+assert total >= 1 and rows[0]["user_id"] == 777
+rows, total = asyncio.run(pdb.list_reports_filtered(vtype="مخالفة زي"))
+assert total >= 1
+assert asyncio.run(pdb.set_violation_type(pid["id"], "أخرى")) is True
+assert asyncio.run(pdb.set_admin_note(pid["id"], "ملاحظة من اللوحة")) is True
+check = asyncio.run(pdb.get_by_id(pid["id"]))
+assert check["violation_type"] == "أخرى" and check["admin_note"] == "ملاحظة من اللوحة"
+
+# قائمة المستخدمين المجملة + بطاقة مستخدم + المستخدم الوهمي = None
+users_rows, users_total = asyncio.run(pdb.list_users())
+assert users_total == 1 and users_rows[0]["user_id"] == 777
+profile = asyncio.run(pdb.user_profile(777))
+assert profile["user_id"] == 777 and profile["total_reports"] == 1
+assert asyncio.run(pdb.user_profile(42424242)) is None
+
+# الحجب: حفظ ثم ظهور في القائمة ثم الرفع ثم الاختفاء
+asyncio.run(pdb.save_block(777, 0, "9999-12-31T00:00:00", "اختبار لوحة"))
+users_rows, _ = asyncio.run(pdb.list_users())
+assert users_rows[0]["frozen_until"] == "9999-12-31T00:00:00"
+asyncio.run(pdb.clear_block(777))
+assert asyncio.run(pdb.get_block(777)).get("frozen_until") in (None, "")
+
+# الحذف النهائي يعيد True ثم يختفي البلاغ
+assert asyncio.run(pdb.delete_report(pid["id"])) is True
+assert asyncio.run(pdb.get_by_id(pid["id"])) is None
+pdb.close()
+print("admin_api: أدوات اللوحة على القاعدة (بحث/تصنيف/ملاحظة/حجب/حذف) OK")
+
 # خادم الصحة: ليس بيئة سحابية محليًا
 assert health_server.is_space_environment() is False
 print("health_server OK")
