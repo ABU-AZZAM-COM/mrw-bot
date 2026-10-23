@@ -25,8 +25,11 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-import utils
-import texts
+from fastapi import Request  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+
+import utils  # noqa: E402
+import texts  # noqa: E402
 from database import (
     STATUS_APPROVED,
     STATUS_CODES,
@@ -63,8 +66,6 @@ def token_ok(got: str, expected: str) -> bool:
 
 def _auth(request):
     """يعيد JSONResponse للرفض، أو None للموافقة (يُستدعى من كل نقطة)."""
-    from fastapi.responses import JSONResponse  # noqa: PLC0415
-
     expected = expected_token()
     if not expected:
         return JSONResponse(
@@ -209,9 +210,6 @@ def _status_text(r: dict[str, Any], new_status: str, note_extra: str) -> str:
 # التسجيل: يضيف كل نقاط الواجهة إلى تطبيق FastAPI في space_app
 # ==================================================================
 def register(app) -> None:  # noqa: ANN001 — FastAPI
-    from fastapi import Request  # noqa: PLC0415
-    from fastapi.responses import JSONResponse  # noqa: PLC0415
-
     OK = JSONResponse({"ok": True})
 
     def bad(msg: str, code: int = 400) -> JSONResponse:
@@ -469,9 +467,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         return JSONResponse({"ok": True, "items": await db_of().recent_audit(limit)})
 
     @app.get("/api/admin/export/{fmt}")
-    async def export(fmt: str, request: Request) -> Any:
-        from fastapi.responses import FileResponse  # noqa: PLC0415
-
+    async def export(fmt: str, request: Request):
         refuse = _auth(request)
         if refuse:
             return refuse
