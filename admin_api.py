@@ -98,20 +98,44 @@ def _bot_runtime():
 
 
 async def _on_bot_loop(coro_factory) -> bool:
-    """ينفذ إنشاءًا متأخرًا على حلقة البوت ويعيد نتيجته، بلا استثناء خارجي."""
+    """ينفذ إنشاءًا متأخرًا على حلقة البوت ويعيد نتيجته منطقية بلا استثناء خارجي."""
+    val = await _on_bot_loop_value(coro_factory)
+    return bool(val)
+
+
+async def _on_bot_loop_value(coro_factory):
+    """ينفذ على حلقة البوت ويعيد القيمة كما هي (None عند غياب البوت/خطأ)."""
     bot, loop = _bot_runtime()
     if bot is None:
-        return False
+        return None
     fut = asyncio.run_coroutine_threadsafe(coro_factory(), loop)
     try:
-        return bool(await asyncio.wrap_future(fut))
+        return await asyncio.wrap_future(fut)
     except Exception:
         logger.warning("فشل تنفيذ إجراء على حلقة البوت", exc_info=True)
-        return False
+        return None
 
 
 async def _bot_ready() -> bool:
     return _bot_runtime()[0] is not None
+
+
+async def _photo_bytes(bot_file_id: str):
+    """يجلب بايتات صورة من تلغرام على حلقة البوت (None عند فشل/غياب)."""
+    async def _getter():
+        bot, loop = _bot_runtime()
+        if bot is None:
+            return None
+        try:
+            tg_file = await bot.get_file(bot_file_id)
+            buf = bytearray()
+            await tg_file.download_as_bytearray(buf)
+            return bytes(buf)
+        except Exception:
+            logger.info("تعذر جلب صورة البلاغ من تلغرام", exc_info=True)
+            return None
+
+    return await _on_bot_loop_value(_getter)
 
 
 def _parse_html():
@@ -465,6 +489,45 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return refuse
         limit = min(int(request.query_params.get("limit", "50") or 50), 200)
         return JSONResponse({"ok": True, "items": await db_of().recent_audit(limit)})
+
+    @app.get("/api/admin/meta")
+    async def meta(request: Request) -> JSONResponse:
+        """عناصر ثابتة تحتاجها الواجهات: قائمة التصنيفات المعتمدة."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        import config  # noqa: PLC0415
+
+        return JSONResponse({
+            "ok": True,
+            "vtypes": list(config.VIOLATION_TYPES),
+            "statuses": [STATUS_NEW, STATUS_REVIEW, STATUS_APPROVED, STATUS_REJECTED],
+        })
+
+    @app.get("/api/admin/photo/{rid}")
+    async def photo(rid: int, request: Request) -> Any:
+        """صورة البلاغ: محليًا إن وُجد وإلا من تلغرام (file_id). تعيد بايتات صورة."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        r = await db_of().get_by_id(rid)
+        if not r:
+            return bad("not_found", 404)
+        from pathlib import Path as P  # noqa: PLC0415
+
+        local = P(str(r.get("photo_path") or ""))
+        if local.exists():
+            return FileResponse(str(local), media_type="image/jpeg")
+        file_id = r.get("photo_file_id")
+        if not file_id:
+            return bad("no_photo", 404)
+
+        data = await _photo_bytes(file_id)
+        if not data:
+            return bad("photo_unavailable", 503)
+        from fastapi.responses import Response  # noqa: PLC0415
+
+        return Response(content=data, media_type="image/jpeg")
 
     @app.get("/api/admin/export/{fmt}")
     async def export(fmt: str, request: Request):
