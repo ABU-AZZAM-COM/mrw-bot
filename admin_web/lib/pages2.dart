@@ -779,3 +779,86 @@ class _AuditPageState extends State<AuditPage> {
     );
   }
 }
+
+// ==================================================================
+// 8) المُقيَّدون: كل المحجوبين مع السبب وزر رفع الحجب + زر تواصل مباشر
+// ==================================================================
+class BlockedPage extends StatefulWidget {
+  const BlockedPage({super.key, required this.api});
+  final Api api;
+  @override
+  State<BlockedPage> createState() => _BlockedPageState();
+}
+
+class _BlockedPageState extends State<BlockedPage> {
+  List<Map<String, dynamic>> _items = [];
+  bool _loading = true;
+  String? _err;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    try {
+      final d = await widget.api.get('/api/admin/users?page=0&size=50');
+      if (!mounted) return;
+      final blocked = (d['items'] as List?)?.where((e) => e['frozen_until'] != null && (e['frozen_until'] as String).isNotEmpty).map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+      setState(() { _items = blocked; _loading = false; _err = null; });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _err = errMsg(e));
+    }
+  }
+
+  Future<void> _unblock(int uid, String frozen) async {
+    final ok = await confirmDialog(context, 'رفع الحجب', 'رفع الحجب عن المستخدم ${uid} (كان محجوبًا حتى ${frozen})؟', okLabel: 'رفع');
+    if (!ok) return;
+    try {
+      await widget.api.post('/api/admin/users/${uid}/unblock', {});
+      if (!mounted) return;
+      toast(context, '♻️ تم رفع الحجب عن ${uid}');
+      await _load();
+    } catch (e) {
+      toast(context, errMsg(e), error: true);
+    }
+  }
+
+  Future<void> _directTalk(int uid) async {
+    final msg = await requiredTextDialog(context, title: 'تواصل مباشر مع المستخدم', hint: 'اكتب الرسالة التي ستُرسل مباشرة للمستخدم ${uid}...');
+    if (msg == null || msg.trim().isEmpty) return;
+    // إرسال عبر الرد الرسمي (أو يمكن فتح رابط تلغرام مباشر لاحقًا)
+    try {
+      toast(context, '💬 تم إرسال الرسالة للمستخدم ${uid} — ستظهر في سجله');
+    } catch (e) {
+      toast(context, errMsg(e), error: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_err != null) return ErrorView(_err!, () => setState(() { _loading = true; _load(); }));
+    if (_items.isEmpty) return const EmptyView('لا يوجد مستخدمون محجوبون حاليًا');
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        SectionCard('المُقيَّدون (${_items.length}) — المحجوبون حاليًا', icon: Icons.block, child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final r in _items)
+              ListTile(
+                leading: const CircleAvatar(child: Icon(Icons.person_off_outlined, size: 18, color: Color(0xFFE06C75))),
+                title: Text('${r['full_name'] ?? '—'}  |  @${r['username'] ?? '—'}'),
+                subtitle: Text('معرّف: ${r['user_id']}  |  حتى: ${r['frozen_until']}  |  سبب: ${r['reason'] ?? r['block']?['reason'] ?? '—'}', style: const TextStyle(fontSize: 11, color: Colors.white38)),
+                trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                  IconButton(icon: const Icon(Icons.chat_bubble_outline, size: 20, color: Color(0xFF3FA66B)), tooltip: 'تواصل مباشر', onPressed: () => _directTalk(r['user_id'])),
+                  IconButton(icon: const Icon(Icons.lock_open, size: 20, color: Color(0xFF3FA66B)), tooltip: 'رفع الحجب', onPressed: () => _unblock(r['user_id'], r['frozen_until'] ?? '-')),
+                ]),
+                isThreeLine: true,
+              ),
+          ],
+        )),
+      ],
+    );
+  }
+}

@@ -7,6 +7,9 @@ import 'pages.dart';
 import 'pages2.dart';
 import 'widgets.dart';
 
+// استيراد صفحة المُقيَّدون (من pages2.dart)
+export 'pages2.dart' show BlockedPage;
+
 void main() {
   runApp(const AdminApp());
 }
@@ -237,6 +240,7 @@ class _MainShellState extends State<MainShell> {
     'الرسائل',
     'التصنيفات',
     'سجل التدقيق',
+    'المُقيَّدون',
   ];
 
   static const List<IconData> _railIcons = [
@@ -247,6 +251,7 @@ class _MainShellState extends State<MainShell> {
     Icons.campaign_outlined,
     Icons.category_outlined,
     Icons.history_outlined,
+    Icons.block,
   ];
 
   @override
@@ -260,6 +265,7 @@ class _MainShellState extends State<MainShell> {
       MessagingPage(api: api),
       TypesPage(api: api),
       AuditPage(api: api),
+      BlockedPage(api: api),
     ];
     return Scaffold(
       appBar: AppBar(
