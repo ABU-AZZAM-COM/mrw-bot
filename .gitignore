@@ -14,3 +14,9 @@ data/
 media/
 exports/
 logs/
+
+# لوحة سطح المكتب — إعدادات سرية ومخرجات البناء
+desktop_panel/panel_config.json
+desktop_panel/build/
+desktop_panel/dist/
+desktop_panel/*.spec
