@@ -83,6 +83,7 @@ class _AuditPageState extends State<AuditPage> {
     'user_blocked': 'حجب مستخدم',
     'user_unblocked': 'رفع حجب',
     'automated_explicit_image_freeze': 'تجميد دائم آلي لصورة صريحة',
+    'automated_sensitive_image_freeze': 'تجميد دائم آلي لمحتوى حساس',
     'user_message': 'رسالة مباشرة لمستخدم',
     'emergency_on': '🛑 إيقاف طارئ',
     'emergency_off': '🟢 استئناف',
@@ -158,7 +159,10 @@ class _AuditPageState extends State<AuditPage> {
                   ),
                   DataCell(
                     Text(
-                      (i['action'] ?? '') == 'automated_explicit_image_freeze'
+                      (i['action'] ?? '') ==
+                                  'automated_explicit_image_freeze' ||
+                              (i['action'] ?? '') ==
+                                  'automated_sensitive_image_freeze'
                           ? 'فحص الصور الآلي'
                           : _actorName(i['actor_id'] ?? i['actor']),
                     ),

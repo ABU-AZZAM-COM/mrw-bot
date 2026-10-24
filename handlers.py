@@ -249,7 +249,7 @@ async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id
                 logger.warning("تعذر حذف ملف الفحص المؤقت للمستخدم %s", user_id, exc_info=True)
 
 
-async def _freeze_for_explicit_image(
+async def _freeze_for_sensitive_image(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     screening: image_moderation.ScreeningResult,
@@ -258,7 +258,7 @@ async def _freeze_for_explicit_image(
     user = update.effective_user
     db = _db(context)
     reason = (
-        "كشف آلي محلي لمؤشرات عري صريح: "
+        "كشف آلي محلي لمؤشرات محتوى حساس: "
         + ", ".join(screening.labels)
         + f" (ثقة {screening.max_score:.0%})"
     )
@@ -273,7 +273,7 @@ async def _freeze_for_explicit_image(
     try:
         await db.audit(
             None,
-            "automated_explicit_image_freeze",
+            "automated_sensitive_image_freeze",
             str(user.id),
             reason,
         )
@@ -283,7 +283,7 @@ async def _freeze_for_explicit_image(
     _pending_app_users.discard(user.id)
     context.user_data.clear()
     admin_message = (
-        "🚨 <b>تجميد آلي دائم — صورة مشتبه بها</b>\n"
+        "🚨 <b>تجميد آلي دائم — محتوى حساس</b>\n"
         f"المستخدم: {utils.esc(user.full_name or '-')}\n"
         f"المعرّف: <code>{user.id}</code>\n"
         f"المؤشرات: <code>{utils.esc(', '.join(screening.labels))}</code>\n"
@@ -326,7 +326,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not photo_file_id:
         return ASK_PHOTO
     if screening.flagged:
-        await _freeze_for_explicit_image(update, context, screening)
+        await _freeze_for_sensitive_image(update, context, screening)
         return ConversationHandler.END
 
     context.user_data.update(
@@ -712,7 +712,7 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return None
     if screening.flagged:
-        await _freeze_for_explicit_image(update, context, screening)
+        await _freeze_for_sensitive_image(update, context, screening)
         return None
 
     try:
@@ -810,12 +810,7 @@ async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, report: dict) -> No
 
     for admin_id in config.ADMIN_IDS:
         try:
-            if image_review_hold:
-                await context.bot.send_message(
-                    chat_id=admin_id, text=caption, parse_mode=ParseMode.HTML,
-                    reply_markup=markup,
-                )
-            elif photo is not None and photo.exists():
+            if photo is not None and photo.exists():
                 with open(photo, "rb") as fp:
                     await context.bot.send_photo(
                         chat_id=admin_id, photo=fp, caption=caption,

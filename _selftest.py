@@ -49,7 +49,7 @@ freeze_context = SimpleNamespace(
 )
 handlers._pending_app_users.add(freeze_user.id)
 asyncio.run(
-    handlers._freeze_for_explicit_image(
+    handlers._freeze_for_sensitive_image(
         freeze_update,
         freeze_context,
         handlers.image_moderation.ScreeningResult(
@@ -67,7 +67,7 @@ assert not freeze_context.user_data and freeze_user.id not in handlers._pending_
 assert len(freeze_alerts) == len(config.ADMIN_IDS) and len(freeze_notices) == 1
 assert all("photo" not in alert for alert in freeze_alerts)
 assert any(
-    row["action"] == "automated_explicit_image_freeze"
+    row["action"] == "automated_sensitive_image_freeze"
     and row["target"] == str(freeze_user.id)
     for row in asyncio.run(DB.recent_audit(20))
 )
@@ -142,6 +142,38 @@ r1 = asyncio.run(DB.add_report(**fake_row))
 r2 = asyncio.run(DB.add_report(**fake_row))
 assert r1["status"] == "جديد" and r1["seq"].startswith("MRV-"), r1
 print("add_report OK:", r1["seq"], "|", r2["seq"])
+
+review_photo_path = Path(_db_test_dir.name) / "review-image.jpg"
+review_photo_path.write_bytes(b"test-image")
+review_report = {
+    **r2,
+    "photo_path": str(review_photo_path),
+    "photo_file_id": "review-file-id",
+    "admin_note": "مؤشر تعرٍّ يحتاج مراجعة",
+    "needs_review": 1,
+}
+review_notifications = []
+
+async def _capture_review_photo(**kwargs):
+    review_notifications.append(("photo", kwargs))
+
+async def _capture_review_message(**kwargs):
+    review_notifications.append(("message", kwargs))
+
+review_context = SimpleNamespace(
+    bot=SimpleNamespace(
+        send_photo=_capture_review_photo,
+        send_message=_capture_review_message,
+    )
+)
+asyncio.run(handlers._notify_admins(review_context, review_report))
+assert len(review_notifications) == len(config.ADMIN_IDS)
+assert all(kind == "photo" for kind, _ in review_notifications)
+assert all(
+    "مؤشر تعرٍّ يحتاج مراجعة" in kwargs["caption"]
+    for _, kwargs in review_notifications
+)
+print("review-required reports notify admins with the photo and moderation note")
 
 rows, total = asyncio.run(DB.list_reports(None, 0, 5))
 assert total == 2 and rows[0]["seq"] == r2["seq"], (total, rows)

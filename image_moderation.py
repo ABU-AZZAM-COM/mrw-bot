@@ -12,6 +12,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 _detector: Any = None
 _detector_lock = threading.Lock()
+SCREENING_THRESHOLD = 0.40
 
 EXPOSED_LABELS = {
     "BUTTOCKS_EXPOSED",
@@ -36,33 +37,15 @@ class ScreeningResult:
 
 
 def is_enabled() -> bool:
-    return os.getenv("NSFW_SCREENING_ENABLED", "1").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
+    return True
 
 
 def threshold() -> float:
-    raw = os.getenv("NSFW_SCREENING_THRESHOLD", "0.85").strip()
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise ValueError("NSFW_SCREENING_THRESHOLD must be between 0 and 1") from exc
-    if not 0 <= value <= 1:
-        raise ValueError("NSFW_SCREENING_THRESHOLD must be between 0 and 1")
-    return value
+    return SCREENING_THRESHOLD
 
 
 def review_threshold() -> float:
-    raw = os.getenv("NSFW_REVIEW_THRESHOLD", "0.40").strip()
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise ValueError("NSFW_REVIEW_THRESHOLD must be between 0 and 1") from exc
-    if not 0 <= value <= 1:
-        raise ValueError("NSFW_REVIEW_THRESHOLD must be between 0 and 1")
-    if value > threshold():
-        raise ValueError("NSFW_REVIEW_THRESHOLD must not exceed NSFW_SCREENING_THRESHOLD")
-    return value
+    return SCREENING_THRESHOLD
 
 
 def _get_detector() -> Any:
@@ -114,7 +97,7 @@ def _scan_paths(path: str | Path, detector: Any) -> list[dict[str, Any]]:
 
 
 def screen_image(path: str | Path) -> ScreeningResult:
-    """Run local multi-scale inference and separate review from explicit decisions."""
+    """Run local multi-scale inference and separate review from high-confidence exposure."""
     logger.debug("Screening uploaded image locally")
     detected: dict[str, float] = {}
     cutoff = threshold()
@@ -124,12 +107,10 @@ def screen_image(path: str | Path) -> ScreeningResult:
         score = float(detection.get("score") or 0)
         if label in EXPLICIT_LABELS | EXPOSED_LABELS and score >= review_cutoff:
             detected[label] = max(score, detected.get(label, 0.0))
-    explicit = tuple(
-        sorted(label for label in EXPLICIT_LABELS if detected.get(label, 0.0) >= cutoff)
-    )
     review = tuple(sorted(detected))
+    high_confidence_exposure = any(score > cutoff for score in detected.values())
     return ScreeningResult(
-        flagged=bool(explicit),
+        flagged=high_confidence_exposure,
         review_required=bool(review),
         labels=review,
         max_score=max(detected.values(), default=0.0),

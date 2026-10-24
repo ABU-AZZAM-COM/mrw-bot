@@ -33,9 +33,6 @@ async def main() -> None:
     db = Database(tmp)
 
     print("\n--- فحص الصور المحلي ---")
-    old_enabled = os.environ.get("NSFW_SCREENING_ENABLED")
-    old_threshold = os.environ.get("NSFW_SCREENING_THRESHOLD")
-    old_review_threshold = os.environ.get("NSFW_REVIEW_THRESHOLD")
     import cv2
     import numpy as np
 
@@ -43,10 +40,15 @@ async def main() -> None:
     check("إنشاء صورة اختبار للفحص المحلي", cv2.imwrite(
         str(test_image), np.full((320, 320, 3), 255, dtype=np.uint8)
     ))
-    os.environ.pop("NSFW_SCREENING_ENABLED", None)
-    check("الفحص الآلي مفعّل افتراضيًا", image_moderation.is_enabled())
     os.environ["NSFW_SCREENING_ENABLED"] = "0"
-    check("يمكن تعطيل الفحص صراحةً", not image_moderation.is_enabled())
+    os.environ["NSFW_SCREENING_THRESHOLD"] = "0.99"
+    os.environ["NSFW_REVIEW_THRESHOLD"] = "0.99"
+    check(
+        "الفحص الآلي وعتبة 40% لا يمكن تجاوزهما بإعدادات النشر",
+        image_moderation.is_enabled()
+        and image_moderation.threshold() == 0.40
+        and image_moderation.review_threshold() == 0.40,
+    )
     old_detector = image_moderation._detector
     image_moderation._detector = type(
         "FakeDetector",
@@ -57,9 +59,6 @@ async def main() -> None:
             {"class": "FEMALE_BREAST_COVERED", "score": 0.99},
         ]},
     )()
-    os.environ["NSFW_SCREENING_ENABLED"] = "1"
-    os.environ["NSFW_SCREENING_THRESHOLD"] = "0.85"
-    os.environ["NSFW_REVIEW_THRESHOLD"] = "0.40"
     screen = image_moderation.screen_image(test_image)
     check(
         "كشف الأعضاء التناسلية عالي الثقة يميّز الحالة الصريحة",
@@ -67,8 +66,13 @@ async def main() -> None:
         and screen.review_required
         and screen.labels == ("FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED"),
     )
-    os.environ["NSFW_SCREENING_THRESHOLD"] = "0.95"
-    os.environ["NSFW_REVIEW_THRESHOLD"] = "0.40"
+    image_moderation._detector = type(
+        "UnderThresholdDetector",
+        (),
+        {"detect": lambda self, _path: [
+            {"class": "FEMALE_GENITALIA_EXPOSED", "score": 0.40},
+        ]},
+    )()
     under_cutoff = image_moderation.screen_image(test_image)
     check(
         "الكشف غير المؤكد يُحال للمراجعة ولا يسبب تجميدًا",
@@ -77,16 +81,30 @@ async def main() -> None:
         and "FEMALE_GENITALIA_EXPOSED" in under_cutoff.labels,
     )
     image_moderation._detector = type(
-        "ReviewDetector",
+        "ThresholdExposureDetector",
         (),
         {"detect": lambda self, _path: [
-            {"class": "FEMALE_BREAST_EXPOSED", "score": 0.96},
+            {"class": "FEMALE_BREAST_EXPOSED", "score": 0.40},
         ]},
     )()
+    threshold_exposure = image_moderation.screen_image(test_image)
     check(
-        "مؤشر الثدي وحده يحتاج مراجعة ولا يسبب حظرًا دائمًا",
-        not image_moderation.screen_image(test_image).flagged
-        and image_moderation.screen_image(test_image).review_required,
+        "درجة 40% بالضبط تُحال للمراجعة دون تقييد",
+        not threshold_exposure.flagged and threshold_exposure.review_required,
+    )
+    image_moderation._detector = type(
+        "HighConfidenceExposureDetector",
+        (),
+        {"detect": lambda self, _path: [
+            {"class": "FEMALE_BREAST_EXPOSED", "score": 0.41},
+        ]},
+    )()
+    high_confidence_exposure = image_moderation.screen_image(test_image)
+    check(
+        "مؤشر تعرٍّ أعلى من 40% يفعّل التجميد الآلي",
+        high_confidence_exposure.flagged
+        and high_confidence_exposure.review_required
+        and high_confidence_exposure.max_score == 0.41,
     )
     tiled_image = tmp.parent / "multiscale-test.jpg"
     check("إنشاء صورة اختبار متعددة الدقة", cv2.imwrite(
@@ -105,7 +123,6 @@ async def main() -> None:
 
     multi_scale_detector = MultiScaleDetector()
     image_moderation._detector = multi_scale_detector
-    os.environ["NSFW_SCREENING_THRESHOLD"] = "0.85"
     multi_scale_result = image_moderation.screen_image(tiled_image)
     check(
         "المسح المتعدد يكتشف المؤشر في قصاصة مكبرة",
@@ -114,18 +131,9 @@ async def main() -> None:
         and multi_scale_result.max_score == 0.93,
     )
     image_moderation._detector = old_detector
-    if old_enabled is None:
-        os.environ.pop("NSFW_SCREENING_ENABLED", None)
-    else:
-        os.environ["NSFW_SCREENING_ENABLED"] = old_enabled
-    if old_threshold is None:
-        os.environ.pop("NSFW_SCREENING_THRESHOLD", None)
-    else:
-        os.environ["NSFW_SCREENING_THRESHOLD"] = old_threshold
-    if old_review_threshold is None:
-        os.environ.pop("NSFW_REVIEW_THRESHOLD", None)
-    else:
-        os.environ["NSFW_REVIEW_THRESHOLD"] = old_review_threshold
+    os.environ.pop("NSFW_SCREENING_ENABLED", None)
+    os.environ.pop("NSFW_SCREENING_THRESHOLD", None)
+    os.environ.pop("NSFW_REVIEW_THRESHOLD", None)
 
     print("\n--- فحص الروابط ---")
     v = guards.check_link("https://t.me/blgh_bot")

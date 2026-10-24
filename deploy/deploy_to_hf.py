@@ -152,9 +152,6 @@ def main() -> int:
         "KEEPALIVE_INTERVAL_SEC": "300",
         "LOCAL_UTC_OFFSET": "3",
         "BOT_USERNAME": args.bot_username,
-        "NSFW_SCREENING_ENABLED": os.getenv("NSFW_SCREENING_ENABLED", "1"),
-        "NSFW_SCREENING_THRESHOLD": os.getenv("NSFW_SCREENING_THRESHOLD", "0.85"),
-        "NSFW_REVIEW_THRESHOLD": os.getenv("NSFW_REVIEW_THRESHOLD", "0.40"),
     }
     if args.bot_token:
         secrets["BOT_TOKEN"] = args.bot_token
