@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:web/web.dart' as web;
@@ -116,6 +117,36 @@ class Api implements AdminApi {
   @override
   Future<Map<String, dynamic>> get(String path, [Map<String, String>? query]) =>
       _go('GET', path, query: query);
+
+  @override
+  Future<Uint8List> getBytes(String path) async {
+    http.Response response;
+    try {
+      response = await _client.get(_uri(path), headers: _headers);
+    } catch (_) {
+      throw ApiException(0, 'network_error');
+    }
+    if (response.statusCode == 401) {
+      onUnauthorized?.call();
+      throw ApiException(401, 'unauthorized');
+    }
+    if (response.statusCode >= 400) {
+      var code = 'error';
+      try {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map<String, dynamic>) {
+          code = (decoded['error'] ?? code).toString();
+        }
+      } catch (_) {
+        code = 'error';
+      }
+      throw ApiException(response.statusCode, code);
+    }
+    if (!(response.headers['content-type'] ?? '').startsWith('image/')) {
+      throw ApiException(response.statusCode, 'invalid_image_response');
+    }
+    return response.bodyBytes;
+  }
 
   @override
   Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body) =>

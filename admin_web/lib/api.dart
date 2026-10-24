@@ -1,5 +1,9 @@
+import 'dart:typed_data';
+
 abstract interface class AdminApi {
   Future<Map<String, dynamic>> get(String path, [Map<String, String>? query]);
+
+  Future<Uint8List> getBytes(String path);
 
   Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body);
 

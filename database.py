@@ -1031,6 +1031,13 @@ class Database:
             user = self._conn.execute(
                 "SELECT * FROM bot_users WHERE user_id = ?", (user_id,)
             ).fetchone()
+            phone = self._conn.execute(
+                "SELECT contact_phone, seq FROM reports"
+                " WHERE user_id = ? AND contact_phone IS NOT NULL"
+                " AND TRIM(contact_phone) != ''"
+                " ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
         if row is None:
             if user is None and block is None:
                 return None
@@ -1042,6 +1049,8 @@ class Database:
                 "first_at": profile.get("first_seen_at"),
                 "last_at": profile.get("last_seen_at"),
                 "block": _row_to_dict(block) if block is not None else None,
+                "contact_phone": phone["contact_phone"] if phone else None,
+                "contact_phone_seq": phone["seq"] if phone else None,
             })
             return profile
         profile = _row_to_dict(row)
@@ -1054,6 +1063,8 @@ class Database:
             "rejected_n": int(stats["rejected_n"] or 0),
             "first_at": stats["first_at"],
             "block": _row_to_dict(block) if block is not None else None,
+            "contact_phone": phone["contact_phone"] if phone else None,
+            "contact_phone_seq": phone["seq"] if phone else None,
         })
         return profile
 

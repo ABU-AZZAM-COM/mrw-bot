@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -44,6 +46,10 @@ class _FakeApi implements AdminApi {
     }
     throw ApiException(404, 'not_found');
   }
+
+  @override
+  Future<Uint8List> getBytes(String path) async =>
+      throw ApiException(404, 'photo_unavailable');
 
   @override
   Future<Map<String, dynamic>> post(

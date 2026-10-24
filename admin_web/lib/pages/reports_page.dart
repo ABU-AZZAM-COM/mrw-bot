@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../api.dart';
@@ -429,6 +431,7 @@ class _ReportDetail extends StatefulWidget {
 
 class _ReportDetailState extends State<_ReportDetail> {
   Map<String, dynamic>? _r;
+  Future<Uint8List>? _photoFuture;
   List<String> _templates = [];
   int _bust = DateTime.now().millisecondsSinceEpoch;
   final TextEditingController _reply = TextEditingController();
@@ -444,6 +447,16 @@ class _ReportDetailState extends State<_ReportDetail> {
   void initState() {
     super.initState();
     _fetch();
+  }
+
+  Future<Uint8List> _loadPhoto() =>
+      widget.api.getBytes('/api/admin/photo/${widget.rid}?ts=$_bust');
+
+  void _retryPhoto() {
+    setState(() {
+      _bust = DateTime.now().millisecondsSinceEpoch;
+      _photoFuture = _loadPhoto();
+    });
   }
 
   Future<void> _fetch() async {
@@ -474,6 +487,11 @@ class _ReportDetailState extends State<_ReportDetail> {
     if (!mounted) return;
     setState(() {
       _r = item;
+      _photoFuture =
+          item['has_photo'] == true ||
+              ((item['photo_file_id'] ?? '') as String).isNotEmpty
+          ? _loadPhoto()
+          : null;
       _templates = tpl;
       _adminIds = admins;
       _typeSel = (item['violation_type'] ?? '') as String?;
@@ -568,56 +586,74 @@ class _ReportDetailState extends State<_ReportDetail> {
       constraints: const BoxConstraints(maxWidth: 350),
       child: Card(
         color: Theme.of(context).cardColor,
-        child: Image.network(
-          widget.api.photoUrl(widget.rid, bust: '$_bust'),
-          fit: BoxFit.contain,
-          width: 340,
-          errorBuilder: (context, error, stackTrace) => SizedBox(
-            height: 210,
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.broken_image_outlined,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    'تعذّر تحميل الصورة من الخادم. تحقق من توفر الملف أو اتصال Telegram.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: () => setState(
-                      () => _bust = DateTime.now().millisecondsSinceEpoch,
-                    ),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('إعادة المحاولة'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          loadingBuilder: (c, w, p) {
-            final ev = p?.expectedTotalBytes;
-            return SizedBox(
+        child: FutureBuilder<Uint8List>(
+          future: _photoFuture,
+          builder: (context, snapshot) {
+            if (snapshot.hasData) {
+              return Image.memory(
+                snapshot.data!,
+                fit: BoxFit.contain,
+                width: 340,
+                errorBuilder: (context, error, stackTrace) =>
+                    _photoError(context, 'استجابة الخادم ليست صورة صالحة.'),
+              );
+            }
+            if (snapshot.hasError) {
+              final error = snapshot.error;
+              final message = error is ApiException
+                  ? _photoErrorMessage(error)
+                  : 'تعذّر الاتصال بخدمة الصور.';
+              return _photoError(context, message);
+            }
+            return const SizedBox(
               height: 210,
-              child: Center(
-                child: p == null || ev == null
-                    ? const CircularProgressIndicator()
-                    : CircularProgressIndicator(
-                        value: p.cumulativeBytesLoaded / ev,
-                      ),
-              ),
+              child: Center(child: CircularProgressIndicator()),
             );
           },
         ),
       ),
     );
   }
+
+  String _photoErrorMessage(ApiException error) => switch (error.code) {
+    'no_photo' => 'لا يوجد ملف صورة محفوظ لهذا البلاغ.',
+    'photo_unavailable' =>
+      'تعذّر جلب الصورة من Telegram؛ قد يكون الملف غير متاح.',
+    'unauthorized' => 'انتهت صلاحية جلسة الإدارة. سجّل الدخول من جديد.',
+    'network_error' => 'تعذّر الاتصال بخدمة الصور.',
+    _ => 'تعذّر تحميل الصورة (${error.code}).',
+  };
+
+  Widget _photoError(BuildContext context, String message) => SizedBox(
+    height: 210,
+    child: Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.broken_image_outlined,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: _retryPhoto,
+            icon: const Icon(Icons.refresh),
+            label: const Text('إعادة المحاولة'),
+          ),
+        ],
+      ),
+    ),
+  );
 
   Widget _info(BuildContext context, Map<String, dynamic> r) {
     final status = (r['status'] ?? '-') as String;
