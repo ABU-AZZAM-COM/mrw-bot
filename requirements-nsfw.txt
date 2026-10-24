@@ -1,0 +1,2 @@
+# Convenience file for installing only the local image moderation dependency.
+nudenet~=3.4.2

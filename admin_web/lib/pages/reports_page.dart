@@ -545,7 +545,8 @@ class _ReportDetailState extends State<_ReportDetail> {
   }
 
   Widget _photo(BuildContext context, Map<String, dynamic> r) {
-    final hasFile = ((r['photo_file_id'] ?? '') as String).isNotEmpty;
+    final hasFile = r['has_photo'] == true ||
+        ((r['photo_file_id'] ?? '') as String).isNotEmpty;
     if (!hasFile) {
       return SizedBox(
         width: 330,

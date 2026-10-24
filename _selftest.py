@@ -12,6 +12,7 @@ os.environ["BOT_TOKEN"] = "123456:TEST_TOKEN_FOR_IMPORT_CHECK"
 os.environ["ADMIN_IDS"] = "111111111"
 
 import config
+import guards
 import texts
 import utils
 import database
@@ -26,6 +27,106 @@ import main as main_mod
 _db_test_dir = tempfile.TemporaryDirectory(prefix="mrw-selftest-")
 DB_PATH = Path(_db_test_dir.name) / "test_reports.db"
 DB = database.Database(DB_PATH)
+
+freeze_alerts = []
+freeze_notices = []
+
+async def _capture_freeze_alert(**kwargs):
+    freeze_alerts.append(kwargs)
+
+async def _capture_freeze_notice(text, **kwargs):
+    freeze_notices.append((text, kwargs))
+
+freeze_user = SimpleNamespace(id=90909090, full_name="مستخدم اختبار")
+freeze_update = SimpleNamespace(
+    effective_user=freeze_user,
+    effective_message=SimpleNamespace(reply_text=_capture_freeze_notice),
+)
+freeze_context = SimpleNamespace(
+    bot_data={"db": DB},
+    bot=SimpleNamespace(send_message=_capture_freeze_alert),
+    user_data={"app_draft": {"description": "should be discarded"}},
+)
+handlers._pending_app_users.add(freeze_user.id)
+asyncio.run(
+    handlers._freeze_for_explicit_image(
+        freeze_update,
+        freeze_context,
+        handlers.image_moderation.ScreeningResult(
+            True,
+            review_required=True,
+            labels=("FEMALE_GENITALIA_EXPOSED",),
+            max_score=0.97,
+        ),
+    )
+)
+automatic_block = asyncio.run(DB.get_block(freeze_user.id))
+assert automatic_block["frozen_until"] == "9999-12-31T00:00:00"
+assert automatic_block["reason"].startswith("كشف آلي محلي")
+assert not freeze_context.user_data and freeze_user.id not in handlers._pending_app_users
+assert len(freeze_alerts) == len(config.ADMIN_IDS) and len(freeze_notices) == 1
+assert all("photo" not in alert for alert in freeze_alerts)
+assert any(
+    row["action"] == "automated_explicit_image_freeze"
+    and row["target"] == str(freeze_user.id)
+    for row in asyncio.run(DB.recent_audit(20))
+)
+blocked_rows, _ = asyncio.run(DB.list_blocked_users())
+assert any(row["user_id"] == freeze_user.id for row in blocked_rows)
+blocked_verdict = asyncio.run(guards.check_rate_limits(DB, freeze_user.id))
+assert blocked_verdict.blocked, blocked_verdict
+asyncio.run(DB.clear_block(freeze_user.id))
+assert asyncio.run(guards.check_rate_limits(DB, freeze_user.id)).allowed
+print("automatic explicit-image freeze persists, audits, alerts without forwarding image, and admin unblock restores access")
+
+flagged_result = handlers.image_moderation.ScreeningResult(
+    True,
+    review_required=True,
+    labels=("ANUS_EXPOSED",),
+    max_score=0.96,
+)
+original_save_photo = handlers._save_photo
+
+async def _fake_flagged_photo(_update, _context):
+    return "", "test-file-id", "test-file-id", flagged_result
+
+handlers._save_photo = _fake_flagged_photo
+try:
+    conversation_user = SimpleNamespace(id=90909091, full_name="مستخدم محادثة")
+    conversation_context = SimpleNamespace(
+        bot_data={"db": DB},
+        bot=SimpleNamespace(send_message=_capture_freeze_alert),
+        user_data={"description": "must be discarded"},
+    )
+    conversation_update = SimpleNamespace(
+        message=SimpleNamespace(),
+        effective_user=conversation_user,
+        effective_message=SimpleNamespace(reply_text=_capture_freeze_notice),
+    )
+    conversation_state = asyncio.run(
+        handlers.receive_photo(conversation_update, conversation_context)
+    )
+    assert conversation_state == handlers.ConversationHandler.END
+
+    app_user = SimpleNamespace(id=90909092, full_name="مستخدم التطبيق")
+    app_context = SimpleNamespace(
+        bot_data={"db": DB},
+        bot=SimpleNamespace(send_message=_capture_freeze_alert),
+        user_data={"app_draft": {"post_link": "https://example.test/post"}},
+    )
+    handlers._pending_app_users.add(app_user.id)
+    app_update = SimpleNamespace(
+        message=SimpleNamespace(),
+        effective_user=app_user,
+        effective_message=SimpleNamespace(reply_text=_capture_freeze_notice),
+    )
+    assert asyncio.run(handlers.app_photo_received(app_update, app_context)) is None
+    assert not asyncio.run(DB.list_user_reports(conversation_user.id))[0]
+    assert not asyncio.run(DB.list_user_reports(app_user.id))[0]
+    assert not app_context.user_data and app_user.id not in handlers._pending_app_users
+finally:
+    handlers._save_photo = original_save_photo
+print("conversation and Mini App photo flows freeze and stop without saving a report")
 
 fake_row = dict(
     user_id=999,
@@ -101,12 +202,72 @@ tot = asyncio.run(DB.total())
 assert tot == 2 and counts.get("جديد") == 1 and counts.get("قيد المراجعة") == 1, (counts, tot)
 print("stats OK:", counts, "total =", tot)
 
+assert asyncio.run(DB.total_users()) == 1
+asyncio.run(DB.log_event(999, "start"))
+assert asyncio.run(DB.total_users()) == 1
+asyncio.run(DB.log_event(1000, "start"))
+assert asyncio.run(DB.total_users()) == 2
+stats_replies = []
+
+async def _capture_stats(text, **kwargs):
+    stats_replies.append(text)
+
+stats_update = SimpleNamespace(
+    effective_user=SimpleNamespace(id=111111111),
+    effective_chat=SimpleNamespace(type="private"),
+    effective_message=SimpleNamespace(reply_text=_capture_stats),
+)
+asyncio.run(
+    admin.cmd_stats(stats_update, SimpleNamespace(bot_data={"db": DB}))
+)
+assert len(stats_replies) == 1 and "المستخدمون الفريدون: <b>2</b>" in stats_replies[0]
+stats_replies.clear()
+non_admin_update = SimpleNamespace(
+    effective_user=SimpleNamespace(id=222222222),
+    effective_chat=SimpleNamespace(type="private"),
+    effective_message=SimpleNamespace(reply_text=_capture_stats),
+)
+asyncio.run(
+    admin.cmd_stats(non_admin_update, SimpleNamespace(bot_data={"db": DB}))
+)
+assert len(stats_replies) == 1 and "وصول مرفوض" in stats_replies[0]
+stats_replies.clear()
+group_admin_update = SimpleNamespace(
+    effective_user=SimpleNamespace(id=111111111),
+    effective_chat=SimpleNamespace(type="group"),
+    effective_message=SimpleNamespace(reply_text=_capture_stats),
+)
+asyncio.run(
+    admin.cmd_stats(group_admin_update, SimpleNamespace(bot_data={"db": DB}))
+)
+assert len(stats_replies) == 1 and "المحادثة الخاصة" in stats_replies[0]
+print("/stats counts unique report and start users, private admin only")
+
 n24 = asyncio.run(
     DB.count_since((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat())
 )
 day = asyncio.run(DB.count_since(utils.local_day_start_iso(), user_id=999))
 assert n24 == 2 and day == 2, (n24, day)
 print("count_since OK (24h =", n24, "| today per-user =", day, ")")
+
+import space_app
+
+_space_app = space_app.build_app()
+_vtypes_route = next(
+    route for route in _space_app.routes
+    if getattr(route, "path", None) == "/api/public/vtypes"
+)
+_prior_bot_app = main_mod.app
+try:
+    main_mod.app = SimpleNamespace(bot_data={"db": DB})
+    _vtypes_response = asyncio.run(_vtypes_route.endpoint())
+    _vtypes_payload = json.loads(_vtypes_response.body)
+    assert _vtypes_response.status_code == 200
+    assert _vtypes_payload["items"] == asyncio.run(DB.effective_vtypes())
+    assert _vtypes_response.headers["cache-control"] == "no-store"
+finally:
+    main_mod.app = _prior_bot_app
+print("Mini App public categories endpoint uses live database values")
 
 exports = Path(tempfile.mkdtemp())
 xlsx = exporters.export_excel(asyncio.run(DB.all_reports()), out_dir=exports)
@@ -334,9 +495,65 @@ message_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/users/{uid}/message"
 )
+photo_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/photo/{rid}"
+)
 original_bot_app = _bot_main.app
-_bot_main.app = SimpleNamespace(bot_data={"db": pdb}, bot=None)
 _os.environ["ADMIN_API_TOKEN"] = "test-token-xyz"
+
+photo_db_tmp = tempfile.TemporaryDirectory(prefix="mrw-photo-selftest-")
+photo_db = database.Database(Path(photo_db_tmp.name) / "photo.db")
+_bot_main.app = SimpleNamespace(bot_data={"db": photo_db}, bot=None)
+photo_path = Path(photo_db_tmp.name) / "legacy-image.png"
+photo_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-png-payload")
+legacy_image = asyncio.run(photo_db.add_report(
+    user_id=778, username="legacy_image", full_name="صورة قديمة",
+    photo_path=str(photo_path), photo_file_id=None,
+    post_link="https://t.me/x/image", description="بلاغ صورة محفوظة محليًا",
+))
+assert admin_api._safe_report(legacy_image)["has_photo"] is True
+
+class _PhotoRequest:
+    headers = {}
+    query_params = {"token": "test-token-xyz"}
+    method = "GET"
+    state = SimpleNamespace()
+
+    def __init__(self, path):
+        self.url = SimpleNamespace(path=path)
+
+local_photo_response = asyncio.run(photo_endpoint(
+    legacy_image["id"], _PhotoRequest("/api/admin/photo/1")
+))
+assert local_photo_response.status_code == 200
+assert local_photo_response.headers["content-type"] == "image/png"
+assert local_photo_response.headers["cache-control"] == "private, no-store"
+print("admin_api: local PNG served with correct MIME; legacy reports expose image availability")
+
+remote_image = asyncio.run(photo_db.add_report(
+    user_id=779, username="remote_image", full_name="صورة تلغرام",
+    photo_path="", photo_file_id="test-file-id",
+    post_link="https://t.me/x/remote", description="بلاغ صورة محفوظة في تلغرام",
+))
+_original_photo_bytes = admin_api._photo_bytes
+
+async def _fake_photo_bytes(_file_id):
+    return b"\x89PNG\r\n\x1a\nfake-png-payload"
+
+admin_api._photo_bytes = _fake_photo_bytes
+try:
+    remote_photo_response = asyncio.run(photo_endpoint(
+        remote_image["id"], _PhotoRequest("/api/admin/photo/2")
+    ))
+    assert remote_photo_response.status_code == 200
+    assert remote_photo_response.headers["content-type"] == "image/png"
+finally:
+    admin_api._photo_bytes = _original_photo_bytes
+    photo_db.close()
+    photo_db_tmp.cleanup()
+    _bot_main.app = SimpleNamespace(bot_data={"db": pdb}, bot=None)
+print("admin_api: Telegram PNG is served with signature-detected MIME")
 
 class _Request:
     headers = {"x-admin-token": "test-token-xyz"}

@@ -53,9 +53,11 @@ UPLOAD_MAP: dict[str, str] = {
     "exporters.py": "exporters.py",
     "archive.py": "archive.py",
     "guards.py": "guards.py",          # طبقة الحماية (إساءة/كيّد/تخريب)
+    "image_moderation.py": "image_moderation.py",
     "health_server.py": "health_server.py",
     # Hugging Face يقرأ الاعتماديات من requirements.txt فقط
     "requirements-space.txt": "requirements.txt",
+    "requirements-nsfw.txt": "requirements-nsfw.txt",
     # التطبيق (Mini App) — نسخة داخل مستودع المساحة أيضًا
     "webapp/index.html": "webapp/index.html",
     "webapp/app.js": "webapp/app.js",
@@ -150,6 +152,9 @@ def main() -> int:
         "KEEPALIVE_INTERVAL_SEC": "300",
         "LOCAL_UTC_OFFSET": "3",
         "BOT_USERNAME": args.bot_username,
+        "NSFW_SCREENING_ENABLED": os.getenv("NSFW_SCREENING_ENABLED", "1"),
+        "NSFW_SCREENING_THRESHOLD": os.getenv("NSFW_SCREENING_THRESHOLD", "0.85"),
+        "NSFW_REVIEW_THRESHOLD": os.getenv("NSFW_REVIEW_THRESHOLD", "0.40"),
     }
     if args.bot_token:
         secrets["BOT_TOKEN"] = args.bot_token

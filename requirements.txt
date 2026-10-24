@@ -10,3 +10,5 @@ httpx~=0.27
 # للإدارة المحلية للحساب الشخصي (جلسة تُنشأ محليًا عن طريق صاحب الحساب)
 telethon~=1.36
 huggingface_hub
+# Local image moderation and automatic handling of high-confidence explicit content.
+nudenet~=3.4.2

@@ -14,6 +14,7 @@ os.environ.setdefault("SAVE_MEDIA_LOCALLY", "0")
 
 import config  # noqa: E402
 import guards  # noqa: E402
+import image_moderation  # noqa: E402
 from database import Database  # noqa: E402
 
 
@@ -30,6 +31,101 @@ check.failures = 0
 async def main() -> None:
     tmp = Path(tempfile.mkdtemp()) / "t.db"
     db = Database(tmp)
+
+    print("\n--- فحص الصور المحلي ---")
+    old_enabled = os.environ.get("NSFW_SCREENING_ENABLED")
+    old_threshold = os.environ.get("NSFW_SCREENING_THRESHOLD")
+    old_review_threshold = os.environ.get("NSFW_REVIEW_THRESHOLD")
+    import cv2
+    import numpy as np
+
+    test_image = tmp.parent / "test.jpg"
+    check("إنشاء صورة اختبار للفحص المحلي", cv2.imwrite(
+        str(test_image), np.full((320, 320, 3), 255, dtype=np.uint8)
+    ))
+    os.environ.pop("NSFW_SCREENING_ENABLED", None)
+    check("الفحص الآلي مفعّل افتراضيًا", image_moderation.is_enabled())
+    os.environ["NSFW_SCREENING_ENABLED"] = "0"
+    check("يمكن تعطيل الفحص صراحةً", not image_moderation.is_enabled())
+    old_detector = image_moderation._detector
+    image_moderation._detector = type(
+        "FakeDetector",
+        (),
+        {"detect": lambda self, _path: [
+            {"class": "FEMALE_BREAST_EXPOSED", "score": 0.91},
+            {"class": "FEMALE_GENITALIA_EXPOSED", "score": 0.91},
+            {"class": "FEMALE_BREAST_COVERED", "score": 0.99},
+        ]},
+    )()
+    os.environ["NSFW_SCREENING_ENABLED"] = "1"
+    os.environ["NSFW_SCREENING_THRESHOLD"] = "0.85"
+    os.environ["NSFW_REVIEW_THRESHOLD"] = "0.40"
+    screen = image_moderation.screen_image(test_image)
+    check(
+        "كشف الأعضاء التناسلية عالي الثقة يميّز الحالة الصريحة",
+        screen.flagged
+        and screen.review_required
+        and screen.labels == ("FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED"),
+    )
+    os.environ["NSFW_SCREENING_THRESHOLD"] = "0.95"
+    os.environ["NSFW_REVIEW_THRESHOLD"] = "0.40"
+    under_cutoff = image_moderation.screen_image(test_image)
+    check(
+        "الكشف غير المؤكد يُحال للمراجعة ولا يسبب تجميدًا",
+        not under_cutoff.flagged
+        and under_cutoff.review_required
+        and "FEMALE_GENITALIA_EXPOSED" in under_cutoff.labels,
+    )
+    image_moderation._detector = type(
+        "ReviewDetector",
+        (),
+        {"detect": lambda self, _path: [
+            {"class": "FEMALE_BREAST_EXPOSED", "score": 0.96},
+        ]},
+    )()
+    check(
+        "مؤشر الثدي وحده يحتاج مراجعة ولا يسبب حظرًا دائمًا",
+        not image_moderation.screen_image(test_image).flagged
+        and image_moderation.screen_image(test_image).review_required,
+    )
+    tiled_image = tmp.parent / "multiscale-test.jpg"
+    check("إنشاء صورة اختبار متعددة الدقة", cv2.imwrite(
+        str(tiled_image), np.full((800, 800, 3), 255, dtype=np.uint8)
+    ))
+
+    class MultiScaleDetector:
+        def __init__(self):
+            self.calls = 0
+
+        def detect(self, _path):
+            self.calls += 1
+            if self.calls == 3:
+                return [{"class": "MALE_GENITALIA_EXPOSED", "score": 0.93}]
+            return []
+
+    multi_scale_detector = MultiScaleDetector()
+    image_moderation._detector = multi_scale_detector
+    os.environ["NSFW_SCREENING_THRESHOLD"] = "0.85"
+    multi_scale_result = image_moderation.screen_image(tiled_image)
+    check(
+        "المسح المتعدد يكتشف المؤشر في قصاصة مكبرة",
+        multi_scale_detector.calls == 5
+        and multi_scale_result.flagged
+        and multi_scale_result.max_score == 0.93,
+    )
+    image_moderation._detector = old_detector
+    if old_enabled is None:
+        os.environ.pop("NSFW_SCREENING_ENABLED", None)
+    else:
+        os.environ["NSFW_SCREENING_ENABLED"] = old_enabled
+    if old_threshold is None:
+        os.environ.pop("NSFW_SCREENING_THRESHOLD", None)
+    else:
+        os.environ["NSFW_SCREENING_THRESHOLD"] = old_threshold
+    if old_review_threshold is None:
+        os.environ.pop("NSFW_REVIEW_THRESHOLD", None)
+    else:
+        os.environ["NSFW_REVIEW_THRESHOLD"] = old_review_threshold
 
     print("\n--- فحص الروابط ---")
     v = guards.check_link("https://t.me/blgh_bot")
@@ -151,7 +247,8 @@ async def main() -> None:
 
     report = await db.add_report(
         user_id=5, username="u", full_name="م", photo_path="", photo_file_id="f",
-        post_link="https://t.me/x", description="وصف كامل للمخالفة على الطريق السريع",
+        post_link="https://t.me/x",
+        description="سيارة سبورت تتجاوز السرعة ليلاً أمام دوار الحريص وتتجاوز الحافلة",
         violation_type="تجاوز السرعة", place="دوار الحريص",
         latitude=36.2, longitude=37.1, source="app", needs_review=1,
     )
@@ -161,8 +258,15 @@ async def main() -> None:
 
     await db.add_fingerprint(report["id"], guards.link_hash("https://t.me/x"),
                              guards.text_hash(report["description"]), None)
-    v = await guards.check_duplicate(db, "https://t.me/x", report["description"])
-    check("كشف البلاغ المكرر", v.code == "exact_duplicate", v.code)
+    link_v, substance_v, duplicate_v = await guards.inspect_report_content(
+        db, "https://t.me/x", report["description"]
+    )
+    check(
+        "توحيد فحوص الرابط والوصف والتكرار",
+        link_v.allowed and substance_v is not None and substance_v.allowed
+        and duplicate_v is not None and duplicate_v.code == "exact_duplicate",
+        duplicate_v.code if duplicate_v else "no duplicate verdict",
+    )
 
 
     print("\n--- كشف منصة التواصل ---")

@@ -101,6 +101,7 @@ async def post_init(app) -> None:
     admin_commands = [
         *base_commands,
         BotCommand("admin", "لوحة إدارة البلاغات"),
+        BotCommand("stats", "إحصائيات المستخدمين والبلاغات"),
         BotCommand("backup", "رفع نسخة احتياطية فورية"),
     ]
     for admin_id in config.ADMIN_IDS:
@@ -210,7 +211,7 @@ def main() -> None:
     app.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & handlers.AppPhotoPending()
-            & (filters.PHOTO | filters.Document.ALL),
+            & (filters.PHOTO | filters.Document.IMAGE),
             handlers.app_photo_received,
         )
     )
@@ -237,6 +238,7 @@ def main() -> None:
     app.add_handler(CommandHandler("resume", admin.cmd_resume))
     app.add_handler(CommandHandler("audit", admin.cmd_audit))
     app.add_handler(CommandHandler("backup", admin.cmd_backup))
+    app.add_handler(CommandHandler("stats", admin.cmd_stats))
 
     # 3) أي رسالة خاصة خارج محادثة نشطة → تلميح ترحيبي
     app.add_handler(

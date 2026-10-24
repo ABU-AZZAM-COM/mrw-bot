@@ -11,3 +11,4 @@ openpyxl~=3.1
 huggingface_hub
 fastapi~=0.115
 uvicorn[standard]~=0.34
+nudenet~=3.4.2

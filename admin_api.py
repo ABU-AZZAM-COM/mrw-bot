@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -211,6 +212,22 @@ async def _photo_bytes(bot_file_id: str):
             return None
 
     return await _on_bot_loop_value(_getter)
+
+
+def _image_media_type(data: bytes, filename: str = "") -> str:
+    """Use image signatures before filename hints so PNGs/documents aren't mislabeled JPEG."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"BM"):
+        return "image/bmp"
+    guessed, _encoding = mimetypes.guess_type(filename)
+    return guessed if guessed and guessed.startswith("image/") else "application/octet-stream"
 
 
 def _parse_html():
@@ -785,7 +802,14 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         local_raw = str(r.get("photo_path") or "").strip()
         local = P(local_raw) if local_raw else None
         if local is not None and local.is_file():
-            return FileResponse(str(local), media_type="image/jpeg")
+            media_type = mimetypes.guess_type(local.name)[0] or "application/octet-stream"
+            if not media_type.startswith("image/"):
+                media_type = "application/octet-stream"
+            return FileResponse(
+                str(local),
+                media_type=media_type,
+                headers={"Cache-Control": "private, no-store"},
+            )
         file_id = r.get("photo_file_id")
         if not file_id:
             return bad("no_photo", 404)
@@ -795,7 +819,12 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("photo_unavailable", 503)
         from fastapi.responses import Response  # noqa: PLC0415
 
-        return Response(content=data, media_type="image/jpeg")
+        media_type = _image_media_type(data)
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     # ------------------------------------------------------------
     # 5) تشغيل النظام: إيقاف طارئ/استئناف + تعميم + قوالب + تصنيفات
@@ -1254,7 +1283,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 # ==================================================================
 def _safe_report(r: dict[str, Any]) -> dict[str, Any]:
     """نسخة صالحة للعرض عبر الإنترنت (الصورة تُسحب من تلغرام عبر file_id)."""
-    return {k: v for k, v in r.items() if k != "photo_path"}
+    safe = {k: v for k, v in r.items() if k != "photo_path"}
+    safe["has_photo"] = bool(r.get("photo_file_id") or r.get("photo_path"))
+    return safe
 
 
 async def _json(request) -> dict[str, Any]:

@@ -1,46 +1,111 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
-  <base href="/admin/">
-
-  <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="لوحة الإدارة — منظومة استقبال البلاغات العسكرية">
-
-  <!-- iOS meta tags & icons -->
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="لوحة الإدارة">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
-
-  <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
-
-  <title>لوحة الإدارة — منظومة البلاغات</title>
-  <link rel="manifest" href="manifest.json">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1b16">
+  <meta name="description" content="إرسال بلاغ موثق إلى منظومة استقبال البلاغات">
+  <title>إرسال بلاغ | منظومة البلاغات</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/app.js" defer></script>
 </head>
 <body>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
+  <header class="topbar">
+    <div class="brand">
+      <span class="shield" aria-hidden="true">🛡️</span>
+      <div>
+        <h1>منظومة استقبال البلاغات</h1>
+        <p>نموذج موثّق لإرسال البلاغ ومتابعته</p>
+      </div>
+    </div>
+    <p id="whoami" class="hint" aria-live="polite"></p>
+    <nav class="steps" aria-label="خطوات البلاغ">
+      <span class="dot active" aria-label="الخطوة الأولى">1</span>
+      <span class="dot" aria-label="الخطوة الثانية">2</span>
+      <span class="dot" aria-label="الخطوة الثالثة">3</span>
+    </nav>
+  </header>
 
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
-  <script src="flutter_bootstrap.js" async></script>
+  <main>
+    <p id="status" class="hint" role="status" aria-live="polite">جارٍ تجهيز النموذج...</p>
+
+    <section id="card-intro" class="card">
+      <h2>إرسال بلاغ جديد</h2>
+      <p>أكمل البيانات وأرفق رابط المنشور الأصلي. بعد الإرسال سيطلب منك البوت إرسال الصورة في المحادثة.</p>
+      <div class="note">تُستخدم المعلومات لمراجعة البلاغ والتحقق منه. تأكد من دقة التفاصيل قبل الإرسال.</div>
+      <p id="types-error" class="err" role="alert" aria-live="assertive"></p>
+      <button id="btn-begin" class="btn primary big" type="button" disabled>ابدأ تعبئة البلاغ</button>
+    </section>
+
+    <section id="card-step1" class="card" hidden>
+      <h2>١. التصنيف والموقع</h2>
+      <p class="hint">اختر التصنيف الأقرب، ثم أضف الموقع إن توفر.</p>
+      <div id="types" class="chips" role="group" aria-label="تصنيف المخالفة"></div>
+      <h2>الموقع الجغرافي</h2>
+      <div class="location-box">
+        <span id="loc-status" class="loc-status" aria-live="polite">لم يتم تحديد الموقع</span>
+        <button id="btn-locate" class="btn" type="button">📍 تحديد موقعي</button>
+      </div>
+      <label class="field" for="place">
+        <span>وصف المكان (اختياري)</span>
+        <input id="place" type="text" maxlength="120" autocomplete="off" placeholder="مثال: قرب المدخل الرئيسي">
+      </label>
+      <div class="nav">
+        <button class="btn ghost" type="button" data-back="intro">رجوع</button>
+        <button id="btn-to-2" class="btn primary" type="button">متابعة</button>
+      </div>
+    </section>
+
+    <section id="card-step2" class="card" hidden>
+      <h2>٢. تفاصيل البلاغ</h2>
+      <label class="field" for="desc">
+        <span>وصف ما حدث <b class="req">*</b></span>
+        <textarea id="desc" rows="5" maxlength="1500" placeholder="اشرح ما حدث ومتى وأين..."></textarea>
+      </label>
+      <p id="desc-counter" class="hint" aria-live="polite">0 / 1500</p>
+      <span id="desc-help" class="hint">اكتب وصفًا واضحًا ومفصلًا.</span>
+      <span id="desc-note" class="req-note" aria-live="polite"></span>
+      <label class="field" for="link">
+        <span>رابط المنشور الأصلي <b class="req">*</b></span>
+        <input id="link" type="url" inputmode="url" autocomplete="url" placeholder="https://">
+      </label>
+      <span id="link-note" class="req-note" aria-live="polite">الرابط مطلوب لإتمام البلاغ.</span>
+      <h2>الصورة (اختياري)</h2>
+      <div id="drop" class="drop" role="button" tabindex="0" aria-label="اختيار صورة للمعاينة">
+        <span id="drop-label">📷 اضغط لاختيار صورة للمعاينة</span>
+        <img id="preview" alt="معاينة الصورة المختارة" hidden>
+      </div>
+      <input id="photo-input" type="file" accept="image/*" hidden>
+      <p class="hint">سيطلب منك البوت إرسال الصورة في المحادثة بعد إرسال البلاغ.</p>
+      <div class="nav">
+        <button class="btn ghost" type="button" data-back="step1">رجوع</button>
+        <button id="btn-to-3" class="btn primary" type="button">مراجعة البلاغ</button>
+      </div>
+    </section>
+
+    <section id="card-step3" class="card" hidden>
+      <h2>٣. مراجعة قبل الإرسال</h2>
+      <div id="summary" class="summary"></div>
+      <p id="photo-note" class="note"></p>
+      <div class="nav">
+        <button class="btn ghost" type="button" data-back="step2">تعديل</button>
+        <button id="btn-send" class="btn primary" type="button">إرسال البلاغ</button>
+      </div>
+    </section>
+
+    <section id="card-done" class="card done" hidden>
+      <div class="done-icon" aria-hidden="true">✅</div>
+      <h2 id="done-title">تم الإرسال</h2>
+      <p id="done-body"></p>
+      <button id="btn-again" class="btn primary" type="button">إرسال بلاغ آخر</button>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>منظومة استقبال البلاغات</span>
+    <span class="sep">•</span>
+    <span>يرجى استخدام النموذج بمسؤولية</span>
+  </footer>
 </body>
 </html>

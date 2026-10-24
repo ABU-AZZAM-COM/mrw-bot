@@ -6,16 +6,11 @@
   "use strict";
 
   /* ---------- أنواع المخالفات ---------- */
-  var TYPES = [
-    "تجاوز السرعة",
-    "مخالفة إشارة",
-    "إعاقة الطريق",
-    "مخالفة زي",
-    "مواد ممنوعة",
-    "سلاح أو عنيف",
-    "تصوير في مكان ممنوع",
-    "أخرى"
-  ];
+  var TYPES = [];
+  var MAX_DESC_LEN = 1500;
+  var MIN_DESC_LEN = 40;
+  var MIN_DESC_WORDS = 6;
+  var MAX_PHOTO_MB = 10;
 
   /* ---------- الحالة ---------- */
   var state = {
@@ -46,6 +41,7 @@
     "fb.com": "فيسبوك",
     "m.facebook.com": "فيسبوك",
     "instagram.com": "إنستغرام",
+    "instagr.am": "إنستغرام",
     "twitter.com": "إكس (تويتر)",
     "x.com": "إكس (تويتر)",
     "tiktok.com": "تيك توك",
@@ -53,8 +49,12 @@
     "youtube.com": "يوتيوب",
     "youtu.be": "يوتيوب",
     "t.me": "تيليغرام",
+    "telegram.me": "تيليغرام",
     "wa.me": "واتساب",
-    "reddit.com": "ريديت"
+    "reddit.com": "ريديت",
+    "tumblr.com": "تَمبلر",
+    "pinterest.com": "بنترست",
+    "linkedin.com": "لينكدإن"
   };
 
   function detectPlatform(url) {
@@ -81,7 +81,10 @@
 
   /* ---------- تهيئة تيليغرام ---------- */
   function initTelegram() {
-    if (!tg) { return; }
+    if (!tg) {
+      $("whoami").textContent = "وضع التطبيق المستقل";
+      return;
+    }
     try {
       tg.ready();
       tg.expand();
@@ -153,6 +156,47 @@
     });
   }
 
+  function loadTypes() {
+    $("btn-begin").disabled = true;
+    $("types-error").textContent = "جارٍ تحميل التصنيفات...";
+    return fetch("/api/public/vtypes", { cache: "no-store" })
+      .then(function (response) {
+        if (!response.ok) { throw new Error("types_http_" + response.status); }
+        return response.json();
+      })
+      .then(function (result) {
+        if (!result || result.ok !== true || !Array.isArray(result.items) ||
+            result.items.length === 0 ||
+            !result.items.every(function (item) {
+              return typeof item === "string" && item.trim().length > 0;
+            })) {
+          throw new Error("bad_types_response");
+        }
+        TYPES = result.items;
+        MAX_DESC_LEN = Number.isInteger(result.max_desc_len) && result.max_desc_len > 0
+          ? result.max_desc_len : MAX_DESC_LEN;
+        MIN_DESC_LEN = Number.isInteger(result.min_desc_len) && result.min_desc_len > 0
+          ? result.min_desc_len : MIN_DESC_LEN;
+        MIN_DESC_WORDS = Number.isInteger(result.min_desc_words) && result.min_desc_words > 0
+          ? result.min_desc_words : MIN_DESC_WORDS;
+        MAX_PHOTO_MB = Number.isInteger(result.max_photo_mb) && result.max_photo_mb > 0
+          ? result.max_photo_mb : MAX_PHOTO_MB;
+        buildTypes();
+        $("desc").maxLength = MAX_DESC_LEN;
+        $("desc-counter").textContent = "0 / " + MAX_DESC_LEN;
+        $("desc-help").textContent =
+          "اكتب " + MIN_DESC_LEN + " حرفًا على الأقل و" + MIN_DESC_WORDS + " كلمات على الأقل.";
+        $("types-error").textContent = "";
+        $("btn-begin").disabled = false;
+      })
+      .catch(function (error) {
+        console.error("تعذر تحميل تصنيفات البلاغ:", error);
+        $("types-error").textContent =
+          "تعذر تحميل تصنيفات البلاغ من الخادم. تحقق من الاتصال ثم أعد تحميل الصفحة.";
+        status("التطبيق غير جاهز — تعذر تحميل التصنيفات");
+      });
+  }
+
   /* ---------- الموقع ---------- */
   function locate() {
     if (!navigator.geolocation) {
@@ -181,8 +225,8 @@
   /* ---------- الصورة ---------- */
   function onPhoto(file) {
     if (!file) { return; }
-    if (file.size > 12 * 1024 * 1024) {
-      alert("حجم الصورة كبير (الحد 12 ميجابايت). اختر صورة أصغر.");
+    if (file.size > MAX_PHOTO_MB * 1024 * 1024) {
+      alert("حجم الصورة كبير (الحد " + MAX_PHOTO_MB + " ميجابايت). اختر صورة أصغر.");
       return;
     }
     state.photoName = file.name || "صورة";
@@ -236,6 +280,11 @@
     };
   }
 
+  function utf8Size(value) {
+    if (window.TextEncoder) { return new TextEncoder().encode(value).length; }
+    return new Blob([value]).size;
+  }
+
   // المسار الآمن للخادم: يعمل من أي طريقة فتح (زر القائمة ☰ · زر لوحة الرد · رابط مباشر).
   // الخادم يتحقق من توقيع تيليغرام (initData) فلا يُقبل طلب مزوّر.
   function postToServer(p) {
@@ -267,13 +316,6 @@
     var p = payload();
     var data = JSON.stringify(p);
 
-    // الحد الرسمي لبيانات التطبيق: 4096 بايت
-    if (data.length > 4000) {
-      state.desc = state.desc.slice(0, 600);
-      p = payload();
-      data = JSON.stringify(p);
-    }
-
     status("جارٍ الإرسال…");
     postToServer(p).then(function (res) {
       if (res && res.ok) {
@@ -287,6 +329,10 @@
 
       // احتياطي: الإرسال الأصلي عبر تيليغرام (يعمل عند الفتح من زر لوحة الرد)
       if (tg && tg.sendData) {
+        if (utf8Size(data) > 4000) {
+          status("تعذر الاتصال بالخادم والبيانات أكبر من حد تيليغرام. تحقق من الاتصال ثم أعد المحاولة.");
+          return;
+        }
         try {
           tg.sendData(data);
           showDone(
@@ -315,7 +361,7 @@
   /* ---------- التهيئة ---------- */
   function init() {
     initTelegram();
-    buildTypes();
+    loadTypes();
 
     $("btn-begin").addEventListener("click", function () { go("step1"); });
     $("btn-locate").addEventListener("click", locate);
@@ -326,6 +372,17 @@
     $("btn-to-3").addEventListener("click", function () {
       state.desc = $("desc").value.trim();
       state.link = $("link").value.trim();
+
+      var wordCount = state.desc ? state.desc.split(/\s+/).length : 0;
+      if (state.desc.length < MIN_DESC_LEN || wordCount < MIN_DESC_WORDS) {
+        $("desc-note").textContent =
+          "⚠️ الوصف يحتاج إلى " + MIN_DESC_LEN + " حرفًا و" + MIN_DESC_WORDS + " كلمات على الأقل.";
+        $("desc-note").className = "req-note bad";
+        $("desc").focus();
+        return;
+      }
+      $("desc-note").textContent = "";
+      $("desc-note").className = "req-note";
 
       // الرابط إلزامي ضمن نطاق النظام (مخالفات منشورة على وسائل التواصل)
       if (!state.link) {
@@ -358,16 +415,23 @@
       $("place").value = ""; $("desc").value = ""; $("link").value = "";
       $("preview").hidden = true; $("drop-label").hidden = false;
       $("drop").classList.remove("filled");
+      $("photo-input").value = "";
       var all = document.querySelectorAll(".chip");
       for (var i = 0; i < all.length; i++) { all[i].classList.remove("on"); }
       go("intro");
     });
 
     $("desc").addEventListener("input", function () {
-      $("desc-counter").textContent = this.value.length + " / 400";
+      $("desc-counter").textContent = this.value.length + " / " + MAX_DESC_LEN;
     });
 
     $("drop").addEventListener("click", function () { $("photo-input").click(); });
+    $("drop").addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        $("photo-input").click();
+      }
+    });
     $("photo-input").addEventListener("change", function () { onPhoto(this.files[0]); });
 
     var backs = document.querySelectorAll("[data-back]");

@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +43,7 @@ import admin
 import archive
 import config
 import guards
+import image_moderation
 import hub_backup
 import texts
 import utils
@@ -134,7 +136,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # الحالة 1: الصورة التوثيقية
 # ==================================================================
 async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يحفظ الصورة ويعيد (المسار المحلي، file_id، الاسم) — مشترك بين المسارين."""
+    """Save the photo and optionally run local screening before it reaches admins."""
     msg = update.message
     user = update.effective_user
 
@@ -143,14 +145,26 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ext = ".jpg"
     else:
         doc = msg.document
+        if not (doc.mime_type or "").lower().startswith("image/"):
+            await msg.reply_text(
+                texts.PHOTO_REMINDER, parse_mode=ParseMode.HTML
+            )
+            return "", None, "", image_moderation.ScreeningResult(False)
         if doc.file_size and doc.file_size > config.MAX_PHOTO_MB * 1024 * 1024:
             await msg.reply_text(
                 texts.PHOTO_TOO_BIG.format(mb=config.MAX_PHOTO_MB),
                 parse_mode=ParseMode.HTML,
             )
-            return "", None, ""
+            return "", None, "", image_moderation.ScreeningResult(False)
         ext = mimetypes.guess_extension(doc.mime_type or "") or ".jpg"
         media = doc
+
+    if media.file_size and media.file_size > config.MAX_PHOTO_MB * 1024 * 1024:
+        await msg.reply_text(
+            texts.PHOTO_TOO_BIG.format(mb=config.MAX_PHOTO_MB),
+            parse_mode=ParseMode.HTML,
+        )
+        return "", None, "", image_moderation.ScreeningResult(False)
 
     # ------------------------------------------------------------------
     # حفظ الصورة على القرص: اختياري.
@@ -167,25 +181,153 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             logger.exception("فشل تحميل الصورة للمستخدم %s", user.id)
             await msg.reply_text(texts.PHOTO_FAILED, parse_mode=ParseMode.HTML)
-            return "", None, ""
+            return "", None, "", image_moderation.ScreeningResult(False)
 
         if not path.exists() or path.stat().st_size == 0:
             await msg.reply_text(texts.PHOTO_FAILED, parse_mode=ParseMode.HTML)
-            return "", None, ""
+            return "", None, "", image_moderation.ScreeningResult(False)
 
-        return str(path), media.file_id, path.name
+        photo_path = str(path)
+        photo_name = path.name
+    else:
+        photo_path = ""
+        photo_name = media.file_id
 
-    # لا نسخة محلية — نعتمد على file_id الموجود في تلغرام
-    return "", media.file_id, media.file_id
+    context.user_data.pop("image_moderation_flag", None)
+    screening = await _screen_uploaded_photo(
+        media, photo_path=photo_path, extension=ext, user_id=user.id
+    )
+    if screening.review_required:
+        context.user_data["image_moderation_flag"] = screening.error or (
+            "مؤشرات محتوى حساس: "
+            + ", ".join(screening.labels)
+            + f" (ثقة {screening.max_score:.0%})"
+        )
+    if screening.flagged and photo_path:
+        try:
+            Path(photo_path).unlink(missing_ok=True)
+        except OSError:
+            logger.exception("تعذر حذف صورة المخالفة للمستخدم %s", user.id)
+        photo_path = ""
+        photo_name = media.file_id
+    return photo_path, media.file_id, photo_name, screening
+
+
+async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id: int):
+    """Screen locally; uncertainty requires review, never an automatic freeze."""
+    if not image_moderation.is_enabled():
+        return image_moderation.ScreeningResult(False)
+
+    temporary_path: Path | None = None
+    try:
+        source_path = Path(photo_path) if photo_path else None
+        if source_path is None:
+            with tempfile.NamedTemporaryFile(
+                prefix="mrw-screen-", suffix=extension, delete=False
+            ) as handle:
+                temporary_path = Path(handle.name)
+            tg_file = await media.get_file()
+            await tg_file.download_to_drive(custom_path=str(temporary_path))
+            source_path = temporary_path
+
+        if not source_path.is_file() or source_path.stat().st_size == 0:
+            raise RuntimeError("downloaded image is empty")
+
+        return await asyncio.to_thread(image_moderation.screen_image, source_path)
+    except Exception:
+        logger.exception("تعذر فحص صورة المستخدم %s؛ أُحيل البلاغ للمراجعة اليدوية", user_id)
+        return image_moderation.ScreeningResult(
+            False,
+            review_required=True,
+            error="تعذر إكمال الفحص الآلي للصورة؛ يلزم التحقق اليدوي",
+        )
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("تعذر حذف ملف الفحص المؤقت للمستخدم %s", user_id, exc_info=True)
+
+
+async def _freeze_for_explicit_image(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    screening: image_moderation.ScreeningResult,
+) -> None:
+    """Persist an indefinite block and alert admins without forwarding the image."""
+    user = update.effective_user
+    db = _db(context)
+    reason = (
+        "كشف آلي محلي لمؤشرات عري صريح: "
+        + ", ".join(screening.labels)
+        + f" (ثقة {screening.max_score:.0%})"
+    )
+    frozen_until = "9999-12-31T00:00:00"
+    previous_block = await db.get_block(user.id)
+    await db.save_block(
+        user.id,
+        int(previous_block.get("strikes") or 0),
+        frozen_until,
+        reason,
+    )
+    try:
+        await db.audit(
+            None,
+            "automated_explicit_image_freeze",
+            str(user.id),
+            reason,
+        )
+    except Exception:
+        logger.exception("تعذر تسجيل تجميد الصورة في سجل التدقيق للمستخدم %s", user.id)
+
+    _pending_app_users.discard(user.id)
+    context.user_data.clear()
+    admin_message = (
+        "🚨 <b>تجميد آلي دائم — صورة مشتبه بها</b>\n"
+        f"المستخدم: {utils.esc(user.full_name or '-')}\n"
+        f"المعرّف: <code>{user.id}</code>\n"
+        f"المؤشرات: <code>{utils.esc(', '.join(screening.labels))}</code>\n"
+        f"ثقة المصنّف: <b>{screening.max_score:.0%}</b>\n"
+        "لم تُرسل الصورة أو تُرفق بالتنبيه. هذا تصنيف آلي احتمالي؛ "
+        "يمكن مراجعة السبب ورفع الحجب يدويًا من لوحة الإدارة."
+    )
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=admin_message,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            logger.exception(
+                "تعذر تنبيه المشرف %s عن التجميد الآلي للمستخدم %s",
+                admin_id,
+                user.id,
+            )
+
+    try:
+        notice = await guards.render_block_message(
+            db,
+            "manual_block",
+            {"kind": "حظر دائم", "reason": "إرسال صورة خالفت قواعد الاستخدام"},
+        )
+        await update.effective_message.reply_text(notice, parse_mode=ParseMode.HTML)
+    except Exception:
+        logger.exception("تعذر إبلاغ المستخدم %s بالحظر الآلي", user.id)
 
 
 async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """استقبال الصورة (مضغوطة أو كملف) وحفظها في مجلد media/."""
     msg = update.message
 
-    photo_path, photo_file_id, photo_name = await _save_photo(update, context)
+    photo_path, photo_file_id, photo_name, screening = await _save_photo(
+        update, context
+    )
     if not photo_file_id:
         return ASK_PHOTO
+    if screening.flagged:
+        await _freeze_for_explicit_image(update, context, screening)
+        return ConversationHandler.END
 
     context.user_data.update(
         photo_path=photo_path,
@@ -256,7 +398,33 @@ async def receive_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ASK_DESC
 
+    db = _db(context)
+    link_verdict, substance_verdict, duplicate_verdict = (
+        await guards.inspect_report_content(
+            db, context.user_data["post_link"], text
+        )
+    )
+    if link_verdict.blocked:
+        await update.message.reply_text(
+            link_verdict.message, parse_mode=ParseMode.HTML
+        )
+        return ASK_LINK
+    if substance_verdict is not None and substance_verdict.blocked:
+        await update.message.reply_text(
+            substance_verdict.message, parse_mode=ParseMode.HTML
+        )
+        return ASK_DESC
+
+    duplicate = duplicate_verdict
+    needs_review = bool(
+        (duplicate and duplicate.code in {"exact_duplicate", "similar_duplicate"})
+        or link_verdict.code == "unknown_platform"
+    )
     context.user_data["description"] = text
+    context.user_data["needs_review"] = needs_review
+    context.user_data["duplicate_of"] = (
+        duplicate.extra.get("duplicate_of") if duplicate else None
+    )
 
     anchor = utils.link_anchor(context.user_data["post_link"])
     await update.message.reply_text(
@@ -264,6 +432,7 @@ async def receive_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             link=anchor,
             vtype=utils.esc(context.user_data.get("violation_type") or "غير محدد"),
             desc=utils.esc(text),
+            review_note=texts.DUPLICATE_REVIEW_NOTE if needs_review else "",
         ),
         parse_mode=ParseMode.HTML,
         reply_markup=confirm_report_kb(),
@@ -304,6 +473,8 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             post_link=ud["post_link"],
             description=ud["description"],
             violation_type=ud.get("violation_type"),
+            needs_review=1 if ud.get("needs_review") or ud.get("image_moderation_flag") else 0,
+            admin_note=ud.get("image_moderation_flag") or None,
         )
     except Exception:
         logger.exception("فشل حفظ البلاغ للمستخدم %s", user.id)
@@ -313,6 +484,15 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     logger.info("بلاغ جديد %s من المستخدم %s", report["seq"], user.id)
+    try:
+        await db.add_fingerprint(
+            report["id"],
+            guards.link_hash(ud["post_link"]),
+            guards.text_hash(ud["description"]),
+            None,
+        )
+    except Exception:
+        logger.exception("تعذرت إضافة بصمة البلاغ %s", report["seq"])
     await update.effective_message.reply_text(
         texts.SAVED.format(
             seq=report["seq"],
@@ -421,27 +601,47 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
             texts.APP_BAD_DATA, parse_mode=ParseMode.HTML
         )
         return None
+    if not isinstance(data, dict):
+        await update.effective_message.reply_text(
+            texts.APP_BAD_DATA, parse_mode=ParseMode.HTML
+        )
+        return None
 
-    violation_type = str(data.get("type") or "")[:60]
+    violation_type = str(data.get("type") or "").strip()
+    if violation_type:
+        if len(violation_type) > 60 or violation_type not in await db.effective_vtypes():
+            await update.effective_message.reply_text(
+                "⚠️ نوع المخالفة المحدد لم يعد متاحًا. أعد فتح التطبيق واختر تصنيفًا من القائمة.",
+                parse_mode=ParseMode.HTML,
+            )
+            return None
     place = str(data.get("place") or "")[:120]
-    description = str(data.get("desc") or "")[: config.MAX_DESC_LEN]
+    description = str(data.get("desc") or "").strip()
+    if len(description) > config.MAX_DESC_LEN:
+        await update.effective_message.reply_text(
+            texts.DESC_TOO_LONG.format(
+                length=len(description), max=config.MAX_DESC_LEN
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+        return None
     link = str(data.get("link") or "").strip()
     lat = data.get("lat")
     lon = data.get("lon")
 
-    # فحص الرابط (إلزامي في نظامنا: المنشور على وسائل التواصل هو الدليل)
-    link_verdict = guards.check_link(link) if link else guards.Verdict(
-        allowed=False, code="missing_link", severity="block",
-        message=(
-            "🔗 <b>رابط المنشور إلزامي.</b>\n\n"
-            "هذا النظام يستقبل مخالفات <b>منشورة على مواقع التواصل الاجتماعي</b>، "
-            "والرابط هو الدليل الأساسي الذي يُبنى عليه التحقق.\n"
-            "أرسل رابط المنشور الأصلي من فضلك."
-        ),
+    link_verdict, substance_verdict, duplicate = (
+        await guards.inspect_report_content(db, link, description)
     )
+    if not link and link_verdict.code == "bad_url":
+        link_verdict.message = texts.LINK_REQUIRED
     if link_verdict.blocked:
         await update.effective_message.reply_text(
             link_verdict.message, parse_mode=ParseMode.HTML
+        )
+        return None
+    if substance_verdict is not None and substance_verdict.blocked:
+        await update.effective_message.reply_text(
+            substance_verdict.message, parse_mode=ParseMode.HTML
         )
         return None
 
@@ -451,16 +651,6 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
             link_verdict.message, parse_mode=ParseMode.HTML
         )
 
-    # فحص مضمون الوصف
-    substance = guards.check_substance(description)
-    if substance.blocked:
-        await update.effective_message.reply_text(
-            substance.message, parse_mode=ParseMode.HTML
-        )
-        return None
-
-    # كشف التكرار
-    duplicate = await guards.check_duplicate(db, link, description)
     await db.log_event(user.id, "report")
 
     context.user_data.clear()
@@ -472,8 +662,13 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "platform": platform,
         "lat": float(lat) if isinstance(lat, (int, float)) else None,
         "lon": float(lon) if isinstance(lon, (int, float)) else None,
-        "suspect_duplicate": duplicate.code in {"exact_duplicate", "similar_duplicate"},
-        "duplicate_of": duplicate.extra.get("duplicate_of"),
+        "suspect_duplicate": (
+            duplicate is not None
+            and duplicate.code in {"exact_duplicate", "similar_duplicate"}
+        ) or link_verdict.code == "unknown_platform",
+        "duplicate_of": (
+            duplicate.extra.get("duplicate_of") if duplicate is not None else None
+        ),
     }
     _pending_app_users.add(user.id)
 
@@ -481,7 +676,12 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         texts.APP_DATA_OK.format(
             vtype=utils.esc(violation_type or "غير محدد"),
             place=utils.esc(place or "غير محدد"),
-            dup="⚠️ " if duplicate.code in {"exact_duplicate", "similar_duplicate"} else "",
+            dup=(
+                "⚠️ "
+                if duplicate
+                and duplicate.code in {"exact_duplicate", "similar_duplicate"}
+                else ""
+            ),
         ),
         parse_mode=ParseMode.HTML,
     )
@@ -496,18 +696,23 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
     db = _db(context)
     ud = context.user_data
-    draft = ud.pop("app_draft", None)
-    _pending_app_users.discard(user.id)
+    draft = ud.get("app_draft")
 
     if not draft:
+        _pending_app_users.discard(user.id)
         return None
 
     # حفظ الصورة بنفس المنطق المستخدم في المحادثة العادية
-    photo_path, photo_file_id, photo_name = await _save_photo(update, context)
+    photo_path, photo_file_id, photo_name, screening = await _save_photo(
+        update, context
+    )
     if not photo_file_id:
         await update.effective_message.reply_text(
             texts.PHOTO_FAILED, parse_mode=ParseMode.HTML
         )
+        return None
+    if screening.flagged:
+        await _freeze_for_explicit_image(update, context, screening)
         return None
 
     try:
@@ -525,7 +730,8 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
             longitude=draft["lon"],
             source="app",
             platform=draft.get("platform") or "",
-            needs_review=1 if draft["suspect_duplicate"] else 0,
+            needs_review=1 if draft["suspect_duplicate"] or screening.review_required else 0,
+            admin_note=context.user_data.get("image_moderation_flag") or None,
         )
     except Exception:
         logger.exception("فشل حفظ بلاغ التطبيق للمستخدم %s", user.id)
@@ -534,6 +740,8 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return None
 
+    ud.pop("app_draft", None)
+    _pending_app_users.discard(user.id)
     logger.info("بلاغ جديد (تطبيق) %s من المستخدم %s", report["seq"], user.id)
     await update.effective_message.reply_text(
         texts.SAVED.format(
@@ -545,13 +753,16 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     await _notify_admins(context, report)
 
-    # البصمات لكشف التكرار مستقبلًا
-    await db.add_fingerprint(
-        report["id"],
-        guards.link_hash(draft["post_link"]) if draft["post_link"] else None,
-        guards.text_hash(draft["description"]),
-        None,
-    )
+    # الفهرسة المساعدة لا ينبغي أن تحجب تأكيد البلاغ المحفوظ.
+    try:
+        await db.add_fingerprint(
+            report["id"],
+            guards.link_hash(draft["post_link"]) if draft["post_link"] else None,
+            guards.text_hash(draft["description"]),
+            None,
+        )
+    except Exception:
+        logger.exception("تعذرت إضافة بصمة بلاغ التطبيق %s", report["seq"])
 
     if config.AUTO_PUBLISH_TO_ARCHIVE:
         await archive.post_report(context.bot, report)
@@ -587,13 +798,24 @@ async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, report: dict) -> No
         anchor=utils.link_anchor(report["post_link"]),
         desc=utils.esc(utils.trunc(report["description"], 300)),
     )
+    moderation_note = str(report.get("admin_note") or "").strip()
+    image_review_hold = bool(
+        report.get("needs_review") and moderation_note
+    )
+    if image_review_hold:
+        caption += "\n\n⚠️ <b>يتطلب مراجعة يدوية:</b> " + utils.esc(moderation_note)
     markup = admin_notify_buttons(report["id"])
     photo = Path(report["photo_path"]) if report["photo_path"] else None
     file_id = report.get("photo_file_id")
 
     for admin_id in config.ADMIN_IDS:
         try:
-            if photo is not None and photo.exists():
+            if image_review_hold:
+                await context.bot.send_message(
+                    chat_id=admin_id, text=caption, parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                )
+            elif photo is not None and photo.exists():
                 with open(photo, "rb") as fp:
                     await context.bot.send_photo(
                         chat_id=admin_id, photo=fp, caption=caption,

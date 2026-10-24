@@ -62,6 +62,7 @@ except ImportError:  # pragma: no cover - بيئة محلية بدون Hugging F
 import main as bot_main  # noqa: E402
 import admin_api  # noqa: E402
 import texts  # noqa: E402
+import config  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
 logger = logging.getLogger("space")
 
@@ -267,6 +268,34 @@ def build_app() -> FastAPI:
         if not _inject_app_update(user_id, payload, tg_user):
             return JSONResponse({"ok": False, "error": "bot_not_ready"}, status_code=503)
         return JSONResponse({"ok": True})
+
+    @app.get("/api/public/vtypes")
+    async def public_vtypes() -> JSONResponse:
+        application = bot_main.app
+        if application is None or "db" not in application.bot_data:
+            return JSONResponse(
+                {"ok": False, "error": "bot_not_ready"}, status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            items = await application.bot_data["db"].effective_vtypes()
+        except Exception:
+            logger.exception("تعذر تحميل تصنيفات التطبيق")
+            return JSONResponse(
+                {"ok": False, "error": "types_unavailable"}, status_code=500,
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(
+            {
+                "ok": True,
+                "items": items,
+                "max_desc_len": config.MAX_DESC_LEN,
+                "min_desc_len": config.MIN_DESC_LEN,
+                "min_desc_words": config.MIN_DESC_WORDS,
+                "max_photo_mb": config.MAX_PHOTO_MB,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     # 3) مسار الإعداد لمرة واحدة: تطبيق بايو البوت من السبيس مباشرة.
     #    • محمي بمفتاح SETUP_TOKEN من أسرار السبيس — إن غاب فالمسار مغلق.

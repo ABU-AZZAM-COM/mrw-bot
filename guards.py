@@ -250,6 +250,8 @@ async def check_rate_limits(db, user_id: int) -> Verdict:
 
         try:
             end = datetime.fromisoformat(frozen_until)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
         except ValueError:
             end = None
 
@@ -625,6 +627,22 @@ def check_substance(description: str) -> Verdict:
             ),
         )
     return Verdict(allowed=True)
+
+
+async def inspect_report_content(
+    db, link: str, description: str
+) -> tuple[Verdict, Optional[Verdict], Optional[Verdict]]:
+    """Apply the same link, substance, and duplicate checks to every report flow."""
+    link_verdict = check_link(link)
+    if link_verdict.blocked:
+        return link_verdict, None, None
+
+    substance_verdict = check_substance(description)
+    if substance_verdict.blocked:
+        return link_verdict, substance_verdict, None
+
+    duplicate_verdict = await check_duplicate(db, link, description)
+    return link_verdict, substance_verdict, duplicate_verdict
 
 
 # ==================================================================

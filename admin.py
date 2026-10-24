@@ -190,6 +190,41 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/stats — subscriber and report totals, restricted to admins in private chat."""
+    user = update.effective_user
+    message = update.effective_message
+    chat = update.effective_chat
+    if not user or not _is_admin(user.id):
+        if message:
+            await message.reply_text(texts.ADMIN_DENIED, parse_mode=ParseMode.HTML)
+        return
+    if not chat or chat.type != "private":
+        if message:
+            await message.reply_text("أرسل الأمر في المحادثة الخاصة مع البوت.")
+        return
+
+    db = _db(context)
+    counts = await db.count_by_status()
+    last24 = await db.count_since(
+        (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(
+            timespec="seconds"
+        )
+    )
+    text = (
+        "📊 <b>إحصائيات البوت</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"👥 المستخدمون الفريدون: <b>{await db.total_users()}</b>\n"
+        f"📦 إجمالي البلاغات: <b>{await db.total()}</b>\n"
+        f"🆕 جديد: {counts.get(STATUS_NEW, 0)} | "
+        f"🟠 قيد المراجعة: {counts.get(STATUS_REVIEW, 0)}\n"
+        f"🟢 معتمد: {counts.get(STATUS_APPROVED, 0)} | "
+        f"🔴 مرفوض: {counts.get(STATUS_REJECTED, 0)}\n"
+        f"🕒 بلاغات آخر 24 ساعة: <b>{last24}</b>"
+    )
+    await message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 # ==================================================================
 # تجهيز نص ولوحة أزرار قائمة البلاغات
 # ==================================================================

@@ -198,6 +198,7 @@ class Database:
         source: str = "chat",
         platform: str | None = None,
         needs_review: int = 0,
+        admin_note: str | None = None,
     ) -> dict[str, Any]:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
@@ -207,13 +208,13 @@ class Database:
                     (user_id, username, full_name, photo_path, photo_file_id,
                      post_link, description, status, created_at,
                      violation_type, place, latitude, longitude, source, platform,
-                     needs_review)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     needs_review, admin_note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (user_id, username, full_name, photo_path, photo_file_id,
                  post_link, description, STATUS_NEW, now_iso,
                  violation_type, place, latitude, longitude, source, platform,
-                 needs_review),
+                 needs_review, admin_note),
             )
             rid = cur.lastrowid
             # توليد الرقم التسلسلي الفريد MRV-YYYY-NNNN اعتمادًا على id الصف
@@ -325,6 +326,24 @@ class Database:
 
     async def total(self) -> int:
         return await asyncio.to_thread(self._total)
+
+    def _total_users(self) -> int:
+        """Unique users who started the bot or have submitted a report."""
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM (
+                    SELECT user_id FROM user_events WHERE kind IN ('start', 'report')
+                    UNION
+                    SELECT user_id FROM reports
+                )
+                """
+            ).fetchone()
+            return int(row["c"])
+
+    async def total_users(self) -> int:
+        return await asyncio.to_thread(self._total_users)
 
     def _count_since(self, iso: str, user_id: Optional[int] = None) -> int:
         with self._lock:
