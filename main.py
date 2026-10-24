@@ -26,6 +26,7 @@ except Exception:
 import config  # noqa: E402  (بعد تهيئة الطرفية)
 import admin   # noqa: E402
 import archive  # noqa: E402
+import guards  # noqa: E402
 import handlers
 import health_server  # noqa: E402
 import hub_backup  # noqa: E402
@@ -33,9 +34,11 @@ from database import Database  # noqa: E402
 
 from telegram import BotCommand, BotCommandScopeChat, MenuButtonDefault, Update
 from telegram.ext import (
+    ApplicationHandlerStop,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
+    ContextTypes,
     MessageHandler,
     filters,
 )
@@ -50,6 +53,24 @@ if __name__ == "__main__":
 
 # كائن تطبيق البوت (يُضبط في main) — يستخدمه مسار التطبيق في space_app
 app = None
+
+
+async def command_access_control(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Allow only /start to non-admins and stop every other command early."""
+    message = update.effective_message
+    user = update.effective_user
+    command_text = (message.text or message.caption or "") if message else ""
+    if message is None or user is None or not command_text.startswith("/"):
+        return
+    command = command_text.split(maxsplit=1)[0]
+    if guards.is_public_command_allowed(user.id, command):
+        return
+    await message.reply_text(
+        "عذرًا، الأوامر المباشرة للمشرفين فقط. استخدم أزرار البوت التفاعلية."
+    )
+    raise ApplicationHandlerStop
 
 
 # ==================================================================
@@ -88,21 +109,26 @@ async def post_init(app) -> None:
     runtime_settings = await app.bot_data["db"].get_runtime_settings()
     config.apply_runtime_settings(runtime_settings)
 
-    base_commands = [
-        BotCommand("start", "بدء إرسال بلاغ جديد"),
-        BotCommand("cancel", "إلغاء العملية الحالية"),
-        BotCommand("reply", "إرسال معلومات إضافية عن بلاغ"),
-        BotCommand("status", "عرض بلاغاتي"),
-        BotCommand("chatid", "معرّف هذه المحادثة (للإعداد)"),
-    ]
+    base_commands = [BotCommand("start", "فتح الواجهة الرئيسية")]
     await app.bot.set_my_commands(base_commands)
 
     # للمشرفين فقط: أمر اللوحة + أمر النسخة الفورية
     admin_commands = [
         *base_commands,
+        BotCommand("cancel", "إلغاء العملية الحالية"),
+        BotCommand("reply", "إرسال معلومات إضافية عن بلاغ"),
+        BotCommand("status", "عرض بلاغاتي"),
+        BotCommand("chatid", "معرّف هذه المحادثة (للإعداد)"),
         BotCommand("admin", "لوحة إدارة البلاغات"),
+        BotCommand("reports", "عرض لوحة البلاغات"),
+        BotCommand("report", "بدء بلاغ من المحادثة"),
         BotCommand("stats", "إحصائيات المستخدمين والبلاغات"),
         BotCommand("backup", "رفع نسخة احتياطية فورية"),
+        BotCommand("panic", "إيقاف استقبال البلاغات طارئًا"),
+        BotCommand("resume", "استئناف استقبال البلاغات"),
+        BotCommand("audit", "عرض سجل التدقيق"),
+        BotCommand("app", "فتح تطبيق البلاغ"),
+        BotCommand("help", "عرض التعليمات"),
     ]
     for admin_id in config.ADMIN_IDS:
         try:
@@ -204,6 +230,12 @@ def main() -> None:
     # قاعدة البيانات متاحة لكل المعالجات عبر context.bot_data["db"]
     app.bot_data["db"] = db
 
+    # Run before every command-specific handler so unlisted commands are gated too.
+    app.add_handler(
+        MessageHandler(filters.Regex(r"^/"), command_access_control),
+        group=-2,
+    )
+
     # 1) بيانات التطبيق (Mini App) ثم الصورة — تُسجَّل قبل المحادثة حتى لا تبتلعها
     app.add_handler(
         MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handlers.app_data_received)
@@ -246,7 +278,7 @@ def main() -> None:
 
     # 4) أداة الإعداد + دليل الاستخدام + حالة بلاغاتي
     app.add_handler(CommandHandler("chatid", handlers.cmd_chatid))
-    app.add_handler(CommandHandler(["help", "start"], handlers.cmd_help))
+    app.add_handler(CommandHandler("help", handlers.cmd_help))
     app.add_handler(CommandHandler("status", handlers.cmd_status))
     app.add_handler(CommandHandler("reply", handlers.cmd_reply))
 

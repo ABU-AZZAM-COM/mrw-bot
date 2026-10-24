@@ -31,6 +31,7 @@ from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 import config
 import texts
 import utils
+import virustotal
 
 logger = logging.getLogger(__name__)
 
@@ -410,6 +411,14 @@ def is_private_chat(chat_type: Optional[str]) -> bool:
     return str(chat_type) == "private"
 
 
+def is_public_command_allowed(user_id: int | None, command: str) -> bool:
+    """Only /start is public; every other command is restricted to admins."""
+    normalized = command.strip().lstrip("/").split("@", 1)[0].casefold()
+    return normalized == "start" or (
+        user_id is not None and user_id in config.ADMIN_IDS
+    )
+
+
 # ==================================================================
 # 3) حد رسائل البوت الصادرة (حماية من وسم السبام)
 # ==================================================================
@@ -642,6 +651,19 @@ async def inspect_report_content(
         return link_verdict, substance_verdict, None
 
     duplicate_verdict = await check_duplicate(db, link, description)
+    if link:
+        scan = await virustotal.scan_url(link)
+        link_verdict.extra["virustotal_status"] = scan.status
+        link_verdict.extra["needs_review"] = scan.needs_review
+        if scan.needs_review:
+            link_verdict.extra["review_reason"] = "virustotal"
+            link_verdict.message = texts.VIRUSTOTAL_REVIEW
+            logger.info(
+                "VirusTotal result requires manual review (status=%s, malicious=%d, suspicious=%d)",
+                scan.status,
+                scan.malicious,
+                scan.suspicious,
+            )
     return link_verdict, substance_verdict, duplicate_verdict
 
 

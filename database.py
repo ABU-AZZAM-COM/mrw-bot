@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS reports (
     longitude    REAL,                              -- خط الطول (من التطبيق)
     source       TEXT NOT NULL DEFAULT 'chat',      -- مصدر البلاغ: chat | app
     platform     TEXT,                              -- منصة التواصل التي نُشر عليها
+    category     TEXT,                              -- المسار الرئيسي للبلاغ
+    contact_phone TEXT,                             -- رقم تواصل اختياري بموافقة المبلّغ
     needs_review INTEGER NOT NULL DEFAULT 0,        -- يحتاج مراجعة (تكرار/شك)
     published    INTEGER NOT NULL DEFAULT 0,        -- هل نُشر في القناة الرسمية
     priority     TEXT NOT NULL DEFAULT 'normal',
@@ -87,6 +89,48 @@ CREATE TABLE IF NOT EXISTS user_blocks (
     frozen_until TEXT,                      -- نهاية التجميد (UTC ISO) أو NULL
     reason      TEXT,                       -- سبب آخر تجميد
     updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bot_users (
+    user_id       INTEGER PRIMARY KEY,
+    username      TEXT,
+    full_name     TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bot_users_last_seen ON bot_users(last_seen_at);
+
+CREATE TABLE IF NOT EXISTS user_limit_resets (
+    user_id  INTEGER PRIMARY KEY,
+    reset_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_conversations (
+    user_id    INTEGER PRIMARY KEY,
+    opened_at  TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    direction  TEXT NOT NULL CHECK(direction IN ('in', 'out')),
+    text       TEXT NOT NULL,
+    admin_id   INTEGER,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_user_messages_user_id ON user_messages(user_id, id);
+
+CREATE TABLE IF NOT EXISTS broadcast_jobs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    text         TEXT NOT NULL,
+    actor_id     INTEGER NOT NULL,
+    status       TEXT NOT NULL,
+    total        INTEGER NOT NULL,
+    sent         INTEGER NOT NULL DEFAULT 0,
+    failed       INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    completed_at TEXT
 );
 
 -- سجل تدقيق: كل عملية حساسة (تغيير حالة، تجميد، إيقاف عام، تصدير…)
@@ -154,6 +198,8 @@ class Database:
         ("longitude", "REAL"),
         ("source", "TEXT NOT NULL DEFAULT 'chat'"),
         ("platform", "TEXT"),
+        ("category", "TEXT"),
+        ("contact_phone", "TEXT"),
         ("needs_review", "INTEGER NOT NULL DEFAULT 0"),
         ("published", "INTEGER NOT NULL DEFAULT 0"),
         ("priority", "TEXT NOT NULL DEFAULT 'normal'"),
@@ -177,6 +223,28 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_reports_workflow "
             "ON reports(status, priority, due_at, assigned_to)"
         )
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO bot_users
+                (user_id, username, full_name, first_seen_at, last_seen_at)
+            SELECT user_id, MAX(username), MAX(full_name), MIN(created_at), MAX(created_at)
+            FROM reports GROUP BY user_id
+            """
+        )
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO bot_users
+                (user_id, first_seen_at, last_seen_at)
+            SELECT user_id, MIN(ts), MAX(ts)
+            FROM user_events WHERE kind = 'start' GROUP BY user_id
+            """
+        )
+        self._conn.execute(
+            "UPDATE broadcast_jobs SET status = 'interrupted', completed_at = ? "
+            "WHERE status IN ('queued', 'running')",
+            (now_iso,),
+        )
         self._conn.commit()
 
     # --------------------------------------------------------------
@@ -197,24 +265,38 @@ class Database:
         longitude: float | None = None,
         source: str = "chat",
         platform: str | None = None,
+        category: str | None = None,
+        contact_phone: str | None = None,
         needs_review: int = 0,
         admin_note: str | None = None,
     ) -> dict[str, Any]:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO bot_users
+                    (user_id, username, full_name, first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username=excluded.username,
+                    full_name=excluded.full_name,
+                    last_seen_at=excluded.last_seen_at
+                """,
+                (user_id, username, full_name, now_iso, now_iso),
+            )
             cur = self._conn.execute(
                 """
                 INSERT INTO reports
                     (user_id, username, full_name, photo_path, photo_file_id,
                      post_link, description, status, created_at,
                      violation_type, place, latitude, longitude, source, platform,
-                     needs_review, admin_note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     category, contact_phone, needs_review, admin_note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (user_id, username, full_name, photo_path, photo_file_id,
                  post_link, description, STATUS_NEW, now_iso,
                  violation_type, place, latitude, longitude, source, platform,
-                 needs_review, admin_note),
+                 category, contact_phone, needs_review, admin_note),
             )
             rid = cur.lastrowid
             # توليد الرقم التسلسلي الفريد MRV-YYYY-NNNN اعتمادًا على id الصف
@@ -328,12 +410,14 @@ class Database:
         return await asyncio.to_thread(self._total)
 
     def _total_users(self) -> int:
-        """Unique users who started the bot or have submitted a report."""
+        """Count persisted subscribers and legacy report/event identities."""
         with self._lock:
             row = self._conn.execute(
                 """
                 SELECT COUNT(*) AS c
                 FROM (
+                    SELECT user_id FROM bot_users
+                    UNION
                     SELECT user_id FROM user_events WHERE kind IN ('start', 'report')
                     UNION
                     SELECT user_id FROM reports
@@ -353,8 +437,14 @@ class Database:
                 )
             else:
                 cur = self._conn.execute(
-                    "SELECT COUNT(*) AS c FROM reports WHERE created_at >= ? AND user_id = ?",
-                    (iso, user_id),
+                    """
+                    SELECT COUNT(*) AS c FROM reports
+                    WHERE created_at >= ? AND user_id = ?
+                      AND created_at >= COALESCE(
+                          (SELECT reset_at FROM user_limit_resets WHERE user_id = ?), ''
+                      )
+                    """,
+                    (iso, user_id, user_id),
                 )
             return int(cur.fetchone()["c"])
 
@@ -392,16 +482,43 @@ class Database:
     async def log_event(self, user_id: int, kind: str = "report") -> None:
         await asyncio.to_thread(self._log_event, user_id, kind)
 
+    def _record_user(
+        self, user_id: int, username: str | None, full_name: str | None
+    ) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO bot_users
+                    (user_id, username, full_name, first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username=excluded.username,
+                    full_name=excluded.full_name,
+                    last_seen_at=excluded.last_seen_at
+                """,
+                (user_id, username, full_name, now_iso, now_iso),
+            )
+            self._conn.commit()
+
+    async def record_user(
+        self, user_id: int, username: str | None, full_name: str | None
+    ) -> None:
+        await asyncio.to_thread(self._record_user, user_id, username, full_name)
+
     def _count_events(self, since_iso: str, user_id: Optional[int] = None,
                       kind: Optional[str] = None) -> int:
         with self._lock:
-            query = "SELECT COUNT(*) AS c FROM user_events WHERE ts >= ?"
+            query = "SELECT COUNT(*) AS c FROM user_events e WHERE e.ts >= ?"
             params: list[Any] = [since_iso]
             if user_id is not None:
-                query += " AND user_id = ?"
-                params.append(user_id)
+                query += (
+                    " AND e.user_id = ? AND e.ts >= COALESCE("
+                    "(SELECT reset_at FROM user_limit_resets WHERE user_id = ?), '')"
+                )
+                params.extend((user_id, user_id))
             if kind:
-                query += " AND kind = ?"
+                query += " AND e.kind = ?"
                 params.append(kind)
             return int(self._conn.execute(query, params).fetchone()["c"])
 
@@ -452,11 +569,25 @@ class Database:
         await asyncio.to_thread(self._save_block, user_id, strikes, frozen_until, reason)
 
     def _clear_block(self, user_id: int) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="microseconds")
         with self._lock:
             self._conn.execute(
-                "UPDATE user_blocks SET strikes = 0, frozen_until = NULL, reason = NULL,"
-                " updated_at = ? WHERE user_id = ?",
-                (datetime.now(timezone.utc).isoformat(timespec="seconds"), user_id),
+                """
+                INSERT INTO user_blocks
+                    (user_id, strikes, frozen_until, reason, updated_at)
+                VALUES (?, 0, NULL, NULL, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    strikes = 0, frozen_until = NULL, reason = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, now_iso),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO user_limit_resets (user_id, reset_at) VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET reset_at = excluded.reset_at
+                """,
+                (user_id, now_iso),
             )
             self._conn.commit()
 
@@ -783,41 +914,41 @@ class Database:
     def _list_users(
         self, q: Optional[str] = None, page: int = 0, size: int = 20
     ) -> tuple[list[dict[str, Any]], int]:
-        """قائمة مبلّغين مجملة: آخر اسم/معرف، عدد البلاغات، آخر ظهور + حالة الحجب."""
+        """قائمة مستخدمي البوت: الاسم، البلاغات، آخر ظهور + حالة الحجب."""
         like = f"%{(q or '').strip()}%"
-        having = ""
+        where = ""
+        params: list[Any] = []
         if q and q.strip():
-            having = (
-                " HAVING MAX(r.full_name) LIKE ? OR MAX(r.username) LIKE ?"
-                " OR CAST(r.user_id AS TEXT) LIKE ?"
+            where = (
+                " WHERE COALESCE(u.full_name, '') LIKE ?"
+                " OR COALESCE(u.username, '') LIKE ?"
+                " OR CAST(u.user_id AS TEXT) LIKE ?"
             )
-        params = [like, like, like] if having else []
-        base = """
-            SELECT r.user_id AS user_id,
-                   MAX(r.full_name) AS full_name,
-                   MAX(r.username)  AS username,
-                   COUNT(*)         AS reports_count,
-                   MAX(r.created_at) AS last_at,
-                   b.frozen_until   AS frozen_until,
-                   b.reason         AS block_reason
-            FROM reports r
-            LEFT JOIN user_blocks b ON b.user_id = r.user_id
-            GROUP BY r.user_id{having}
-            ORDER BY last_at DESC
-            LIMIT ? OFFSET ?
-        """.format(having=having)
-        total = """
-            SELECT COUNT(*) FROM (
-                SELECT r.user_id AS user_id, MAX(r.full_name) AS u,
-                       MAX(r.username) AS n
-                FROM reports r
-                GROUP BY r.user_id{having}
-            )
-        """.format(having=having)
+            params = [like, like, like]
         size = max(1, min(int(size), 100))
         page = max(0, int(page))
+        base = f"""
+            SELECT u.user_id AS user_id,
+                   u.full_name AS full_name,
+                   u.username AS username,
+                   COALESCE(r.reports_count, 0) AS reports_count,
+                   u.last_seen_at AS last_at,
+                   b.frozen_until AS frozen_until,
+                   b.reason AS block_reason
+            FROM bot_users u
+            LEFT JOIN (
+                SELECT user_id, COUNT(*) AS reports_count
+                FROM reports GROUP BY user_id
+            ) r ON r.user_id = u.user_id
+            LEFT JOIN user_blocks b ON b.user_id = u.user_id
+            {where}
+            ORDER BY u.last_seen_at DESC
+            LIMIT ? OFFSET ?
+        """
         with self._lock:
-            count = self._conn.execute(total, params).fetchone()[0]
+            count = self._conn.execute(
+                f"SELECT COUNT(*) FROM bot_users u{where}", params
+            ).fetchone()[0]
             rows = self._conn.execute(
                 base, [*params, size, page * size]
             ).fetchall()
@@ -837,13 +968,14 @@ class Database:
         active = "b.frozen_until IS NOT NULL AND b.frozen_until > ?"
         query = f"""
             SELECT b.user_id AS user_id,
-                   r.full_name AS full_name,
-                   r.username AS username,
+                   COALESCE(u.full_name, r.full_name) AS full_name,
+                   COALESCE(u.username, r.username) AS username,
                    b.frozen_until AS frozen_until,
                    b.reason AS reason,
                    b.strikes AS strikes,
                    b.updated_at AS updated_at
             FROM user_blocks b
+            LEFT JOIN bot_users u ON u.user_id = b.user_id
             LEFT JOIN reports r ON r.id = (
                 SELECT MAX(r2.id) FROM reports r2 WHERE r2.user_id = b.user_id
             )
@@ -864,6 +996,19 @@ class Database:
     async def list_blocked_users(self, page: int = 0, size: int = 50):
         return await asyncio.to_thread(self._list_blocked_users, page, size)
 
+    def _blocked_users_count(self) -> int:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM user_blocks "
+                "WHERE frozen_until IS NOT NULL AND frozen_until > ?",
+                (now_iso,),
+            ).fetchone()
+            return int(row[0])
+
+    async def blocked_users_count(self) -> int:
+        return await asyncio.to_thread(self._blocked_users_count)
+
     def _user_profile(self, user_id: int) -> Optional[dict[str, Any]]:
         """بطاقة مبلّغ: أحدث بياناته، عدّادات بلاغاته، وحالة الحجب."""
         with self._lock:
@@ -883,8 +1028,22 @@ class Database:
             block = self._conn.execute(
                 "SELECT * FROM user_blocks WHERE user_id = ?", (user_id,)
             ).fetchone()
+            user = self._conn.execute(
+                "SELECT * FROM bot_users WHERE user_id = ?", (user_id,)
+            ).fetchone()
         if row is None:
-            return _row_to_dict(block) if block is not None else None
+            if user is None and block is None:
+                return None
+            profile = _row_to_dict(user) if user is not None else {"user_id": user_id}
+            profile.update({
+                "total_reports": 0,
+                "approved_n": 0,
+                "rejected_n": 0,
+                "first_at": profile.get("first_seen_at"),
+                "last_at": profile.get("last_seen_at"),
+                "block": _row_to_dict(block) if block is not None else None,
+            })
+            return profile
         profile = _row_to_dict(row)
         profile.pop("description", None)
         profile.pop("photo_path", None)
@@ -900,6 +1059,82 @@ class Database:
 
     async def user_profile(self, user_id: int):
         return await asyncio.to_thread(self._user_profile, user_id)
+
+    def _open_user_conversation(self, user_id: int) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO user_conversations (user_id, opened_at, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (user_id, now_iso, now_iso),
+            )
+            self._conn.commit()
+
+    async def open_user_conversation(self, user_id: int) -> None:
+        await asyncio.to_thread(self._open_user_conversation, user_id)
+
+    def _user_conversation_open(self, user_id: int) -> bool:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT 1 FROM user_conversations WHERE user_id = ?", (user_id,)
+            ).fetchone() is not None
+
+    async def user_conversation_open(self, user_id: int) -> bool:
+        return await asyncio.to_thread(self._user_conversation_open, user_id)
+
+    def _add_user_message(
+        self, user_id: int, direction: str, text: str, admin_id: int | None = None
+    ) -> int:
+        if direction not in {"in", "out"}:
+            raise ValueError("invalid message direction")
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO user_messages (user_id, direction, text, admin_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, direction, text, admin_id, now_iso),
+            )
+            self._conn.execute(
+                "UPDATE user_conversations SET updated_at = ? WHERE user_id = ?",
+                (now_iso, user_id),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    async def add_user_message(
+        self, user_id: int, direction: str, text: str, admin_id: int | None = None
+    ) -> int:
+        return await asyncio.to_thread(
+            self._add_user_message, user_id, direction, text, admin_id
+        )
+
+    def _list_user_messages(
+        self, user_id: int, after_id: int = 0, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, user_id, direction, text, admin_id, created_at
+                FROM user_messages
+                WHERE user_id = ? AND id > ?
+                ORDER BY id ASC LIMIT ?
+                """,
+                (user_id, max(0, int(after_id)), limit),
+            ).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    async def list_user_messages(
+        self, user_id: int, after_id: int = 0, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._list_user_messages, user_id, after_id, limit
+        )
 
     # --------------------------------------------------------------
     # التغطية الشاملة: تصنيفات قابلة للتعديل، قوالب ردود، إحصاءات، تعميم
@@ -972,17 +1207,91 @@ class Database:
     async def top_users(self, limit: int = 7):
         return await asyncio.to_thread(self._top_users, limit)
 
-    def _all_user_ids(self, cap: int = 300) -> tuple[list[int], bool]:
-        """جميع معرافات المبلّغين (من بلغ يوماً) — يمزج cap+1 لكشف الفيض."""
+    def _all_user_ids(self, cap: int | None = None) -> tuple[list[int], bool]:
+        """All persistent subscribers, including users who never filed a report."""
+        limit_sql = " LIMIT ?" if cap is not None else ""
+        params = (int(cap) + 1,) if cap is not None else ()
         rows = self._conn.execute(
-            "SELECT DISTINCT user_id FROM reports ORDER BY user_id LIMIT ?",
-            (int(cap) + 1,),
+            "SELECT user_id FROM ("
+            "SELECT user_id FROM bot_users UNION SELECT user_id FROM reports"
+            ") ORDER BY user_id" + limit_sql,
+            params,
         ).fetchall()
         ids = [int(r[0]) for r in rows]
+        if cap is None:
+            return ids, False
         return ids[:cap], len(ids) > cap
 
-    async def all_user_ids(self, cap: int = 300):
+    async def all_user_ids(self, cap: int | None = None):
         return await asyncio.to_thread(self._all_user_ids, cap)
+
+    def _create_broadcast_job(
+        self, text: str, actor_id: int, total: int
+    ) -> int | None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            active = self._conn.execute(
+                "SELECT 1 FROM broadcast_jobs "
+                "WHERE status IN ('queued', 'running') LIMIT 1"
+            ).fetchone()
+            if active:
+                return None
+            cur = self._conn.execute(
+                """
+                INSERT INTO broadcast_jobs (text, actor_id, status, total, created_at)
+                VALUES (?, ?, 'running', ?, ?)
+                """,
+                (text, actor_id, total, now_iso),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    async def create_broadcast_job(
+        self, text: str, actor_id: int, total: int
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self._create_broadcast_job, text, actor_id, total
+        )
+
+    def _update_broadcast_job(
+        self, job_id: int, sent: int, failed: int, status: str | None = None
+    ) -> None:
+        completed_at = (
+            datetime.now(timezone.utc).isoformat(timespec="seconds")
+            if status in {"completed", "failed"}
+            else None
+        )
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE broadcast_jobs
+                SET sent = ?, failed = ?,
+                    status = COALESCE(?, status),
+                    completed_at = COALESCE(?, completed_at)
+                WHERE id = ?
+                """,
+                (sent, failed, status, completed_at, job_id),
+            )
+            self._conn.commit()
+
+    async def update_broadcast_job(
+        self, job_id: int, sent: int, failed: int, status: str | None = None
+    ) -> None:
+        await asyncio.to_thread(
+            self._update_broadcast_job, job_id, sent, failed, status
+        )
+
+    def _get_broadcast_job(self, job_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, status, total, sent, failed, created_at, completed_at "
+                "FROM broadcast_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+
+    async def get_broadcast_job(self, job_id: int) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._get_broadcast_job, job_id)
 
     @property
     def path(self) -> Path:

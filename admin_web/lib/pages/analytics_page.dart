@@ -79,10 +79,12 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'قراءة مباشرة من واجهة الإدارة',
-                  style: TextStyle(color: Colors.white54),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
               IconButton(
@@ -243,7 +245,12 @@ class _RankRow extends StatelessWidget {
           Row(
             children: [
               Expanded(child: Text(label)),
-              Text('$value', style: const TextStyle(color: Colors.white70)),
+              Text(
+                '$value',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 6),
@@ -251,7 +258,7 @@ class _RankRow extends StatelessWidget {
             value: progress,
             minHeight: 6,
             color: color,
-            backgroundColor: const Color(0xFF25382D),
+            backgroundColor: Theme.of(context).dividerColor,
             borderRadius: BorderRadius.circular(8),
           ),
         ],

@@ -1,20 +1,17 @@
 """
 معالجات المستخدم العادي: قائمة رئيسية بأزرار مضمنة، استقبال بلاغ عبر المحادثة،
-استقبال عناصر البلاغ (صورة/رابط/وصف)، حفظ، وإشعار المشرفين.
+استقبال تفاصيل البلاغ وأدلته الاختيارية، حفظ، وإشعار المشرفين.
 
-مسار المحادثة (ConversationHandler)، أربع حالات:
-  1) ASK_PHOTO : استقبال الصورة التوثيقية
-  2) ASK_LINK  : استقبال رابط المنشور
-  3) ASK_DESC  : استقبال وصف المخالفة
-  4) CONFIRM   : تأكيد الحفظ النهائي
+مسار المحادثة (ConversationHandler): اختيار القسم والمنصة عند الحاجة، التفاصيل،
+مرفق اختياري، رابط/موقع/جهة اتصال بحسب المسار، ثم التأكيد النهائي.
 
 استدعاءات الأزرار المضمنة للمستخدم (prefix usr:):
   usr:menu     → القائمة الرئيسية
-  usr:report   → بدء بلاغ جديد (يفتح اختيار النوع ثم الصورة)
+  usr:report   → بدء بلاغ جديد (يفتح اختيار القسم)
   usr:status   → حالة بلاغي الأخير
   usr:about    → عن النظام
   usr:contact  → تواصل مع الإدارة
-  usr:type:X   → اختيار نوع المخالفة ثم التلاشي
+  usr:category:X → اختيار قسم البلاغ
   usr:confirm  → تأكيد إرسال البلاغ
   usr:cancel   → إلغاء العملية
 """
@@ -27,7 +24,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from telegram import Update
+from telegram import ReplyKeyboardRemove, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
@@ -52,18 +49,24 @@ from database import Database
 from keyboards import (
     admin_notify_buttons,
     back_to_menu_kb,
-    cancel_kb,
+    cancel_inline_kb,
     confirm_report_kb,
     main_menu_kb,
     my_reports_kb,
     report_open_kb,
-    report_type_kb,
+    REPORT_CATEGORIES,
+    SOCIAL_PLATFORM_LABELS,
+    report_category_kb,
+    social_platform_kb,
+    optional_step_kb,
+    contact_request_kb,
+    location_request_kb,
 )
 
 logger = logging.getLogger(__name__)
 
 # مراحل المحادثة
-ASK_PHOTO, ASK_LINK, ASK_DESC, CONFIRM = range(4)
+ASK_CATEGORY, ASK_PLATFORM, ASK_DESC, ASK_PHOTO, ASK_LINK, ASK_LOCATION, ASK_CONTACT, CONFIRM, ASK_FOLLOWUP = range(9)
 
 # نصوص الأزرار (أنماط regex) لإلغاء العملية وتأكيد الحفظ
 CANCEL_RE = r"^\s*❌\s*إلغاء\s*$"
@@ -111,6 +114,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             texts.PRIVATE_ONLY.format(bot=config.BOT_USERNAME), parse_mode=ParseMode.HTML
         )
         return ConversationHandler.END
+
+    await db.record_user(user.id, user.username, user.full_name)
 
     # ------------------------------------------------------------------
     # الحماية: الإيقاف الطارئ فقط (المعدّل واليوميّ يُفحصان عند الضغط على "بلاغ جديد")
@@ -212,6 +217,146 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_path = ""
         photo_name = media.file_id
     return photo_path, media.file_id, photo_name, screening
+
+
+async def _advance_after_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Continue the category-specific optional fields after the image step."""
+    ud = context.user_data
+    if ud.get("report_category") == "social":
+        prompt = await update.effective_message.reply_text(
+            texts.ASK_LINK,
+            parse_mode=ParseMode.HTML,
+            reply_markup=optional_step_kb("link"),
+        )
+        _remember_optional_prompt(context, prompt)
+        return ASK_LINK
+    if ud.get("report_category") == "field":
+        await update.effective_message.reply_text(
+            texts.ASK_LOCATION,
+            parse_mode=ParseMode.HTML,
+            reply_markup=location_request_kb(),
+        )
+        return ASK_LOCATION
+    return await _ask_contact(update, context)
+
+
+async def _ask_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        texts.ASK_CONTACT,
+        parse_mode=ParseMode.HTML,
+        reply_markup=contact_request_kb(),
+    )
+    return ASK_CONTACT
+
+
+def _remember_optional_prompt(context: ContextTypes.DEFAULT_TYPE, message) -> None:
+    context.user_data["optional_prompt"] = {
+        "chat_id": message.chat_id,
+        "message_id": message.message_id,
+    }
+
+
+async def _clear_optional_prompt(context: ContextTypes.DEFAULT_TYPE) -> None:
+    prompt = context.user_data.pop("optional_prompt", None)
+    if not prompt:
+        return
+    try:
+        await context.bot.edit_message_reply_markup(
+            chat_id=prompt["chat_id"],
+            message_id=prompt["message_id"],
+            reply_markup=None,
+        )
+    except BadRequest as exc:
+        logger.debug("Optional report prompt is already unavailable: %s", exc)
+
+
+async def _show_report_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ud = context.user_data
+    category = REPORT_CATEGORIES.get(ud.get("report_category"), "غير محدد")
+    place = ud.get("place") or ""
+    if not place and ud.get("latitude") is not None and ud.get("longitude") is not None:
+        place = f"{ud['latitude']:.5f}, {ud['longitude']:.5f}"
+    review_note = ""
+    if ud.get("needs_review") and ud.get("link_review_reason") != "virustotal":
+        review_note = texts.DUPLICATE_REVIEW_NOTE
+    if ud.get("link_review_reason") == "virustotal":
+        review_note += texts.VIRUSTOTAL_REVIEW
+    if ud.get("image_moderation_flag"):
+        review_note += "⚠️ صورة البلاغ تحتاج إلى مراجعة يدوية.\n"
+    await update.effective_message.reply_text(
+        "✅ اكتملت البيانات الاختيارية.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await update.effective_message.reply_text(
+        texts.SUMMARY.format(
+            category=utils.esc(category),
+            platform=utils.esc(ud.get("platform") or "—"),
+            photo="✅ مستلمة" if ud.get("photo_file_id") else "غير مرفقة",
+            link=(
+                utils.link_anchor(ud["post_link"])
+                if ud.get("post_link")
+                else "غير مرفق"
+            ),
+            place=utils.esc(place or "—"),
+            contact=utils.esc(ud.get("contact_phone") or "—"),
+            vtype=utils.esc(ud.get("violation_type") or category),
+            desc=utils.esc(ud.get("description") or ""),
+            review_note=review_note,
+        ),
+        parse_mode=ParseMode.HTML,
+        reply_markup=confirm_report_kb(),
+    )
+    return CONFIRM
+
+
+async def _assess_link_and_description(
+    context: ContextTypes.DEFAULT_TYPE, db: Database, link: str
+) -> None:
+    ud = context.user_data
+    if (
+        not link
+        and ud.get("report_category") == "social"
+        and not ud.get("photo_file_id")
+    ):
+        raise ValueError(
+            "لقسم مخالفات النشر، أرفق رابط المنشور أو لقطة شاشة واحدة على الأقل."
+        )
+    description = ud.get("description") or ""
+    duplicate = None
+    if link:
+        verdict, substance, duplicate = await guards.inspect_report_content(
+            db, link, description
+        )
+        if verdict.blocked:
+            raise ValueError(verdict.message)
+        if substance is not None and substance.blocked:
+            raise ValueError(substance.message)
+        if verdict.extra.get("needs_review"):
+            ud["needs_review"] = True
+            ud["link_review_reason"] = verdict.extra.get("review_reason")
+        detected_platform = verdict.extra.get("platform") or ""
+        selected_platform = ud.get("platform") or ""
+        platform_key = ud.get("platform_key")
+        matches = (
+            not detected_platform
+            or platform_key == "other"
+            or (platform_key == "instagram_tiktok" and detected_platform in {"إنستغرام", "تيك توك"})
+            or detected_platform == selected_platform
+        )
+        if detected_platform and selected_platform and not matches:
+            raise ValueError(
+                "الرابط لا يتوافق مع المنصة المختارة. أرسل رابطًا من المنصة نفسها "
+                "أو اختر «منصة أخرى» عند بدء البلاغ."
+            )
+        elif detected_platform:
+            ud["platform"] = detected_platform
+        elif verdict.code == "unknown_platform":
+            ud["needs_review"] = True
+    else:
+        duplicate = await guards.check_duplicate(db, "", description)
+    if duplicate and duplicate.code in {"exact_duplicate", "similar_duplicate"}:
+        ud["needs_review"] = True
+        ud["duplicate_of"] = duplicate.extra.get("duplicate_of")
 
 
 async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id: int):
@@ -376,28 +521,48 @@ async def _freeze_for_sensitive_image(
 async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """استقبال الصورة (مضغوطة أو كملف) وحفظها في مجلد media/."""
     msg = update.message
+    await _clear_optional_prompt(context)
+    progress = await msg.reply_text("🔄 جارٍ فحص الصورة أمنيًا...")
 
     photo_path, photo_file_id, photo_name, screening = await _save_photo(
         update, context
     )
     if not photo_file_id:
+        await progress.edit_text("⚠️ لم يكتمل استلام الصورة. أعد إرسالها أو تخطَّ المرفق.")
+        prompt = await msg.reply_text(
+            texts.ASK_PHOTO,
+            parse_mode=ParseMode.HTML,
+            reply_markup=optional_step_kb("photo"),
+        )
+        _remember_optional_prompt(context, prompt)
         return ASK_PHOTO
     if screening.flagged:
+        await progress.edit_text("⛔ أوقف النظام هذا البلاغ وفق نتيجة فحص الصورة.")
         await _freeze_for_sensitive_image(update, context, screening)
         return ConversationHandler.END
 
+    await progress.edit_text(
+        "⚠️ تعذر إكمال الفحص الآلي بالكامل؛ سيُحال البلاغ للمراجعة اليدوية."
+        if screening.review_required
+        else "✅ اكتمل الفحص الآلي الأولي للصورة."
+    )
     context.user_data.update(
         photo_path=photo_path,
         photo_file_id=photo_file_id,
         photo_name=photo_name,
     )
-    await msg.reply_text(texts.ASK_LINK, parse_mode=ParseMode.HTML, reply_markup=cancel_kb())
-    return ASK_LINK
+    return await _advance_after_evidence(update, context)
 
 
 async def remind_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """عندما يرسل المستخدم شيئًا غير صورة في خطوة الصورة."""
-    await update.effective_message.reply_text(texts.PHOTO_REMINDER, parse_mode=ParseMode.HTML)
+    await _clear_optional_prompt(context)
+    prompt = await update.effective_message.reply_text(
+        texts.ASK_PHOTO,
+        parse_mode=ParseMode.HTML,
+        reply_markup=optional_step_kb("photo"),
+    )
+    _remember_optional_prompt(context, prompt)
     return ASK_PHOTO
 
 
@@ -406,40 +571,58 @@ async def remind_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================================================================
 async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
+    await _clear_optional_prompt(context)
     if not utils.is_valid_url(text):
-        await update.message.reply_text(texts.LINK_INVALID, parse_mode=ParseMode.HTML)
-        return ASK_LINK
-
-    # تحديد منصة التواصل + تنبيه إن كان المصدر غير معروف
-    verdict = guards.check_link(text)
-    if verdict.blocked:
-        await update.message.reply_text(verdict.message, parse_mode=ParseMode.HTML)
-        return ASK_LINK
-
-    platform = verdict.extra.get("platform") or ""
-    context.user_data["post_link"] = text
-    context.user_data["platform"] = platform
-
-    if verdict.code == "unknown_platform":
-        await update.message.reply_text(
-            verdict.message, parse_mode=ParseMode.HTML
-        )
-    elif platform:
-        await update.message.reply_text(
-            texts.PLATFORM_DETECTED.format(platform=utils.esc(platform)),
+        prompt = await update.message.reply_text(
+            texts.LINK_INVALID,
             parse_mode=ParseMode.HTML,
+            reply_markup=optional_step_kb("link"),
         )
+        _remember_optional_prompt(context, prompt)
+        return ASK_LINK
 
-    await update.message.reply_text(
-        texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
-        parse_mode=ParseMode.HTML,
-        reply_markup=cancel_kb(),
-    )
-    return ASK_DESC
+    progress = None
+    if config.VIRUSTOTAL_API_KEY:
+        progress = await update.message.reply_text(
+            "🔎 جار فحص الرابط عبر VirusTotal..."
+        )
+    try:
+        await _assess_link_and_description(context, _db(context), text)
+    except ValueError as exc:
+        prompt = (
+            await progress.edit_text(
+                str(exc),
+                parse_mode=ParseMode.HTML,
+                reply_markup=optional_step_kb("link"),
+            )
+            if progress
+            else await update.message.reply_text(
+                str(exc),
+                parse_mode=ParseMode.HTML,
+                reply_markup=optional_step_kb("link"),
+            )
+        )
+        _remember_optional_prompt(context, prompt)
+        return ASK_LINK
+    if progress:
+        result_text = (
+            texts.VIRUSTOTAL_REVIEW
+            if context.user_data.get("link_review_reason") == "virustotal"
+            else "✅ اكتمل فحص الرابط."
+        )
+        await progress.edit_text(result_text, parse_mode=ParseMode.HTML)
+    context.user_data["post_link"] = text
+    return await _ask_contact(update, context)
 
 
 async def remind_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(texts.ASK_LINK, parse_mode=ParseMode.HTML)
+    await _clear_optional_prompt(context)
+    prompt = await update.effective_message.reply_text(
+        texts.ASK_LINK,
+        parse_mode=ParseMode.HTML,
+        reply_markup=optional_step_kb("link"),
+    )
+    _remember_optional_prompt(context, prompt)
     return ASK_LINK
 
 
@@ -455,53 +638,71 @@ async def receive_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ASK_DESC
 
-    db = _db(context)
-    link_verdict, substance_verdict, duplicate_verdict = (
-        await guards.inspect_report_content(
-            db, context.user_data["post_link"], text
-        )
-    )
-    if link_verdict.blocked:
-        await update.message.reply_text(
-            link_verdict.message, parse_mode=ParseMode.HTML
-        )
-        return ASK_LINK
-    if substance_verdict is not None and substance_verdict.blocked:
+    substance_verdict = guards.check_substance(text)
+    if substance_verdict.blocked:
         await update.message.reply_text(
             substance_verdict.message, parse_mode=ParseMode.HTML
         )
         return ASK_DESC
-
-    duplicate = duplicate_verdict
-    needs_review = bool(
-        (duplicate and duplicate.code in {"exact_duplicate", "similar_duplicate"})
-        or link_verdict.code == "unknown_platform"
-    )
+    duplicate = await guards.check_duplicate(_db(context), "", text)
     context.user_data["description"] = text
-    context.user_data["needs_review"] = needs_review
-    context.user_data["duplicate_of"] = (
-        duplicate.extra.get("duplicate_of") if duplicate else None
+    context.user_data["needs_review"] = bool(
+        duplicate.code in {"exact_duplicate", "similar_duplicate"}
     )
-
-    anchor = utils.link_anchor(context.user_data["post_link"])
-    await update.message.reply_text(
-        texts.SUMMARY.format(
-            link=anchor,
-            vtype=utils.esc(context.user_data.get("violation_type") or "غير محدد"),
-            desc=utils.esc(text),
-            review_note=texts.DUPLICATE_REVIEW_NOTE if needs_review else "",
-        ),
+    context.user_data["duplicate_of"] = duplicate.extra.get("duplicate_of")
+    prompt = await update.message.reply_text(
+        texts.ASK_PHOTO,
         parse_mode=ParseMode.HTML,
-        reply_markup=confirm_report_kb(),
+        reply_markup=optional_step_kb("photo"),
     )
-    return CONFIRM
+    _remember_optional_prompt(context, prompt)
+    return ASK_PHOTO
 
 
 async def remind_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
-        texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN), parse_mode=ParseMode.HTML
+        texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
+        parse_mode=ParseMode.HTML,
+        reply_markup=cancel_inline_kb(),
     )
     return ASK_DESC
+
+
+async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    if message.location:
+        context.user_data["latitude"] = message.location.latitude
+        context.user_data["longitude"] = message.location.longitude
+        context.user_data["place"] = ""
+    else:
+        place = (message.text or "").strip()
+        if place != "⏭️ تخطي":
+            if not place or len(place) > 120:
+                await message.reply_text("اكتب وصفًا للمكان لا يتجاوز 120 حرفًا، أو اختر تخطي.")
+                return ASK_LOCATION
+            context.user_data["place"] = place
+    return await _ask_contact(update, context)
+
+
+async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    contact = message.contact
+    if contact:
+        if contact.user_id is not None and contact.user_id != update.effective_user.id:
+            await message.reply_text(
+                "يرجى مشاركة رقمك أنت فقط أو اختيار تخطي.",
+                reply_markup=contact_request_kb(),
+            )
+            return ASK_CONTACT
+        context.user_data["contact_phone"] = contact.phone_number[:32]
+    elif (message.text or "").strip() != "⏭️ تخطي":
+        await message.reply_text(
+            texts.ASK_CONTACT,
+            parse_mode=ParseMode.HTML,
+            reply_markup=contact_request_kb(),
+        )
+        return ASK_CONTACT
+    return await _show_report_confirmation(update, context)
 
 
 # ==================================================================
@@ -525,11 +726,17 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id=user.id,
             username=user.username,
             full_name=user.full_name,
-            photo_path=ud["photo_path"],
+            photo_path=ud.get("photo_path", ""),
             photo_file_id=ud.get("photo_file_id"),
-            post_link=ud["post_link"],
+            post_link=ud.get("post_link", ""),
             description=ud["description"],
-            violation_type=ud.get("violation_type"),
+            violation_type=ud.get("violation_type") or ud.get("category"),
+            category=ud.get("category"),
+            platform=ud.get("platform"),
+            place=ud.get("place") or None,
+            latitude=ud.get("latitude"),
+            longitude=ud.get("longitude"),
+            contact_phone=ud.get("contact_phone") or None,
             needs_review=1 if ud.get("needs_review") or ud.get("image_moderation_flag") else 0,
             admin_note=ud.get("image_moderation_flag") or None,
         )
@@ -544,7 +751,7 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await db.add_fingerprint(
             report["id"],
-            guards.link_hash(ud["post_link"]),
+            guards.link_hash(ud["post_link"]) if ud.get("post_link") else None,
             guards.text_hash(ud["description"]),
             None,
         )
@@ -707,6 +914,10 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(
             link_verdict.message, parse_mode=ParseMode.HTML
         )
+    if link_verdict.extra.get("needs_review"):
+        await update.effective_message.reply_text(
+            texts.VIRUSTOTAL_REVIEW, parse_mode=ParseMode.HTML
+        )
 
     await db.log_event(user.id, "report")
 
@@ -722,22 +933,31 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "suspect_duplicate": (
             duplicate is not None
             and duplicate.code in {"exact_duplicate", "similar_duplicate"}
-        ) or link_verdict.code == "unknown_platform",
+        ) or link_verdict.code == "unknown_platform"
+        or bool(link_verdict.extra.get("needs_review")),
         "duplicate_of": (
             duplicate.extra.get("duplicate_of") if duplicate is not None else None
         ),
     }
     _pending_app_users.add(user.id)
 
+    review_notice = (
+        texts.VIRUSTOTAL_REVIEW
+        if link_verdict.extra.get("needs_review")
+        else ""
+    )
     await update.effective_message.reply_text(
         texts.APP_DATA_OK.format(
             vtype=utils.esc(violation_type or "غير محدد"),
             place=utils.esc(place or "غير محدد"),
-            dup=(
-                "⚠️ "
-                if duplicate
-                and duplicate.code in {"exact_duplicate", "similar_duplicate"}
-                else ""
+            review=(
+                utils.esc(review_notice) + "\n\n"
+                if review_notice
+                else (
+                    "⚠️ سيُحال البلاغ للمراجعة اليدوية بسبب تشابهه مع بلاغ سابق.\n\n"
+                    if duplicate and duplicate.code in {"exact_duplicate", "similar_duplicate"}
+                    else ""
+                )
             ),
         ),
         parse_mode=ParseMode.HTML,
@@ -760,17 +980,27 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return None
 
     # حفظ الصورة بنفس المنطق المستخدم في المحادثة العادية
+    progress = await update.effective_message.reply_text(
+        "🔄 جارٍ فحص الصورة أمنيًا..."
+    )
     photo_path, photo_file_id, photo_name, screening = await _save_photo(
         update, context
     )
     if not photo_file_id:
+        await progress.edit_text("⚠️ لم يكتمل استلام الصورة. أعد إرسالها.")
         await update.effective_message.reply_text(
             texts.PHOTO_FAILED, parse_mode=ParseMode.HTML
         )
         return None
     if screening.flagged:
+        await progress.edit_text("⛔ أوقف النظام هذا البلاغ وفق نتيجة فحص الصورة.")
         await _freeze_for_sensitive_image(update, context, screening)
         return None
+    await progress.edit_text(
+        "⚠️ تعذر إكمال الفحص الآلي بالكامل؛ سيُحال البلاغ للمراجعة اليدوية."
+        if screening.review_required
+        else "✅ اكتمل الفحص الآلي الأولي للصورة."
+    )
 
     try:
         report = await db.add_report(
@@ -851,8 +1081,19 @@ async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, report: dict) -> No
         username=texts.username_display(report["username"]),
         uid=report["user_id"],
         vtype=utils.esc(report.get("violation_type") or "غير محدد"),
+        category=utils.esc(report.get("category") or "—"),
+        platform=utils.esc(report.get("platform") or "—"),
+        place=utils.esc(
+            report.get("place")
+            or (
+                f"{report['latitude']:.5f}, {report['longitude']:.5f}"
+                if report.get("latitude") is not None and report.get("longitude") is not None
+                else "—"
+            )
+        ),
+        contact=utils.esc(report.get("contact_phone") or "—"),
         time=utils.fmt_local(report["created_at"]),
-        anchor=utils.link_anchor(report["post_link"]),
+        anchor=utils.link_anchor(report["post_link"]) if report.get("post_link") else "—",
         desc=utils.esc(utils.trunc(report["description"], 300)),
     )
     moderation_note = str(report.get("admin_note") or "").strip()
@@ -975,6 +1216,55 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await message.reply_text("تم حفظ المعلومات، لكن تعذر إيصالها للمشرفين حاليًا.")
 
 
+async def receive_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    user = update.effective_user
+    response = (message.text or "").strip()
+    rid = context.user_data.get("followup_report_id")
+    if not isinstance(rid, int) or not 2 <= len(response) <= 2000:
+        await message.reply_text("يجب أن تكون المعلومات بين حرفين و2000 حرف.")
+        return ASK_FOLLOWUP
+    db = _db(context)
+    report = await db.get_by_id(rid)
+    if (
+        not report
+        or int(report.get("user_id") or 0) != user.id
+        or not report.get("followup_requested_at")
+        or report.get("followup_response")
+    ):
+        context.user_data.pop("followup_report_id", None)
+        await message.reply_text("لم يعد هناك طلب معلومات مفتوح لهذا البلاغ.")
+        return ConversationHandler.END
+
+    await db.save_followup_response(rid, response)
+    await db.audit(
+        user.id, "report_followup_received", str(rid),
+        f"عدد الأحرف: {len(response)}",
+    )
+    delivered = 0
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    f"📩 معلومات إضافية للبلاغ {report.get('seq') or rid}\n"
+                    f"المبلّغ: {utils.esc(user.full_name or '-')} ({user.id})\n\n"
+                    f"{utils.esc(response)}"
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+            delivered += 1
+        except Exception:
+            logger.warning("تعذر إيصال متابعة البلاغ %s للمشرف %s", rid, admin_id)
+    context.user_data.pop("followup_report_id", None)
+    await message.reply_text(
+        "تم استلام المعلومات وإيصالها إلى الإدارة."
+        if delivered
+        else "تم حفظ المعلومات، لكن تعذر إيصالها للمشرفين حاليًا."
+    )
+    return ConversationHandler.END
+
+
 # ==================================================================
 # أداة الإعداد: معرفة معرّف المحادثة (يُستخدم لضبط القناة الرسمية)
 # ==================================================================
@@ -1086,15 +1376,13 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         await db.log_event(query.from_user.id, "report")
         context.user_data.clear()
-        # الخطوة الأولى: نوع المخالفة (اختياري) ثم الصورة — من القائمة الفعلية
-        vtypes = await db.effective_vtypes()
-        # ذاكرة الارتياب: تصنيف آخر بلاغ له يظهر كزر اختصار (نقرة أقل)
-        last_type = (await db.last_report_by_user(query.from_user.id) or {}).get("violation_type")
+        # اختيار أحد مسارات البلاغ الأربعة قبل إدخال التفاصيل.
         await query.edit_message_text(
-            texts.ASK_TYPE, parse_mode=ParseMode.HTML,
-            reply_markup=report_type_kb(vtypes, last_type),
+            "اختر القسم الأقرب إلى موضوع بلاغك:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=report_category_kb(),
         )
-        return ASK_PHOTO
+        return ASK_CATEGORY
 
     # --- فتح التطبيق ---
     # أُزيل زر فتح التطبيق من الأزرار المضمنة (قرار الواجهة الاحترافية)؛
@@ -1137,9 +1425,30 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 desc=utils.esc(utils.trunc(r.get("description") or "-", 200)),
             ),
             parse_mode=ParseMode.HTML,
-            reply_markup=report_open_kb(),
+            reply_markup=report_open_kb(
+                rid, bool(r.get("followup_requested_at") and not r.get("followup_response"))
+            ),
         )
         return ConversationHandler.END
+
+    if parts[1] == "followup" and len(parts) == 3 and parts[2].isdigit():
+        rid = int(parts[2])
+        report = await db.get_by_id(rid)
+        if (
+            not report
+            or int(report.get("user_id") or 0) != query.from_user.id
+            or not report.get("followup_requested_at")
+            or report.get("followup_response")
+        ):
+            await query.answer("لا يوجد طلب معلومات مفتوح لهذا البلاغ.", show_alert=True)
+            return ConversationHandler.END
+        context.user_data["followup_report_id"] = rid
+        await query.edit_message_text(
+            texts.ASK_FOLLOWUP,
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(),
+        )
+        return ASK_FOLLOWUP
 
     # --- عن النظام ---
     if parts[1] == "about":
@@ -1158,26 +1467,91 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return ConversationHandler.END
 
+    if parts[1] == "category" and len(parts) == 3:
+        category = parts[2]
+        if category not in REPORT_CATEGORIES:
+            await query.answer("هذا القسم غير معروف.", show_alert=True)
+            return ASK_CATEGORY
+        context.user_data.clear()
+        context.user_data.update(
+            report_category=category,
+            category=REPORT_CATEGORIES[category],
+            post_link="",
+            photo_path="",
+            photo_file_id=None,
+            place="",
+            latitude=None,
+            longitude=None,
+            contact_phone="",
+        )
+        intro = texts.CATEGORY_INTROS[category]
+        if category == "social":
+            await query.edit_message_text(
+                intro + "\n\n" + texts.PLATFORM_PROMPT,
+                parse_mode=ParseMode.HTML,
+                reply_markup=social_platform_kb(),
+            )
+            return ASK_PLATFORM
+        await query.edit_message_text(
+            intro + "\n\n" + texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(),
+        )
+        return ASK_DESC
+
+    if parts[1] == "platform" and len(parts) == 3:
+        platform_key = parts[2]
+        if platform_key not in SOCIAL_PLATFORM_LABELS:
+            await query.answer("المنصة غير معروفة.", show_alert=True)
+            return ASK_PLATFORM
+        context.user_data["platform"] = SOCIAL_PLATFORM_LABELS[platform_key]
+        context.user_data["platform_key"] = platform_key
+        await query.edit_message_text(
+            texts.CATEGORY_INTROS["social"]
+            + "\n\n"
+            + texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(),
+        )
+        return ASK_DESC
+
+    if parts[1] == "skip" and len(parts) == 3:
+        step = parts[2]
+        if step == "photo":
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except BadRequest:
+                pass
+            context.user_data.pop("optional_prompt", None)
+            return await _advance_after_evidence(update, context)
+        if step == "link" and context.user_data.get("report_category") == "social":
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except BadRequest:
+                pass
+            context.user_data.pop("optional_prompt", None)
+            try:
+                await _assess_link_and_description(context, db, "")
+            except ValueError as exc:
+                await query.answer(str(exc), show_alert=True)
+                return ASK_LINK
+            context.user_data["post_link"] = ""
+            return await _ask_contact(update, context)
+        if step == "location" and context.user_data.get("report_category") == "field":
+            return await _ask_contact(update, context)
+        if step == "contact":
+            return await _show_report_confirmation(update, context)
+
     # --- اختيار نوع المخالفة ---
     if parts[1] == "type" and len(parts) > 2:
         vtype = ":".join(parts[2:])
         context.user_data["violation_type"] = vtype
-        # تلاشي أزرار الاختيار: تصبح الرسالة نصًا خالصًا بلا لوحة
-        try:
-            await query.edit_message_text(
-                texts.TYPE_SELECTED.format(vtype=utils.esc(vtype)),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception:  # noqa: BLE001 — قد تكون الرسالة مجمدة/محررة للتو
-            logger.debug("تعذر إزالة أزرار اختيار النوع")
-        # خطوة الصورة تأتي في رسالة جديدة مع زر إلغاء بلوحة الرد
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text=texts.ASK_PHOTO,
+        await query.edit_message_text(
+            texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
             parse_mode=ParseMode.HTML,
-            reply_markup=cancel_kb(),
+            reply_markup=cancel_inline_kb(),
         )
-        return ASK_PHOTO
+        return ASK_DESC
 
     # --- تأكيد الإرسال ---
     if parts[1] == "confirm":
@@ -1230,6 +1604,24 @@ async def confirm_save_from_draft(update: Update, context: ContextTypes.DEFAULT_
 # ==================================================================
 async def welcome_hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أي رسالة خاصة عندما لا تكون المحادثة نشطة (لا يوجد /start)."""
+    user = update.effective_user
+    message = update.effective_message
+    chat = update.effective_chat
+    if (
+        user
+        and message
+        and message.text
+        and chat
+        and guards.is_private_chat(chat.type)
+    ):
+        db = _db(context)
+        if await db.user_conversation_open(user.id):
+            text = message.text.strip()[:config.MAX_DESC_LEN]
+            if text:
+                await db.record_user(user.id, user.username, user.full_name)
+                await db.add_user_message(user.id, "in", text)
+                await message.reply_text("✅ وصلت رسالتك إلى الإدارة.")
+                return
     await update.effective_message.reply_text(texts.WELCOME_HINT, parse_mode=ParseMode.HTML)
 
 
@@ -1293,6 +1685,19 @@ def build_conversation() -> ConversationHandler:
             CallbackQueryHandler(on_user_callback, pattern=r"^usr:"),
         ],
         states={
+            ASK_CATEGORY: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
+            ],
+            ASK_PLATFORM: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
+            ],
+            ASK_DESC: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_desc),
+                MessageHandler(~filters.TEXT & ~filters.COMMAND, remind_desc),
+            ],
             ASK_PHOTO: [
                 MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
                 MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_photo),
@@ -1306,15 +1711,30 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_link),
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, remind_link),
             ],
-            ASK_DESC: [
+            ASK_LOCATION: [
                 MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_desc),
-                MessageHandler(~filters.TEXT & ~filters.COMMAND, remind_desc),
+                MessageHandler(
+                    (filters.LOCATION | filters.TEXT) & ~filters.COMMAND,
+                    receive_location,
+                ),
+                MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
+            ],
+            ASK_CONTACT: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(
+                    (filters.CONTACT | filters.TEXT) & ~filters.COMMAND,
+                    receive_contact,
+                ),
+                MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
             ],
             CONFIRM: [
                 MessageHandler(filters.Regex(CONFIRM_RE), confirm_save),
                 MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
                 MessageHandler(~filters.Regex(CONFIRM_RE), unmatched),
+            ],
+            ASK_FOLLOWUP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_followup),
+                MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
             ],
         },
         fallbacks=[

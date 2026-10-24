@@ -22,11 +22,12 @@ class StatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Card(
-      color: const Color(0xFF111F18),
+      color: theme.cardColor,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: Color(0xFF25382D)),
+        side: BorderSide(color: theme.dividerColor),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -76,11 +77,12 @@ class SectionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Card(
-      color: const Color(0xFF111F18),
+      color: theme.cardColor,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: Color(0xFF25382D)),
+        side: BorderSide(color: theme.dividerColor),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -222,18 +224,19 @@ class EmptyView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(30),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 44, color: Colors.white24),
+            Icon(icon, size: 44, color: muted.withValues(alpha: 0.38)),
             const SizedBox(height: 10),
             Text(
               msg,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white38),
+              style: TextStyle(color: muted),
             ),
           ],
         ),
@@ -286,11 +289,11 @@ class StateBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = outline ? Colors.white24 : color;
+    final c = outline ? Theme.of(context).colorScheme.outline : color;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: c.withOpacity(outline ? 0 : 0.16),
+        color: c.withValues(alpha: outline ? 0 : 0.16),
         border: Border.all(color: c),
         borderRadius: BorderRadius.circular(20),
       ),

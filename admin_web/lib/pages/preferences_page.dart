@@ -37,7 +37,6 @@ class PreferencesPage extends StatelessWidget {
     children: [
       const Text(
         'تُحفظ هذه التفضيلات على هذا المتصفح فقط ولا تغيّر إعدادات الخادم.',
-        style: TextStyle(color: Colors.white54),
       ),
       const SizedBox(height: 12),
       SectionCard(
@@ -45,11 +44,22 @@ class PreferencesPage extends StatelessWidget {
         icon: Icons.palette_outlined,
         child: Column(
           children: [
-            ListTile(
+            SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.dark_mode_outlined),
-              title: const Text('السمة الداكنة'),
-              subtitle: const Text('مهيأة لواجهة الإدارة العربية'),
+              secondary: Icon(
+                mode == ThemeMode.light
+                    ? Icons.light_mode_outlined
+                    : Icons.dark_mode_outlined,
+              ),
+              title: Text(
+                mode == ThemeMode.light ? 'السمة الفاتحة' : 'السمة الداكنة',
+              ),
+              subtitle: const Text('تُطبّق فورًا على لوحة الإدارة'),
+              value: mode == ThemeMode.light,
+              onChanged: (value) => _update(
+                'mode',
+                value ? ThemeMode.light.name : ThemeMode.dark.name,
+              ),
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(

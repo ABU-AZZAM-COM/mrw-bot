@@ -532,9 +532,12 @@ class _OperationsPageState extends State<OperationsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
+              Text(
                 'تُحفظ في قاعدة البيانات وتُطبّق على البوت فورًا، وتبقى بعد إعادة التشغيل.',
-                style: TextStyle(color: Colors.white54, fontSize: 12),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
               const SizedBox(height: 12),
               Wrap(
@@ -559,10 +562,10 @@ class _OperationsPageState extends State<OperationsPage> {
                 ],
               ),
               const SizedBox(height: 14),
-              const Text(
+              Text(
                 'مدة التجميد التصاعدية عند تكرار تجاوز الحد — بالدقائق',
                 style: TextStyle(
-                  color: Colors.white70,
+                  color: Theme.of(context).colorScheme.onSurface,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -608,9 +611,12 @@ class _OperationsPageState extends State<OperationsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
+              Text(
                 'رسائل نصية عادية آمنة؛ المتغيرات المدعومة: {limit} و{minutes} و{kind} و{reason}. تُحفظ مع الحدود وتُطبّق فورًا.',
-                style: TextStyle(color: Colors.white54, fontSize: 12),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
               const SizedBox(height: 12),
               _messageField(

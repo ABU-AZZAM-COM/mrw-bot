@@ -26,6 +26,69 @@ import main as main_mod
 import sightengine_moderation
 from unittest.mock import AsyncMock, patch
 
+async def _capture_denied_command(*args, **kwargs):
+    return None
+
+denied_command_update = SimpleNamespace(
+    effective_message=SimpleNamespace(
+        text="/admin",
+        reply_text=_capture_denied_command,
+    ),
+    effective_user=SimpleNamespace(id=222222222),
+)
+try:
+    asyncio.run(main_mod.command_access_control(denied_command_update, None))
+except main_mod.ApplicationHandlerStop:
+    pass
+else:
+    raise AssertionError("non-admin /admin command was not stopped")
+assert asyncio.run(
+    main_mod.command_access_control(
+        SimpleNamespace(
+            effective_message=SimpleNamespace(text="/start", reply_text=_capture_denied_command),
+            effective_user=SimpleNamespace(id=222222222),
+        ),
+        None,
+    )
+) is None
+assert asyncio.run(
+    main_mod.command_access_control(
+        SimpleNamespace(
+            effective_message=SimpleNamespace(text="/unknown", reply_text=_capture_denied_command),
+            effective_user=SimpleNamespace(id=111111111),
+        ),
+        None,
+    )
+) is None
+wizard_states = handlers.build_conversation().states
+assert all(
+    state in wizard_states
+    for state in (
+        handlers.ASK_CATEGORY,
+        handlers.ASK_PLATFORM,
+        handlers.ASK_DESC,
+        handlers.ASK_PHOTO,
+        handlers.ASK_LINK,
+        handlers.ASK_LOCATION,
+        handlers.ASK_CONTACT,
+        handlers.ASK_FOLLOWUP,
+        handlers.CONFIRM,
+    )
+)
+prompt_edits = AsyncMock()
+prompt_context = SimpleNamespace(
+    user_data={},
+    bot=SimpleNamespace(edit_message_reply_markup=prompt_edits),
+)
+handlers._remember_optional_prompt(
+    prompt_context, SimpleNamespace(chat_id=12, message_id=34)
+)
+asyncio.run(handlers._clear_optional_prompt(prompt_context))
+assert not prompt_context.user_data
+prompt_edits.assert_awaited_once_with(
+    chat_id=12, message_id=34, reply_markup=None
+)
+
 _at_threshold_scores = sightengine_moderation.parse_scores({
     "status": "success",
     "nudity": {
@@ -418,6 +481,12 @@ original_save_photo = handlers._save_photo
 async def _fake_flagged_photo(_update, _context):
     return "", "test-file-id", "test-file-id", flagged_result
 
+async def _capture_progress_edit(*args, **kwargs):
+    return None
+
+async def _capture_progress_reply(*args, **kwargs):
+    return SimpleNamespace(edit_text=_capture_progress_edit)
+
 handlers._save_photo = _fake_flagged_photo
 try:
     conversation_user = SimpleNamespace(id=90909091, full_name="مستخدم محادثة")
@@ -427,7 +496,7 @@ try:
         user_data={"description": "must be discarded"},
     )
     conversation_update = SimpleNamespace(
-        message=SimpleNamespace(),
+        message=SimpleNamespace(reply_text=_capture_progress_reply),
         effective_user=conversation_user,
         effective_message=SimpleNamespace(reply_text=_capture_freeze_notice),
     )
@@ -443,10 +512,18 @@ try:
         user_data={"app_draft": {"post_link": "https://example.test/post"}},
     )
     handlers._pending_app_users.add(app_user.id)
+    app_reply_calls = [0]
+
+    async def _capture_app_reply(*args, **kwargs):
+        app_reply_calls[0] += 1
+        if app_reply_calls[0] == 1:
+            return SimpleNamespace(edit_text=_capture_progress_edit)
+        return await _capture_freeze_notice(*args, **kwargs)
+
     app_update = SimpleNamespace(
         message=SimpleNamespace(),
         effective_user=app_user,
-        effective_message=SimpleNamespace(reply_text=_capture_freeze_notice),
+        effective_message=SimpleNamespace(reply_text=_capture_app_reply),
     )
     assert asyncio.run(handlers.app_photo_received(app_update, app_context)) is None
     assert not asyncio.run(DB.list_user_reports(conversation_user.id))[0]
@@ -758,6 +835,27 @@ detail_callbacks = [
 assert "adm:rj:123" in notify_callbacks
 assert "adm:rj:123" in detail_callbacks
 assert "adm:s:123:rejected" not in detail_callbacks
+category_callbacks = [
+    button.callback_data
+    for row in keyboards.report_category_kb().inline_keyboard
+    for button in row
+]
+platform_callbacks = [
+    button.callback_data
+    for row in keyboards.social_platform_kb().inline_keyboard
+    for button in row
+]
+followup_callbacks = [
+    button.callback_data
+    for row in keyboards.report_open_kb(42, True).inline_keyboard
+    for button in row
+]
+assert all(
+    f"usr:category:{key}" in category_callbacks
+    for key in ("conduct", "administrative", "social", "field")
+)
+assert "usr:platform:whatsapp" in platform_callbacks
+assert "usr:followup:42" in followup_callbacks
 print("keyboards: الرفض من أزرار البوت يطلب السبب دائمًا")
 
 # أدوات اللوحة على قاعدة اختبار فعلية (محلية مؤقتة)
@@ -788,11 +886,16 @@ assert users_total == 1 and users_rows[0]["user_id"] == 777
 profile = asyncio.run(pdb.user_profile(777))
 assert profile["user_id"] == 777 and profile["total_reports"] == 1
 assert asyncio.run(pdb.user_profile(42424242)) is None
+asyncio.run(pdb.record_user(778, "subscriber_only", "مشترك بلا بلاغ"))
+assert asyncio.run(pdb.total_users()) == 2
+subscriber_ids, overflow = asyncio.run(pdb.all_user_ids())
+assert not overflow and set(subscriber_ids) == {777, 778}
 
 # الحجب: حفظ ثم ظهور في القائمة ثم الرفع ثم الاختفاء
 asyncio.run(pdb.save_block(777, 0, "9999-12-31T00:00:00", "اختبار لوحة"))
 users_rows, _ = asyncio.run(pdb.list_users())
-assert users_rows[0]["frozen_until"] == "9999-12-31T00:00:00"
+blocked_777 = next(row for row in users_rows if row["user_id"] == 777)
+assert blocked_777["frozen_until"] == "9999-12-31T00:00:00"
 blocked_rows, blocked_total = asyncio.run(pdb.list_blocked_users())
 assert blocked_total == 1
 assert blocked_rows[0]["user_id"] == 777
@@ -809,10 +912,46 @@ asyncio.run(pdb.save_block(52525252, 0, "2000-01-01T00:00:00", "منتهي"))
 active_rows, active_total = asyncio.run(pdb.list_blocked_users())
 assert active_total == 2
 assert 52525252 not in {row["user_id"] for row in active_rows}
+asyncio.run(pdb.log_event(777, "start"))
+reset_test_since = "2000-01-01T00:00:00+00:00"
+assert asyncio.run(
+    pdb.count_events(reset_test_since, user_id=777, kind="start")
+) == 1
 asyncio.run(pdb.clear_block(42424242))
 asyncio.run(pdb.clear_block(777))
 asyncio.run(pdb.clear_block(52525252))
 assert asyncio.run(pdb.get_block(777)).get("frozen_until") in (None, "")
+assert asyncio.run(
+    pdb.count_events(reset_test_since, user_id=777, kind="start")
+) == 0
+assert asyncio.run(pdb.count_events(reset_test_since, kind="start")) == 1
+assert asyncio.run(pdb.count_since(utils.local_day_start_iso(), user_id=777)) == 0
+assert asyncio.run(pdb.count_since(utils.local_day_start_iso())) >= 1
+assert asyncio.run(pdb.list_user_reports(777))[0]
+
+# محادثة المستخدم تحفظ الرسائل في القاعدة وتستعيدها بعد إعادة فتحها.
+asyncio.run(pdb.open_user_conversation(777))
+asyncio.run(pdb.add_user_message(777, "out", "رسالة من الإدارة", 111))
+asyncio.run(pdb.add_user_message(777, "in", "رد المستخدم"))
+conversation_db = database.Database(pbase)
+conversation = asyncio.run(conversation_db.list_user_messages(777))
+assert [message["direction"] for message in conversation] == ["out", "in"]
+assert conversation[-1]["text"] == "رد المستخدم"
+conversation_db.close()
+
+# تقدم التعميم محفوظ، وأي مهمة كانت جارية عند إعادة التشغيل تُعلّم كمقاطعة.
+jobs_tmp = tempfile.TemporaryDirectory(prefix="mrw-broadcast-selftest-")
+jobs_path = Path(jobs_tmp.name) / "jobs.db"
+jobs_db = database.Database(jobs_path)
+job_id = asyncio.run(jobs_db.create_broadcast_job("تجربة تعميم", 111, 2))
+assert job_id is not None
+asyncio.run(jobs_db.update_broadcast_job(job_id, 1, 0))
+assert asyncio.run(jobs_db.get_broadcast_job(job_id))["sent"] == 1
+jobs_db.close()
+jobs_db = database.Database(jobs_path)
+assert asyncio.run(jobs_db.get_broadcast_job(job_id))["status"] == "interrupted"
+jobs_db.close()
+jobs_tmp.cleanup()
 
 # رفض البلاغ عبر API لا يغيّر الحالة إذا غاب السبب، حتى لو تجاوز تحقق الواجهة.
 from fastapi import FastAPI
@@ -854,6 +993,14 @@ followup_endpoint = next(
 message_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/users/{uid}/message"
+)
+user_messages_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/users/{uid}/messages"
+)
+unblock_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/users/{uid}/unblock"
 )
 photo_endpoint = next(
     route.endpoint for route in api_app.routes
@@ -1044,11 +1191,31 @@ assert message_response.status_code == 200
 assert json.loads(message_response.body)["sent"] is True
 assert send_calls[0][0] == 909 and "/reply" in send_calls[0][1]
 assert send_calls[1] == (777, "رسالة اختبار")
+messages_response = asyncio.run(user_messages_endpoint(777, _Request({})))
+messages_payload = json.loads(messages_response.body)
+assert messages_response.status_code == 200
+assert messages_payload["items"][-1]["text"] == "رسالة اختبار"
 assert any(
     row["action"] == "user_message" and row["target"] == "777"
     for row in asyncio.run(pdb.recent_audit(20))
 )
 admin_api._send_direct_message = original_sender
+notices = []
+
+async def _fake_unblock_notice(user_id):
+    notices.append(user_id)
+    return True
+
+original_unblock_notice = admin_api._send_unblock_notice
+admin_api._send_unblock_notice = _fake_unblock_notice
+asyncio.run(pdb.save_block(777, 3, "9999-12-31T00:00:00", "اختبار رفع الحجب"))
+unblock_response = asyncio.run(unblock_endpoint(777, _Request({})))
+unblock_payload = json.loads(unblock_response.body)
+assert unblock_response.status_code == 200
+assert unblock_payload["notified"] is True and notices == [777]
+assert asyncio.run(pdb.get_block(777))["strikes"] == 0
+assert "اختبار رفع الحجب" in asyncio.run(pdb.recent_audit(1))[0]["details"]
+admin_api._send_unblock_notice = original_unblock_notice
 _os.environ.pop("ADMIN_API_TOKEN", None)
 _bot_main.app = original_bot_app
 print("admin_api: رفض الحالة بلا سبب مرفوض بلا تعديل على البلاغ")

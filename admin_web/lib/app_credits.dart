@@ -33,9 +33,12 @@ void showCredits(BuildContext context) {
     applicationLegalese: '${AppCredits.copyright}\n${AppCredits.author}',
     children: [
       const SizedBox(height: 8),
-      const SelectableText(
+      SelectableText(
         AppCredits.repo,
-        style: TextStyle(fontSize: 12, color: Colors.white54),
+        style: TextStyle(
+          fontSize: 12,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
       ),
     ],
   );
