@@ -1,14 +1,12 @@
 // لوحة الإدارة — Flutter Web تُخدم من المساحة على /admin.
-// العربية RTL أولاً: شاشة اتصال بالتوكن ثم الهيكل الرئيسي بسبع صفحات.
+// العربية RTL أولاً: شاشة اتصال بالتوكن ثم الهيكل الرئيسي بثماني صفحات.
 import 'package:flutter/material.dart';
 
 import 'api.dart';
-import 'pages.dart';
-import 'pages2.dart';
+import 'admin_shell.dart';
+import 'app_theme.dart';
+import 'web_api.dart';
 import 'widgets.dart';
-
-// استيراد صفحة المُقيَّدون (من pages2.dart)
-export 'pages2.dart' show BlockedPage;
 
 void main() {
   runApp(const AdminApp());
@@ -22,39 +20,12 @@ class AdminApp extends StatelessWidget {
     return MaterialApp(
       title: 'لوحة الإدارة',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        fontFamily: 'NotoSansArabic',
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF3FA66B),
-          brightness: Brightness.dark,
-          surface: const Color(0xFF132119),
-        ),
-        scaffoldBackgroundColor: const Color(0xFF0A1410),
-        dividerColor: const Color(0xFF24382F),
-        snackBarTheme: const SnackBarThemeData(
-            behavior: SnackBarBehavior.floating),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: const Color(0xFF0F1D17),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: Color(0xFF31473C)),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: Color(0xFF31473C)),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
-            borderSide: const BorderSide(color: Color(0xFF3FA66B)),
-          ),
-        ),
-      ),
+      theme: AdminTheme.dark,
       // القاعدة: كل الصفحة من اليمين لليسار — أنظمة RTL لا تحتاج إعداداً لكل ويدجت
       builder: (context, child) => Directionality(
-          textDirection: TextDirection.rtl,
-          child: child ?? const SizedBox.shrink()),
+        textDirection: TextDirection.rtl,
+        child: child ?? const SizedBox.shrink(),
+      ),
       home: const AdminGate(),
     );
   }
@@ -131,7 +102,13 @@ class _LoginScreenState extends State<LoginScreen> {
     });
     final probe = Api(token: t, onUnauthorized: null);
     try {
-      await probe.get('/api/admin/overview');
+      final result = await probe.get('/api/admin/overview');
+      if (result['ok'] != true) {
+        throw ApiException(
+          502,
+          (result['error'] ?? 'bad_response').toString(),
+        );
+      }
       if (!mounted) return;
       widget.onConnected(t);
     } catch (e) {
@@ -159,16 +136,23 @@ class _LoginScreenState extends State<LoginScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(Icons.shield_outlined,
-                        size: 46, color: const Color(0xFF3FA66B)),
+                    Icon(
+                      Icons.shield_outlined,
+                      size: 46,
+                      color: const Color(0xFF3FA66B),
+                    ),
                     const SizedBox(height: 8),
-                    Text('لوحة الإدارة',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.headlineSmall),
+                    Text(
+                      'لوحة الإدارة',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
                     const SizedBox(height: 4),
-                    const Text('منظومة استقبال البلاغات العسكرية',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white38)),
+                    const Text(
+                      'منظومة استقبال البلاغات العسكرية',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white38),
+                    ),
                     const SizedBox(height: 20),
                     TextField(
                       controller: _c,
@@ -184,8 +168,10 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     if (_err != null) ...[
                       const SizedBox(height: 10),
-                      Text(_err!,
-                          style: const TextStyle(color: Color(0xFFE06C75))),
+                      Text(
+                        _err!,
+                        style: const TextStyle(color: Color(0xFFE06C75)),
+                      ),
                     ],
                     const SizedBox(height: 14),
                     FilledButton.icon(
@@ -195,13 +181,16 @@ class _LoginScreenState extends State<LoginScreen> {
                               width: 18,
                               height: 18,
                               child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white))
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
                           : const Icon(Icons.login),
                       label: const Text('الاتصال'),
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'يُخزَّن التوكن في متصفحك فقط ولا يُرسل لأي طرف آخر',
+                      'يُحفظ في هذا المتصفح ويُرسل إلى خدمة الإدارة عبر HTTPS فقط',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.white24, fontSize: 12),
                     ),
@@ -211,96 +200,6 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-// ==================================================================
-// الهيكل الرئيسي: شريط جانبي + 7 صفحات
-// ==================================================================
-class MainShell extends StatefulWidget {
-  const MainShell({super.key, required this.api, required this.onLogout});
-
-  final Api api;
-  final VoidCallback onLogout;
-
-  @override
-  State<MainShell> createState() => _MainShellState();
-}
-
-class _MainShellState extends State<MainShell> {
-  int _i = 0;
-
-  static const List<String> _titles = [
-    'نظرة عامة',
-    'البلاغات',
-    'المتبلّغون',
-    'التشغيل',
-    'الرسائل',
-    'التصنيفات',
-    'سجل التدقيق',
-    'المُقيَّدون',
-  ];
-
-  static const List<IconData> _railIcons = [
-    Icons.dashboard_outlined,
-    Icons.report_outlined,
-    Icons.people_outline,
-    Icons.emergency_outlined,
-    Icons.campaign_outlined,
-    Icons.category_outlined,
-    Icons.history_outlined,
-    Icons.block,
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final api = widget.api;
-    final pages = <Widget>[
-      OverviewPage(api: api),
-      ReportsPage(api: api),
-      UsersPage(api: api),
-      OperationsPage(api: api),
-      MessagingPage(api: api),
-      TypesPage(api: api),
-      AuditPage(api: api),
-      BlockedPage(api: api),
-    ];
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_titles[_i],
-            style: const TextStyle(fontWeight: FontWeight.w700)),
-        actions: [
-          IconButton(
-            tooltip: 'خروج',
-            onPressed: () {
-              Api.clearToken();
-              widget.onLogout();
-            },
-            icon: const Icon(Icons.logout),
-          ),
-        ],
-      ),
-      body: Row(
-        children: [
-          NavigationRail(
-            selectedIndex: _i,
-            onDestinationSelected: (i) => setState(() => _i = i),
-            labelType: NavigationRailLabelType.all,
-            groupAlignment: -1,
-            destinations: [
-              for (int k = 0; k < _titles.length; k++)
-                NavigationRailDestination(
-                  icon: Icon(_railIcons[k]),
-                  selectedIcon: Icon(_railIcons[k]),
-                  label: Text(_titles[k]),
-                ),
-            ],
-          ),
-          const VerticalDivider(width: 1),
-          Expanded(child: pages[_i]),
-        ],
       ),
     );
   }

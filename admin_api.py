@@ -187,6 +187,24 @@ async def _send_panel_reply(r: dict[str, Any], reply_text: str) -> bool:
     return await _on_bot_loop(_sender)
 
 
+async def _send_direct_message(user_id: int, text: str) -> bool:
+    async def _sender():
+        bot, loop = _bot_runtime()
+        if bot is None:
+            return False
+        try:
+            await bot.send_message(
+                chat_id=int(user_id),
+                text=f"📨 رسالة من الجهة المختصة:\n\n{text}",
+            )
+            return True
+        except Exception:
+            logger.info("تعذر إرسال رسالة مباشرة للمستخدم", exc_info=True)
+            return False
+
+    return await _on_bot_loop(_sender)
+
+
 async def _send_block_notice(user_id: int, kind: str, reason: str) -> bool:
     async def _sender():
         bot, loop = _bot_runtime()
@@ -325,6 +343,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if not new_status:
             return bad("bad_status")
         reason = (str(body.get("reason") or "").strip())[:MAX_TEXT]
+        if new_status == STATUS_REJECTED and not reason:
+            return bad("reason_required")
 
         r = await db.get_by_id(rid)
         if not r:
@@ -333,8 +353,11 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         ok = await db.update_status(rid, new_status, 0)  # 0 = لوحة الإدارة
         if not ok:
             return bad("not_found", 404)
+        audit_details = f"{new_status} (لوحة الإدارة)"
+        if new_status == STATUS_REJECTED:
+            audit_details += f" — سبب الرفض: {reason}"
         await db.audit(0, "status_changed", str(rid),
-                       f"{new_status} (لوحة الإدارة)")
+                       audit_details)
 
         # الإشعار: الرفض بسبب = دائمًا؛ غيره = مرة واحدة لكل حالة (نفس دفتر تيليغرام)
         note_extra = ""
@@ -478,6 +501,47 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         await db.clear_block(uid)
         await db.audit(0, "user_unblocked", str(uid), "رفع الحجب من لوحة الإدارة")
         return OK
+
+    @app.get("/api/admin/blocked-users")
+    async def blocked_users(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        qp = request.query_params
+        try:
+            page = max(0, int(qp.get("page", "0") or 0))
+            size = min(int(qp.get("size", "50") or 50), MAX_PAGE_SIZE)
+            if size < 1:
+                return bad("bad_query")
+        except ValueError:
+            return bad("bad_query")
+        items, total = await db_of().list_blocked_users(page=page, size=size)
+        return JSONResponse({
+            "ok": True, "page": page, "size": size, "total": total, "items": items,
+        })
+
+    @app.post("/api/admin/users/{uid}/message")
+    async def message_user(uid: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        text = str(body.get("text") or "").strip()
+        if not 2 <= len(text) <= MAX_TEXT:
+            return bad("text_length")
+        db = db_of()
+        if not await db.user_profile(uid):
+            return bad("not_found", 404)
+        sent = await _send_direct_message(uid, text)
+        await db.audit(
+            0,
+            "user_message",
+            str(uid),
+            f"{'sent' if sent else 'failed'}: {text[:120]}",
+        )
+        if not sent:
+            return bad("telegram_send_failed", 502)
+        return JSONResponse({"ok": True, "sent": True})
 
     # ------------------------------------------------------------
     # 4) سجل التدقيق + التصدير (لتكميل أروقة الالتزام)

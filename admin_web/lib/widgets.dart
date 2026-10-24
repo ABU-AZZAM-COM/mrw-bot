@@ -23,22 +23,32 @@ class StatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
+      color: const Color(0xFF111F18),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: Color(0xFF25382D)),
+      ),
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(children: [
-              Icon(icon, color: color, size: 18),
-              const SizedBox(width: 6),
-              Text(title,
-                  style: TextStyle(color: color, fontWeight: FontWeight.w600)),
-            ]),
+            Row(
+              children: [
+                Icon(icon, color: color, size: 18),
+                const SizedBox(width: 6),
+                Text(
+                  title,
+                  style: TextStyle(color: color, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
             const SizedBox(height: 6),
-            Text(value,
-                style: const TextStyle(
-                    fontSize: 26, fontWeight: FontWeight.w800)),
+            Text(
+              value,
+              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
+            ),
           ],
         ),
       ),
@@ -48,7 +58,12 @@ class StatCard extends StatelessWidget {
 
 class SectionCard extends StatelessWidget {
   const SectionCard(
-      this.title, {super.key, required this.child, this.trailing, this.icon});
+    this.title, {
+    super.key,
+    required this.child,
+    this.trailing,
+    this.icon,
+  });
 
   final String title;
   final Widget child;
@@ -58,22 +73,33 @@ class SectionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
+      color: const Color(0xFF111F18),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: Color(0xFF25382D)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              if (icon != null) ...[
-                Icon(icon, size: 20),
-                const SizedBox(width: 6),
-              ],
-              Text(title,
+            Row(
+              children: [
+                if (icon != null) ...[
+                  Icon(icon, size: 20),
+                  const SizedBox(width: 6),
+                ],
+                Text(
+                  title,
                   style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.w700)),
-              const Spacer(),
-              if (trailing != null) trailing!,
-            ]),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                if (trailing != null) trailing!,
+              ],
+            ),
             const Divider(height: 22),
             child,
           ],
@@ -85,12 +111,17 @@ class SectionCard extends StatelessWidget {
 
 /// رسالة عابرة إرشادية أسفل الشاشة.
 void toast(BuildContext context, String msg, {bool error = false}) {
-  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-    content: Text(msg, textDirection: TextDirection.rtl,
-        style: const TextStyle(color: Colors.white)),
-    backgroundColor: error ? _snackErr : _snackOk,
-    behavior: SnackBarBehavior.floating,
-  ));
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(
+        msg,
+        textDirection: TextDirection.rtl,
+        style: const TextStyle(color: Colors.white),
+      ),
+      backgroundColor: error ? _snackErr : _snackOk,
+      behavior: SnackBarBehavior.floating,
+    ),
+  );
 }
 
 /// ترجمة أكواد الأخطاء إلى العربية بطيبة.
@@ -98,13 +129,17 @@ String errMsg(Object e) {
   if (e is ApiException) {
     switch (e.code) {
       case 'network_error':
-        return 'تعذّر الوصول للخادم — تحقق من الاتصال';
+        return 'تعذّر الاتصال بواجهة الإدارة. تحقق من تشغيل space_app.py وإعداد CORS على Render.';
+      case 'bad_response':
+        return 'الخدمة لا تعرض واجهة الإدارة المتوقعة. يجب تشغيل space_app.py على Render بدل خادم الصحة فقط.';
       case 'unauthorized':
         return 'التوكن غير مقبول — أعد الاتصال';
       case 'bot_not_ready':
         return 'البوت قيد التشغيل — أعِد المحاولة بعد لحظات';
+      case 'telegram_send_failed':
+        return 'تعذر تسليم الرسالة عبر Telegram؛ قد يكون المستخدم حظر البوت';
       case 'reason_required':
-        return 'سبب الرفض الإلزامي مفقود';
+        return 'سبب الرفض إلزامي — لم تُغيّر حالة البلاغ';
       case 'text_length':
         return 'النص قصيراً جداً أو طويلاً جداً';
       case 'must_confirm_seq':
@@ -128,8 +163,12 @@ String errMsg(Object e) {
 
 /// حوار تأكيد عام يعيد true إن وافق المستخدم.
 Future<bool> confirmDialog(
-    BuildContext context, String title, String body,
-    {String okLabel = 'تنفيذ', bool danger = false}) async {
+  BuildContext context,
+  String title,
+  String body, {
+  String okLabel = 'تنفيذ',
+  bool danger = false,
+}) async {
   final res = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -137,8 +176,9 @@ Future<bool> confirmDialog(
       content: Text(body, textDirection: TextDirection.rtl),
       actions: [
         TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('إلغاء')),
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: const Text('إلغاء'),
+        ),
         FilledButton(
           style: danger
               ? FilledButton.styleFrom(backgroundColor: Colors.red.shade700)
@@ -163,12 +203,18 @@ class EmptyView extends StatelessWidget {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(30),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 44, color: Colors.white24),
-          const SizedBox(height: 10),
-          Text(msg, textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white38)),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 44, color: Colors.white24),
+            const SizedBox(height: 10),
+            Text(
+              msg,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white38),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -185,16 +231,19 @@ class ErrorView extends StatelessWidget {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(30),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.cloud_off, size: 44, color: Colors.redAccent),
-          const SizedBox(height: 10),
-          Text(err, textAlign: TextAlign.center),
-          TextButton.icon(
-            onPressed: onRetry,
-            icon: const Icon(Icons.refresh),
-            label: const Text('إعادة المحاولة'),
-          ),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.cloud_off, size: 44, color: Colors.redAccent),
+            const SizedBox(height: 10),
+            Text(err, textAlign: TextAlign.center),
+            TextButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('إعادة المحاولة'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -202,8 +251,12 @@ class ErrorView extends StatelessWidget {
 
 /// شارة حالة مصغرة (نشط/محجوب… إلخ).
 class StateBadge extends StatelessWidget {
-  const StateBadge(this.text,
-      {super.key, this.color = const Color(0xFF3FA66B), this.outline = false});
+  const StateBadge(
+    this.text, {
+    super.key,
+    this.color = const Color(0xFF3FA66B),
+    this.outline = false,
+  });
 
   final String text;
   final Color color;
@@ -219,8 +272,10 @@ class StateBadge extends StatelessWidget {
         border: Border.all(color: c),
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Text(text,
-          style: TextStyle(color: c, fontSize: 12, fontWeight: FontWeight.w600)),
+      child: Text(
+        text,
+        style: TextStyle(color: c, fontSize: 12, fontWeight: FontWeight.w600),
+      ),
     );
   }
 }

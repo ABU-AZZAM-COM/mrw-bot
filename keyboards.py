@@ -253,11 +253,12 @@ def admin_view_buttons(rid: int) -> InlineKeyboardMarkup:
     """أزرار عرض بلاغ مفرد: تغيير الحالة + العودة للقائمة."""
     status_row = [
         _cb(STATUS_LABELS[code], f"adm:s:{rid}:{code}")
-        for code in ("new", "review", "approved", "rejected")
+        for code in ("new", "review", "approved")
     ]
     return InlineKeyboardMarkup(
         [
             status_row,
+            [_cb("❌ رفض بسبب", f"adm:rj:{rid}")],
             [_cb("⬅️ رجوع للقائمة", "adm:back"), _cb("🏠 الرئيسية", "adm:menu")],
         ]
     )

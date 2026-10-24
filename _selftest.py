@@ -2,8 +2,9 @@
 اختبار سريع بدون تلغرام: يتحقق من أن كل الوحدات تستورد وتعمل معًا.
 (التوكن يُزوَّر عبر متغيرات البيئة خلال الاختبار فقط)
 """
-import os, time, tempfile, asyncio
+import os, time, tempfile, asyncio, json
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ["BOT_TOKEN"] = "123456:TEST_TOKEN_FOR_IMPORT_CHECK"
 os.environ["ADMIN_IDS"] = "111111111"
@@ -20,9 +21,8 @@ import archive
 import health_server
 import main as main_mod
 
-DB_PATH = config.DATA_DIR / "test_reports.db"
-if DB_PATH.exists():
-    DB_PATH.unlink()
+_db_test_dir = tempfile.TemporaryDirectory(prefix="mrw-selftest-")
+DB_PATH = Path(_db_test_dir.name) / "test_reports.db"
 DB = database.Database(DB_PATH)
 
 fake_row = dict(
@@ -152,8 +152,25 @@ _os.environ.pop("ADMIN_API_TOKEN")
 assert admin_api.expected_token() == ""
 print("admin_api: حماية التوكن OK")
 
+# أزرار رفض البلاغ من إشعار البوت والتفاصيل تطلب السبب.
+notify_callbacks = [
+    button.callback_data
+    for row in keyboards.admin_notify_buttons(123).inline_keyboard
+    for button in row
+]
+detail_callbacks = [
+    button.callback_data
+    for row in keyboards.admin_view_buttons(123).inline_keyboard
+    for button in row
+]
+assert "adm:rj:123" in notify_callbacks
+assert "adm:rj:123" in detail_callbacks
+assert "adm:s:123:rejected" not in detail_callbacks
+print("keyboards: الرفض من أزرار البوت يطلب السبب دائمًا")
+
 # أدوات اللوحة على قاعدة اختبار فعلية (محلية مؤقتة)
-pbase = Path(tempfile.mkdtemp()) / "panel.db"
+pbase_tmp = tempfile.TemporaryDirectory(prefix="mrw-panel-selftest-")
+pbase = Path(pbase_tmp.name) / "panel.db"
 pdb = database.Database(pbase)
 pid = asyncio.run(pdb.add_report(
     user_id=777, username="panel_user", full_name="مستخدم لوحة",
@@ -184,8 +201,91 @@ assert asyncio.run(pdb.user_profile(42424242)) is None
 asyncio.run(pdb.save_block(777, 0, "9999-12-31T00:00:00", "اختبار لوحة"))
 users_rows, _ = asyncio.run(pdb.list_users())
 assert users_rows[0]["frozen_until"] == "9999-12-31T00:00:00"
+blocked_rows, blocked_total = asyncio.run(pdb.list_blocked_users())
+assert blocked_total == 1
+assert blocked_rows[0]["user_id"] == 777
+assert blocked_rows[0]["reason"] == "اختبار لوحة"
+asyncio.run(pdb.save_block(42424242, 0, "9999-12-31T00:00:00", "بلا بلاغات"))
+blocked_rows, blocked_total = asyncio.run(pdb.list_blocked_users())
+assert blocked_total == 2
+assert {row["user_id"] for row in blocked_rows} == {777, 42424242}
+first_page, page_total = asyncio.run(pdb.list_blocked_users(page=0, size=1))
+second_page, _ = asyncio.run(pdb.list_blocked_users(page=1, size=1))
+assert page_total == 2 and len(first_page) == len(second_page) == 1
+assert first_page[0]["user_id"] != second_page[0]["user_id"]
+asyncio.run(pdb.save_block(52525252, 0, "2000-01-01T00:00:00", "منتهي"))
+active_rows, active_total = asyncio.run(pdb.list_blocked_users())
+assert active_total == 2
+assert 52525252 not in {row["user_id"] for row in active_rows}
+asyncio.run(pdb.clear_block(42424242))
 asyncio.run(pdb.clear_block(777))
+asyncio.run(pdb.clear_block(52525252))
 assert asyncio.run(pdb.get_block(777)).get("frozen_until") in (None, "")
+
+# رفض البلاغ عبر API لا يغيّر الحالة إذا غاب السبب، حتى لو تجاوز تحقق الواجهة.
+from fastapi import FastAPI
+
+_bot_main = main_mod
+
+reject_report = asyncio.run(pdb.add_report(
+    user_id=909, username="reject_test", full_name="اختبار الرفض",
+    photo_path="media/reject.jpg", photo_file_id="reject-file",
+    post_link="https://t.me/x/99", description="بلاغ لاختبار إلزام سبب الرفض",
+))
+api_app = FastAPI()
+admin_api.register(api_app)
+status_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/reports/{rid}/status"
+)
+message_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/users/{uid}/message"
+)
+original_bot_app = _bot_main.app
+_bot_main.app = SimpleNamespace(bot_data={"db": pdb}, bot=None)
+_os.environ["ADMIN_API_TOKEN"] = "test-token-xyz"
+
+class _Request:
+    headers = {"x-admin-token": "test-token-xyz"}
+    query_params = {}
+
+    def __init__(self, body):
+        self._body = body
+
+    async def json(self):
+        return self._body
+
+response = asyncio.run(status_endpoint(
+    reject_report["id"], _Request({"status": "rejected"})
+))
+assert response.status_code == 400
+assert json.loads(response.body)["error"] == "reason_required"
+assert asyncio.run(pdb.get_by_id(reject_report["id"]))["status"] == database.STATUS_NEW
+
+send_calls = []
+
+async def _fake_send_direct_message(user_id, text):
+    send_calls.append((user_id, text))
+    return True
+
+original_sender = admin_api._send_direct_message
+admin_api._send_direct_message = _fake_send_direct_message
+message_response = asyncio.run(message_endpoint(
+    777, _Request({"text": "رسالة اختبار"})
+))
+assert message_response.status_code == 200
+assert json.loads(message_response.body)["sent"] is True
+assert send_calls == [(777, "رسالة اختبار")]
+assert any(
+    row["action"] == "user_message" and row["target"] == "777"
+    for row in asyncio.run(pdb.recent_audit(20))
+)
+admin_api._send_direct_message = original_sender
+_os.environ.pop("ADMIN_API_TOKEN", None)
+_bot_main.app = original_bot_app
+print("admin_api: رفض الحالة بلا سبب مرفوض بلا تعديل على البلاغ")
+print("admin_api: الرسالة المباشرة تُرسل عبر طبقة البوت وتُسجل")
 
 # الحذف النهائي يعيد True ثم يختفي البلاغ
 assert asyncio.run(pdb.delete_report(pid["id"])) is True
@@ -228,6 +328,7 @@ assert len(ids) <= 1
 # مسار القاعدة للتنزيل
 assert pdb.path.is_file()
 pdb.close()
+pbase_tmp.cleanup()
 print("admin_api: أدوات اللوحة على القاعدة (بحث/تصنيف/ملاحظة/حجب/حذف) OK")
 print("admin_api: تصنيفات ديناميكية + قوالب + إحصاءات + معرفات التعميم OK")
 
@@ -237,3 +338,4 @@ print("health_server OK")
 
 print("\n=== كل الاختبارات نجحت ✅ ===")
 DB.close()
+_db_test_dir.cleanup()

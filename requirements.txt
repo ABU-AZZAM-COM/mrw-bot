@@ -1,6 +1,8 @@
 # مكتبات المشروع — التثبيت عبر: pip install -r requirements.txt
 python-telegram-bot~=22.0
 python-dotenv~=1.0
+fastapi~=0.115
+uvicorn[standard]~=0.34
 pandas~=2.2
 openpyxl~=3.1
 # للتواصل عبر HTTP مع خدمة الاستضافة (نبضة الإبقاء النشطة) — تأتي مع PTB لكن نثبّتها صراحةً

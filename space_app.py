@@ -42,6 +42,7 @@ from pathlib import Path
 os.environ["DISABLE_HEALTH_SERVER"] = "1"
 
 from fastapi import FastAPI, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import HTMLResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
@@ -218,6 +219,16 @@ def _inject_app_update(user_id: int, payload: dict, tg_user: dict) -> bool:
 def build_app() -> FastAPI:
     """يبني تطبيق الويب: فحص + صفحة حالة + ملفات التطبيق."""
     app = FastAPI(title="نظام بلاغات المخالفات العسكرية", docs_url=None, redoc_url=None)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:9000",
+            "http://127.0.0.1:9000",
+        ],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["x-admin-token", "content-type"],
+    )
 
     # 1) فحص سريع للمنصة
     @app.get("/health")

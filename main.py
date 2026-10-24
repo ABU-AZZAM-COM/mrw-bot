@@ -212,6 +212,13 @@ def main() -> None:
     # 2) لوحة المشرف
     app.add_handler(CommandHandler(["admin", "reports"], admin.cmd_admin))
     app.add_handler(CallbackQueryHandler(admin.on_callback, pattern=r"^adm:"))
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+            admin.receive_reject_reason,
+        ),
+        group=-1,
+    )
 
     # 2-ب) أوامر المشرف: الإيقاف الطارئ وسجل التدقيق ونسخة فورية
     app.add_handler(CommandHandler("panic", admin.cmd_panic))

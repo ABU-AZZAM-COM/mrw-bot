@@ -675,6 +675,43 @@ class Database:
                          size: int = 20):
         return await asyncio.to_thread(self._list_users, q, page, size)
 
+    def _list_blocked_users(
+        self, page: int = 0, size: int = 50
+    ) -> tuple[list[dict[str, Any]], int]:
+        """قائمة الحجب الساري، بما يشمل المعرفات التي لا تملك بلاغات."""
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        size = max(1, min(int(size), 100))
+        page = max(0, int(page))
+        active = "b.frozen_until IS NOT NULL AND b.frozen_until > ?"
+        query = f"""
+            SELECT b.user_id AS user_id,
+                   r.full_name AS full_name,
+                   r.username AS username,
+                   b.frozen_until AS frozen_until,
+                   b.reason AS reason,
+                   b.strikes AS strikes,
+                   b.updated_at AS updated_at
+            FROM user_blocks b
+            LEFT JOIN reports r ON r.id = (
+                SELECT MAX(r2.id) FROM reports r2 WHERE r2.user_id = b.user_id
+            )
+            WHERE {active}
+            ORDER BY b.frozen_until DESC, b.user_id
+            LIMIT ? OFFSET ?
+        """
+        with self._lock:
+            total = self._conn.execute(
+                f"SELECT COUNT(*) FROM user_blocks b WHERE {active}",
+                (now_iso,),
+            ).fetchone()[0]
+            rows = self._conn.execute(
+                query, (now_iso, size, page * size)
+            ).fetchall()
+            return [_row_to_dict(row) for row in rows], int(total)
+
+    async def list_blocked_users(self, page: int = 0, size: int = 50):
+        return await asyncio.to_thread(self._list_blocked_users, page, size)
+
     def _user_profile(self, user_id: int) -> Optional[dict[str, Any]]:
         """بطاقة مبلّغ: أحدث بياناته، عدّادات بلاغاته، وحالة الحجب."""
         with self._lock:

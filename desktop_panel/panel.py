@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 لوحة إدارة سطح المكتب — نظام بلاغات المخالفات العسكرية.
-تتصل بأسرار السبيس عبر Admin API (X-Admin-Token) وتنفّذ التحكم الكامل.
+تتصل بخدمة المشروع المستضافة عبر Admin API (X-Admin-Token) وتنفّذ التحكم الإداري.
 
 الأقسام:
   1) النظرة العامة  : إحصاءات + حالة البوت + الإيقاف الطارئ + تحديث تلقائي
@@ -21,6 +21,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 
@@ -48,6 +49,20 @@ STATUS_ORDER = ["جديد", "قيد المراجعة", "معتمد", "مرفوض
 _page_size = 25
 
 
+def valid_api_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError:
+        return False
+    if not parsed.hostname or parsed.username or parsed.password:
+        return False
+    if parsed.scheme == "https":
+        return True
+    return parsed.scheme == "http" and parsed.hostname.lower() in {
+        "localhost", "127.0.0.1", "::1",
+    }
+
+
 # ==================================================================
 # الإعدادات المحلية (سرِّية — خارج git)
 # ==================================================================
@@ -70,6 +85,10 @@ def load_config() -> dict:
                     pass
     cfg.setdefault("url", DEFAULT_URL)
     cfg.setdefault("token", "")
+    try:
+        urlsplit(str(cfg["url"]))
+    except ValueError:
+        cfg["url"] = DEFAULT_URL
     return cfg
 
 
@@ -87,7 +106,7 @@ class Api:
     def __init__(self, base_url: str, token: str) -> None:
         self.base = (base_url or DEFAULT_URL).strip().rstrip("/")
         self.token = (token or "").strip()
-        self.client = httpx.Client(timeout=30, follow_redirects=True)
+        self.client = httpx.Client(timeout=30, follow_redirects=False)
         self.headers = {"x-admin-token": self.token} if self.token else {}
 
     def call(self, method: str, path: str, body: dict | None = None):
@@ -152,9 +171,12 @@ class SetupDialog(QDialog):
         self.url_edit = QLineEdit(cfg.get("url", DEFAULT_URL))
         self.token_edit = QLineEdit(cfg.get("token") or TOKEN_SUGGESTION)
         self.token_edit.setEchoMode(QLineEdit.Password)
-        hint = QLabel("التوكن الإداري يُدير سرّ ADMIN_API_TOKEN من أسرار المساحة.")
+        self.url_edit.setPlaceholderText(DEFAULT_URL)
+        hint = QLabel(
+            "يمكن تغيير رابط الخدمة. أدخل توكن الإدارة الحالي في الحقل المخصص."
+        )
         hint.setWordWrap(True)
-        form.addRow("رابط السبيس:", self.url_edit)
+        form.addRow("رابط الخدمة:", self.url_edit)
         form.addRow("التوكن الإداري:", self.token_edit)
         form.addRow(hint)
         buttons = QDialogButtonBox(
@@ -205,6 +227,7 @@ class MainWindow(QMainWindow):
         self.meta_types: list[str] = []
         self.jobs: list[QThread] = []
         self.page = 0
+        self.blocked_page = 0
         self.last_total = None
 
         self.setWindowTitle("🛡️ لوحة إدارة بلاغات المخالفات العسكرية")
@@ -218,6 +241,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_dashboard(), "📊 النظرة العامة")
         tabs.addTab(self._build_reports(), "🗂️ البلاغات")
         tabs.addTab(self._build_users(), "👥 المتبلّغون")
+        tabs.addTab(self._build_blocked(), "⛔ المُقيَّدون")
         tabs.addTab(self._build_audit(), "🧾 سجل التدقيق")
         self.setCentralWidget(tabs)
         self.status = QLabel("جارٍ الاتصال…")
@@ -279,8 +303,11 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.Accepted:
             return
         url, token = dlg.values()
-        if not url.startswith("http") or not token:
-            QMessageBox.warning(self, "إعدادات ناقصة", "الرابط والتوكن مطلوبان معًا.")
+        if not valid_api_url(url) or not token:
+            QMessageBox.warning(
+                self, "إعدادات ناقصة",
+                "أدخل عنوان HTTPS صالحًا (يسمح بـ HTTP على localhost فقط) والتوكن.",
+            )
             return
         probe = Api(url, token).call("GET", "/api/admin/overview")
         if not probe or probe.get("ok") is not True:
@@ -393,14 +420,14 @@ class MainWindow(QMainWindow):
         text = self.f_q.text().strip()
         qs = []
         if status:
-            qs.append(f"status={status}")
+            qs.append(("status", status))
         if vtype:
-            qs.append(f"type={vtype}")
+            qs.append(("type", vtype))
         if text:
-            qs.append(f"q={text}")
+            qs.append(("q", text))
         path = f"/api/admin/reports?page={self.page}&size={_page_size}"
         if qs:
-            path += "&" + "&".join(qs)
+            path += "&" + urlencode(qs)
         self.run(lambda: self.api.call("GET", path), self.apply_reports)
 
     def apply_reports(self, data: dict) -> None:
@@ -527,7 +554,7 @@ class MainWindow(QMainWindow):
         q = self.u_q.text().strip()
         path = f"/api/admin/users?page=0&size={_page_size}"
         if q:
-            path += f"&q={q}"
+            path += "&" + urlencode({"q": q})
         self.run(lambda: self.api.call("GET", path), self.apply_users)
 
     def apply_users(self, data: dict) -> None:
@@ -559,7 +586,154 @@ class MainWindow(QMainWindow):
             UserDialog(self, self.api, int(uid), self.users_refresh).exec()
 
     # ----------------------------------------------------------
-    # تبويب 4: سجل التدقيق
+    # تبويب 4: المحجوبون — من مصدر الحجب الساري مباشرة
+    # ----------------------------------------------------------
+    def _build_blocked(self) -> QWidget:
+        page = QWidget()
+        page.setLayoutDirection(Qt.RightToLeft)
+        lay = QVBoxLayout(page)
+        bar = QHBoxLayout()
+        self.blocked_page_label = QLabel("الصفحة 1")
+        prev = QPushButton("→ السابقة")
+        nxt = QPushButton("التالية ←")
+        refresh = QPushButton("⟳ تحديث")
+        prev.clicked.connect(lambda: self._blocked_page_shift(-1))
+        nxt.clicked.connect(lambda: self._blocked_page_shift(1))
+        refresh.clicked.connect(self.blocked_refresh)
+        bar.addWidget(prev)
+        bar.addWidget(self.blocked_page_label)
+        bar.addWidget(nxt)
+        bar.addStretch(1)
+        bar.addWidget(refresh)
+        lay.addLayout(bar)
+
+        self.blocked_table = QTableWidget(0, 6)
+        self.blocked_table.setHorizontalHeaderLabels(
+            ["المعرف", "الاسم", "المستخدم", "الحجب حتى", "السبب", "الإجراءات"]
+        )
+        self.blocked_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+        self.blocked_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.blocked_table.doubleClicked.connect(self.open_blocked_user)
+        lay.addWidget(self.blocked_table, 1)
+        self.blocked_refresh()
+        return page
+
+    def _blocked_page_shift(self, delta: int) -> None:
+        self.blocked_page = max(0, self.blocked_page + delta)
+        self.blocked_refresh()
+
+    def blocked_refresh(self) -> None:
+        path = (
+            f"/api/admin/blocked-users?page={self.blocked_page}"
+            f"&size={_page_size}"
+        )
+        self.run(lambda: self.api.call("GET", path), self.apply_blocked)
+
+    def apply_blocked(self, data: dict) -> None:
+        self.blocked_table.setRowCount(0)
+        if not data or not data.get("ok"):
+            self.blocked_page_label.setText("تعذّر جلب المحجوبين")
+            self.status.setText(
+                f"❌ تعذّر جلب المحجوبين: "
+                f"{(data or {}).get('_error') or (data or {}).get('error') or ''}"
+            )
+            return
+        total = int(data.get("total") or 0)
+        pages = max(1, -(-total // _page_size))
+        if self.blocked_page >= pages:
+            self.blocked_page = pages - 1
+            self.blocked_refresh()
+            return
+        self.blocked_page_label.setText(
+            f"الصفحة {self.blocked_page + 1} / {pages} — الحجب الساري {total}"
+        )
+        for user in data.get("items", []):
+            row = self.blocked_table.rowCount()
+            self.blocked_table.insertRow(row)
+            uid = int(user.get("user_id") or 0)
+            until = str(user.get("frozen_until") or "-")
+            if until.startswith("9999-"):
+                until = "دائم"
+            cells = [
+                str(uid or "-"),
+                str(user.get("full_name") or "مستخدم Telegram"),
+                "@" + str(user["username"]) if user.get("username") else "—",
+                until,
+                str(user.get("reason") or "غير مسجل"),
+            ]
+            for col, value in enumerate(cells):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, uid)
+                self.blocked_table.setItem(row, col, item)
+
+            actions = QWidget()
+            action_lay = QHBoxLayout(actions)
+            action_lay.setContentsMargins(2, 2, 2, 2)
+            message_btn = QPushButton("💬 رسالة")
+            message_btn.clicked.connect(
+                lambda _=False, user_id=uid: self._message_user(user_id)
+            )
+            unblock_btn = QPushButton("♻ رفع الحجب")
+            unblock_btn.clicked.connect(
+                lambda _=False, user_id=uid: self._unblock_user(user_id)
+            )
+            action_lay.addWidget(message_btn)
+            action_lay.addWidget(unblock_btn)
+            self.blocked_table.setCellWidget(row, 5, actions)
+
+    def open_blocked_user(self, index) -> None:
+        uid = self.blocked_table.item(index.row(), 0).data(Qt.UserRole)
+        if uid is not None:
+            UserDialog(self, self.api, int(uid), self.blocked_refresh).exec()
+
+    def _message_user(self, uid: int) -> None:
+        text, ok = QInputDialog.getMultiLineText(
+            self, "رسالة مباشرة", f"اكتب رسالة ستُرسل للمستخدم {uid} عبر البوت:"
+        )
+        if not ok or len(text.strip()) < 2:
+            return
+        if QMessageBox.question(
+            self, "تأكيد الإرسال",
+            f"إرسال هذه الرسالة مباشرة إلى المستخدم {uid}؟",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.run(
+            lambda: self.api.call(
+                "POST", f"/api/admin/users/{uid}/message", {"text": text.strip()}
+            ),
+            lambda data: self._after_user_message(uid, data),
+        )
+
+    def _after_user_message(self, uid: int, data: dict) -> None:
+        if data and data.get("ok") and data.get("sent"):
+            QMessageBox.information(self, "تم", f"أُرسلت الرسالة للمستخدم {uid}.")
+        else:
+            error = (data or {}).get("_error") or (data or {}).get("error") or "فشل"
+            QMessageBox.warning(self, "تعذّر الإرسال", str(error))
+
+    def _unblock_user(self, uid: int) -> None:
+        if QMessageBox.question(
+            self, "تأكيد رفع الحجب", f"رفع الحجب عن المستخدم {uid}؟"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.run(
+            lambda: self.api.call("POST", f"/api/admin/users/{uid}/unblock"),
+            lambda data: self._after_unblock(uid, data),
+        )
+
+    def _after_unblock(self, uid: int, data: dict) -> None:
+        if data and data.get("ok"):
+            self.status.setText(f"♻ تم رفع الحجب عن المستخدم {uid}")
+            self.blocked_refresh()
+            self.users_refresh()
+        else:
+            error = (data or {}).get("_error") or (data or {}).get("error") or "فشل"
+            QMessageBox.warning(self, "تعذّر رفع الحجب", str(error))
+
+    # ----------------------------------------------------------
+    # تبويب 5: سجل التدقيق
     # ----------------------------------------------------------
     def _build_audit(self) -> QWidget:
         page = QWidget()
@@ -956,14 +1130,30 @@ class UserDialog(DialogBase):
                  self._after)
 
     def _direct_talk(self):
-        # يفتح قناة اتصال مباشر: يرسل رسالة للمستخدم عبر رد مباشر أو رابط
-        uid = self.uid
-        msg, ok = QInputDialog.getText(self, "رسالة مباشرة", "اكتب الرسالة للمبلّغ (ستُرسل مباشرة):")
-        if ok and msg.strip():
-            # نستخدم رد البلاغ الأخير كقناة أو نرسل إشعارًا مباشرًا عبر API إذا متاح
-            QMessageBox.information(self, "تم الإرسال", f"تم إرسال الرسالة للمعرّف {uid}")
+        text, ok = QInputDialog.getMultiLineText(
+            self, "رسالة مباشرة", f"اكتب رسالة ستُرسل للمستخدم {self.uid} عبر البوت:"
+        )
+        if not ok or len(text.strip()) < 2:
+            return
+        if QMessageBox.question(
+            self, "تأكيد الإرسال",
+            f"إرسال هذه الرسالة مباشرة إلى المستخدم {self.uid}؟",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.run(
+            lambda: self.api.call(
+                "POST", f"/api/admin/users/{self.uid}/message",
+                {"text": text.strip()},
+            ),
+            self._after_direct_talk,
+        )
+
+    def _after_direct_talk(self, data):
+        if data and data.get("ok") and data.get("sent"):
+            QMessageBox.information(self, "تم", "أُرسلت الرسالة للمستخدم عبر البوت ✅")
         else:
-            QMessageBox.information(self, "ملغاة", "لم يُرسل شيء.")
+            error = (data or {}).get("_error") or (data or {}).get("error") or "فشل"
+            QMessageBox.warning(self, "تعذّر الإرسال", str(error))
 
     def _after(self, data):
         if data and data.get("ok"):
@@ -1010,8 +1200,11 @@ def main() -> int:
         if dlg.exec() != QDialog.Accepted:
             return 0
         url, token = dlg.values()
-        if not url.startswith("http"):
-            QMessageBox.critical(None, "خطأ", "الرابط غير صحيح")
+        if not valid_api_url(url):
+            QMessageBox.critical(
+                None, "خطأ",
+                "أدخل عنوان HTTPS صالحًا (يسمح بـ HTTP على localhost فقط).",
+            )
             continue
         if not token:
             QMessageBox.critical(None, "خطأ", "التوكن مطلوب")

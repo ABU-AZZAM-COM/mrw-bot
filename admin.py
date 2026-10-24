@@ -20,7 +20,12 @@ from pathlib import Path
 
 from telegram import InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
+from telegram.ext import (
+    ApplicationHandlerStop,
+    ContextTypes,
+    CallbackQueryHandler,
+    CommandHandler,
+)
 
 import config
 import exporters
@@ -289,7 +294,7 @@ REJECT_PROMPT_TTL = 600
 
 
 async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
-                           new_status: str, note_extra: str = "") -> None:
+                           new_status: str, note_extra: str = "") -> bool:
     """يخبر صاحب البلاغ بتغيّر حالته من لوحة المشرف.
 
     • الإشعار يُرسل مرة واحدة لكل حالة مختلفة (لا يُعاد لنفس الحالة)،
@@ -299,13 +304,13 @@ async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
     """
     r = await _db(context).get_by_id(rid)
     if not r or not r.get("user_id"):
-        return
+        return False
 
     uid = int(r["user_id"])
     previous = _notified_status.get(rid)
     if previous == new_status and not note_extra:
         logger.debug("إشعار البلاغ %s مكرر لنفس الحالة (%s) — تخطٍ", rid, new_status)
-        return
+        return True
 
     CODE_TO_KEY = {
         STATUS_NEW: "new",
@@ -316,7 +321,7 @@ async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
     key = CODE_TO_KEY.get(new_status)
     if key is None:
         logger.debug("حالة غير معروفة في الإشعار: %s", new_status)
-        return
+        return False
 
     reviewed_at = r.get("reviewed_at") or utils.utc_now_iso()
     text = texts.STATUS_UPDATE_NOTIF.format(
@@ -329,10 +334,102 @@ async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
         await context.bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.HTML)
     except Exception as exc:  # noqa: BLE001 — خطأ إرسال لا يوقف العمل
         logger.warning("لم يُرسل إشعار الحالة للمستخدم %s (ربما حجب البوت): %s", uid, exc)
-        return
+        return False
     # نجاح الإرسال فقط يُسجّل لتجنب إعادة الإشعار لنفس الحالة
     _notified_status[rid] = new_status
     logger.info("🔔 إشعار الحالة (%s) أُرسل للبلاغ %s", new_status, rid)
+    return True
+
+
+async def _request_rejection_reason(query, context, db, rid: int) -> bool:
+    report = await db.get_by_id(rid)
+    if not report:
+        await query.answer(texts.REPORT_NOT_FOUND, show_alert=True)
+        return False
+    context.chat_data["adm_reject_rid"] = rid
+    context.chat_data["adm_reject_at"] = time.time()
+    await _edit_report_message(
+        query,
+        texts.ADMIN_REJECT_ASK.format(seq=utils.esc(report["seq"])),
+        admin_reject_cancel_kb(rid),
+    )
+    return True
+
+
+async def _edit_report_message(query, text: str, reply_markup) -> None:
+    if query.message is not None and getattr(query.message, "photo", None):
+        await query.edit_message_caption(
+            caption=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
+        return
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=reply_markup,
+    )
+
+
+async def receive_reject_reason(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """يستكمل رفض البلاغ بعد أن يرسل المشرف سببًا في محادثة البوت."""
+    if not _is_admin_update(update):
+        return
+    rid = context.chat_data.get("adm_reject_rid")
+    requested_at = context.chat_data.get("adm_reject_at")
+    message = update.effective_message
+    if rid is None or message is None or not message.text:
+        return
+
+    def clear_pending() -> None:
+        context.chat_data.pop("adm_reject_rid", None)
+        context.chat_data.pop("adm_reject_at", None)
+
+    if (
+        not isinstance(requested_at, (int, float))
+        or time.time() - requested_at > REJECT_PROMPT_TTL
+    ):
+        clear_pending()
+        await message.reply_text("انتهت مهلة سبب الرفض؛ ابدأ الإجراء من جديد.")
+        raise ApplicationHandlerStop
+
+    reason = message.text.strip()
+    if not reason:
+        await message.reply_text("سبب الرفض مطلوب. أرسل سببًا غير فارغ أو ألغِ العملية.")
+        raise ApplicationHandlerStop
+    if len(reason) > 2000:
+        await message.reply_text("سبب الرفض يتجاوز الحد المسموح (2000 حرف).")
+        raise ApplicationHandlerStop
+
+    db = _db(context)
+    report = await db.get_by_id(int(rid))
+    if not report:
+        clear_pending()
+        await message.reply_text(texts.REPORT_NOT_FOUND)
+        raise ApplicationHandlerStop
+    if not await db.update_status(int(rid), STATUS_REJECTED, update.effective_user.id):
+        clear_pending()
+        await message.reply_text(texts.REPORT_NOT_FOUND)
+        raise ApplicationHandlerStop
+
+    clear_pending()
+    await db.audit(
+        update.effective_user.id,
+        "status_changed",
+        str(rid),
+        f"{STATUS_REJECTED} — سبب الرفض: {reason}",
+    )
+    notified = await _notify_reporter(
+        context,
+        int(rid),
+        STATUS_REJECTED,
+        texts.REJECT_REASON_NOTIF.format(reason=utils.esc(reason)),
+    )
+    status = "وتم إشعار المبلّغ" if notified else "لكن تعذر إشعار المبلّغ"
+    await message.reply_text(f"تم رفض البلاغ {report.get('seq') or rid} {status}.")
+    raise ApplicationHandlerStop
 
 
 # ==================================================================
@@ -445,10 +542,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         rid, code = int(parts[2]), parts[3]
         new_status = STATUS_CODES[code]
+        if new_status == STATUS_REJECTED:
+            await _request_rejection_reason(query, context, db, rid)
+            return
         ok = await db.update_status(rid, new_status, update.effective_user.id)
         if not ok:
             await query.answer(texts.REPORT_NOT_FOUND, show_alert=True)
             return
+        await db.audit(
+            update.effective_user.id,
+            "status_changed",
+            str(rid),
+            f"{new_status} — من أزرار البوت",
+        )
         logger.info("المشرف %s غيّر حالة البلاغ %s إلى %s",
                     update.effective_user.id, rid, new_status)
         await _notify_reporter(context, rid, new_status)
@@ -464,22 +570,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     elif op == "rj":
-        # طلب سبب الرفض (إلزامي) — يدخل في حالة انتظار النص من المشرف
         if len(parts) < 3 or not parts[2].isdigit():
             return
-        rid = int(parts[2])
-        r = await db.get_by_id(rid)
-        if not r:
-            await query.answer(texts.REPORT_NOT_FOUND, show_alert=True)
-            return
-        # حفظ ببرمجة الحافِر (rid + timestamp) لاتخاذ نص السبب لاحقًا
-        context.chat_data["adm_reject_rid"] = rid
-        context.chat_data["adm_reject_at"] = time.time()
-        await query.edit_message_text(
-            texts.ADMIN_REJECT_ASK.format(seq=r["seq"]),
-            parse_mode=ParseMode.HTML,
-            reply_markup=admin_reject_cancel_kb(rid),
-        )
+        await _request_rejection_reason(query, context, db, int(parts[2]))
 
     elif op == "rc":
         # تراجع عن طلب سبب الرفض
@@ -489,15 +582,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if context.chat_data.get("adm_reject_rid") == rid:
             context.chat_data.pop("adm_reject_rid", None)
             context.chat_data.pop("adm_reject_at", None)
-            await query.edit_message_text(
+            await _edit_report_message(
+                query,
                 texts.ADMIN_REJECT_CANCELLED,
-                parse_mode=ParseMode.HTML,
                 reply_markup=admin_view_buttons(rid),
             )
         else:
-            await query.edit_message_text(
+            await _edit_report_message(
+                query,
                 texts.ADMIN_REJECT_CANCELLED,
-                parse_mode=ParseMode.HTML,
+                reply_markup=None,
             )
 
     elif op == "exp":
