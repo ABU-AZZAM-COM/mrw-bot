@@ -254,12 +254,14 @@ async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id
                 sightengine_scores = await sightengine_moderation.inspect_image(
                     source_path
                 )
-            except sightengine_moderation.SightengineError:
-                logger.exception(
-                    "تعذر فحص صورة المستخدم %s عبر Sightengine", user_id
+            except sightengine_moderation.SightengineError as exc:
+                logger.warning(
+                    "تعذر فحص صورة المستخدم %s عبر Sightengine: %s",
+                    user_id,
+                    exc,
                 )
                 sightengine_error = (
-                    "تعذر فحص الصورة عبر Sightengine؛ يلزم التحقق اليدوي"
+                    f"تعذر فحص الصورة عبر Sightengine: {exc}؛ يلزم التحقق اليدوي"
                 )
         else:
             sightengine_error = (
@@ -270,16 +272,13 @@ async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id
         max_score = local_result.max_score
         sightengine_flagged = False
         if sightengine_scores is not None:
-            max_score = max(
-                max_score,
-                sightengine_scores.raw,
-                sightengine_scores.sexual_activity,
+            max_score = max(max_score, sightengine_scores.max_score)
+            sightengine_flagged = sightengine_scores.is_restricted
+            labels.update(
+                "SIGHTENGINE_" + class_name.upper().replace(".", "_")
+                for class_name, score in sightengine_scores.scores
+                if score >= sightengine_moderation.RESTRICTION_THRESHOLD
             )
-            sightengine_flagged = sightengine_scores.is_explicit
-            if sightengine_scores.raw >= 0.40:
-                labels.add("SIGHTENGINE_RAW")
-            if sightengine_scores.sexual_activity >= 0.40:
-                labels.add("SIGHTENGINE_SEXUAL_ACTIVITY")
 
         return image_moderation.ScreeningResult(
             flagged=local_result.flagged or sightengine_flagged,

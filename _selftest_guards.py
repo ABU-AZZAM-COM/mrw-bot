@@ -75,10 +75,22 @@ async def main() -> None:
     )()
     under_cutoff = image_moderation.screen_image(test_image)
     check(
-        "الكشف غير المؤكد يُحال للمراجعة ولا يسبب تجميدًا",
+        "الكشف الحدّي يُحال للمراجعة دون تقييد",
         not under_cutoff.flagged
         and under_cutoff.review_required
         and "FEMALE_GENITALIA_EXPOSED" in under_cutoff.labels,
+    )
+    image_moderation._detector = type(
+        "MaleChestDetector",
+        (),
+        {"detect": lambda self, _path: [
+            {"class": "MALE_BREAST_EXPOSED", "score": 0.91},
+        ]},
+    )()
+    male_chest = image_moderation.screen_image(test_image)
+    check(
+        "كشف الصدر المكشوف يُعامل وفق سياسة العري الشاملة",
+        male_chest.flagged and "MALE_BREAST_EXPOSED" in male_chest.labels,
     )
     image_moderation._detector = type(
         "ThresholdExposureDetector",

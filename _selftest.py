@@ -26,18 +26,102 @@ import main as main_mod
 import sightengine_moderation
 from unittest.mock import AsyncMock, patch
 
-assert not sightengine_moderation.parse_scores({
+_at_threshold_scores = sightengine_moderation.parse_scores({
     "status": "success",
-    "nudity": {"raw": 0.70, "sexual_activity": 0.10},
-}).is_explicit
+    "nudity": {
+        "sexual_activity": 0.10,
+        "sexual_display": 0.40,
+        "erotica": 0.10,
+        "suggestive": 0.40,
+        "mildly_suggestive": 0.40,
+        "none": 0.99,
+        "context": {"indoor_other": 0.99},
+        "suggestive_classes": {
+            "lingerie": 0.40,
+            "bikini": 0.40,
+            "cleavage_categories": {"very_revealing": 0.40, "none": 0.99},
+        },
+    },
+})
+assert not _at_threshold_scores.is_restricted
+_suggestive_scores = sightengine_moderation.parse_scores({
+    "status": "success",
+    "nudity": {
+        "sexual_activity": 0.10,
+        "sexual_display": 0.10,
+        "erotica": 0.10,
+        "very_suggestive": 0.4001,
+        "suggestive_classes": {
+            "lingerie": 0.43,
+            "bikini": 0.46,
+            "male_underwear": 0.10,
+            "minishort": 0.10,
+            "suggestive_focus": 0.10,
+            "suggestive_pose": 0.10,
+        },
+    },
+})
+assert _suggestive_scores.is_restricted
+assert _suggestive_scores.max_score == 0.46
+_case_image_scores = sightengine_moderation.parse_scores({
+    "status": "success",
+    "nudity": {
+        "sexual_activity": 0.34,
+        "sexual_display": 0.50,
+        "erotica": 0.05,
+    },
+})
+assert _case_image_scores.is_restricted
+assert _case_image_scores.max_score == 0.50
 assert sightengine_moderation.parse_scores({
     "status": "success",
-    "nudity": {"raw": 0.7001, "sexual_activity": 0.10},
-}).is_explicit
+    "nudity": {
+        "sexual_activity": 0.71,
+        "sexual_display": 0.10,
+        "erotica": 0.10,
+    },
+}).is_restricted
 assert sightengine_moderation.parse_scores({
     "status": "success",
-    "nudity": {"raw": 0.10, "sexual_activity": 0.71},
-}).is_explicit
+    "nudity": {
+        "sexual_activity": 0.10,
+        "sexual_display": 0.10,
+        "erotica": 0.71,
+    },
+}).is_restricted
+_other_content_only = sightengine_moderation.parse_scores({
+    "status": "success",
+    "nudity": {
+        "sexual_activity": 0.10,
+        "sexual_display": 0.10,
+        "erotica": 0.10,
+        "context": {"indoor_other": 0.99},
+        "none": 0.99,
+    },
+})
+assert not _other_content_only.is_restricted
+assert "HTTP 401" in sightengine_moderation._http_status_message(401)
+assert "HTTP 403" in sightengine_moderation._http_status_message(403)
+assert "رصيد الحساب" in sightengine_moderation._http_status_message(429)
+assert "HTTP 503" in sightengine_moderation._http_status_message(503)
+try:
+    sightengine_moderation.parse_scores({
+        "status": "failure",
+        "error": {"type": "credentials_error", "code": 1},
+    })
+except sightengine_moderation.SightengineError as exc:
+    assert "بيانات الاعتماد" in str(exc)
+else:
+    raise AssertionError("Sightengine credential failure should be reported")
+try:
+    sightengine_moderation.parse_scores({
+        "status": "failure",
+        "error": {"type": "usage_limit", "code": 2},
+    })
+except sightengine_moderation.SightengineError as exc:
+    assert "حصة أو حد" in str(exc)
+else:
+    raise AssertionError("Sightengine usage limit should be reported")
 
 _sightengine_request = {}
 
@@ -48,7 +132,11 @@ class _SightengineResponse:
     def json(self):
         return {
             "status": "success",
-            "nudity": {"raw": 0.2, "sexual_activity": 0.1},
+            "nudity": {
+                "sexual_activity": 0.2,
+                "sexual_display": 0.1,
+                "erotica": 0.1,
+            },
         }
 
 class _SightengineClient:
@@ -81,9 +169,13 @@ with tempfile.TemporaryDirectory(prefix="mrw-sightengine-selftest-") as sighteng
         _api_scores = asyncio.run(
             sightengine_moderation.inspect_image(sightengine_image)
         )
-assert _api_scores.raw == 0.2 and _api_scores.sexual_activity == 0.1
+assert _api_scores.scores == (
+    ("sexual_activity", 0.2),
+    ("sexual_display", 0.1),
+    ("erotica", 0.1),
+)
 assert _sightengine_request["url"] == sightengine_moderation.SIGHTENGINE_URL
-assert _sightengine_request["data"]["models"] == "nudity-2.0"
+assert _sightengine_request["data"]["models"] == sightengine_moderation.SIGHTENGINE_MODEL
 assert _sightengine_request["content"] == b"api-test-image"
 if _old_sightengine_user is None:
     os.environ.pop("SIGHTENGINE_API_USER", None)
@@ -112,7 +204,7 @@ with tempfile.TemporaryDirectory(prefix="mrw-private-report-selftest-") as image
             sightengine_moderation,
             "inspect_image",
             new=AsyncMock(
-                return_value=sightengine_moderation.NudityScores(0.71, 0.10)
+                return_value=_case_image_scores
             ),
         ),
     ):
@@ -125,7 +217,8 @@ with tempfile.TemporaryDirectory(prefix="mrw-private-report-selftest-") as image
             )
         )
     assert _private_report_screening.flagged
-    assert "SIGHTENGINE_RAW" in _private_report_screening.labels
+    assert "SIGHTENGINE_SEXUAL_DISPLAY" in _private_report_screening.labels
+    assert _private_report_screening.max_score == 0.50
     flagged_result = _private_report_screening
 
     with (
@@ -137,8 +230,42 @@ with tempfile.TemporaryDirectory(prefix="mrw-private-report-selftest-") as image
         patch.object(
             sightengine_moderation,
             "inspect_image",
+            new=AsyncMock(return_value=_suggestive_scores),
+        ),
+    ):
+        _suggestive_report_screening = asyncio.run(
+            handlers._screen_uploaded_photo(
+                media=None,
+                photo_path=str(uploaded_image),
+                extension=".jpg",
+                user_id=654321,
+            )
+        )
+    assert _suggestive_report_screening.flagged
+    assert "SIGHTENGINE_SUGGESTIVE_CLASSES_LINGERIE" in (
+        _suggestive_report_screening.labels
+    )
+    assert "SIGHTENGINE_SUGGESTIVE_CLASSES_BIKINI" in (
+        _suggestive_report_screening.labels
+    )
+
+    with (
+        patch.object(
+            handlers.image_moderation,
+            "screen_image",
+            return_value=handlers.image_moderation.ScreeningResult(False),
+        ),
+        patch.object(
+            sightengine_moderation,
+            "inspect_image",
             new=AsyncMock(
-                return_value=sightengine_moderation.NudityScores(0.70, 0.10)
+                return_value=sightengine_moderation.NudityScores(
+                    scores=(
+                        ("sexual_activity", 0.10),
+                        ("sexual_display", 0.40),
+                        ("erotica", 0.10),
+                    )
+                )
             ),
         ),
     ):
@@ -151,6 +278,31 @@ with tempfile.TemporaryDirectory(prefix="mrw-private-report-selftest-") as image
             )
         )
     assert not _threshold_report_screening.flagged
+
+    with (
+        patch.object(
+            handlers.image_moderation,
+            "screen_image",
+            return_value=handlers.image_moderation.ScreeningResult(False),
+        ),
+        patch.object(
+            sightengine_moderation,
+            "inspect_image",
+            new=AsyncMock(
+                return_value=_case_image_scores
+            ),
+        ),
+    ):
+        _over_threshold_report_screening = asyncio.run(
+            handlers._screen_uploaded_photo(
+                media=None,
+                photo_path=str(uploaded_image),
+                extension=".jpg",
+                user_id=654321,
+            )
+        )
+    assert _over_threshold_report_screening.flagged
+    assert "SIGHTENGINE_SEXUAL_DISPLAY" in _over_threshold_report_screening.labels
 
     class _PrivateTelegramFile:
         async def download_to_drive(self, custom_path):
@@ -165,7 +317,13 @@ with tempfile.TemporaryDirectory(prefix="mrw-private-report-selftest-") as image
     async def _inspect_temporary_image(path):
         _temporary_scan_paths.append(Path(path))
         assert Path(path).read_bytes() == b"private-temporary-image"
-        return sightengine_moderation.NudityScores(0.1, 0.1)
+        return sightengine_moderation.NudityScores(
+            scores=(
+                ("sexual_activity", 0.1),
+                ("sexual_display", 0.1),
+                ("erotica", 0.1),
+            )
+        )
 
     with (
         patch.object(
@@ -198,7 +356,7 @@ if _old_sightengine_secret is None:
     os.environ.pop("SIGHTENGINE_API_SECRET", None)
 else:
     os.environ["SIGHTENGINE_API_SECRET"] = _old_sightengine_secret
-print("private complaint image: Sightengine >70% freezes; exactly 70% does not")
+print("private complaint image: Sightengine >40% nudity score freezes")
 
 _db_test_dir = tempfile.TemporaryDirectory(prefix="mrw-selftest-")
 DB_PATH = Path(_db_test_dir.name) / "test_reports.db"
