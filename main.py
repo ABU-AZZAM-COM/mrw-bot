@@ -9,6 +9,7 @@
 """
 import asyncio
 import logging
+import os
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -259,4 +260,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Render's native Python service commonly starts `python main.py`.
+    # Use the web entrypoint when the platform provides its listening port;
+    # keep the regular local bot-only workflow unchanged.
+    if os.getenv("PORT"):
+        from space_app import main as run_web_service
+
+        run_web_service()
+    else:
+        main()

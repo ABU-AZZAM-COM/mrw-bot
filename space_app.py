@@ -358,7 +358,7 @@ def build_app() -> FastAPI:
     return app
 
 
-if __name__ == "__main__":
+def main() -> None:
     import uvicorn
 
     # تشغيل البوت في الخلفية عند إقلاع المساحة
@@ -368,3 +368,7 @@ if __name__ == "__main__":
     _zerogpu_startup_report()
     logger.info("🚀 تشغيل خادم الويب على المنفذ %d", port)
     uvicorn.run(build_app(), host="0.0.0.0", port=port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

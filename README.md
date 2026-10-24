@@ -90,12 +90,12 @@ python main.py
 | **Render** | خدمة البوت وواجهة الإدارة الحالية: `https://mrw-bot.onrender.com` | إعدادات خدمة Render |
 | **Hugging Face Dataset** | مخزن النسخ الاحتياطية | `hub_backup.py` |
 
-يعمل البوت على خدمة Render، ولا حاجة لتشغيل `main.py` على جهاز المشرف. يجب أن
-يكون أمر تشغيل خدمة Render هو `python space_app.py`؛ تشغيل `python main.py`
-وحده يشغّل خادم الصحة فقط ولا يوفّر واجهة الإدارة. يحتوي `Dockerfile` الآن
-على نقطة التشغيل الصحيحة، ولخدمة Render ذات بيئة Python الأصلية اضبط Start
-Command إلى `python space_app.py`، وتأكد أن Build Command يثبت
-`requirements.txt`.
+يعمل البوت وواجهة الإدارة على خدمة Render، ولا حاجة لتشغيل `main.py` على جهاز
+المشرف. نقطة التشغيل `python space_app.py` مدعومة مباشرة، كما أن `python
+main.py` يختار تطبيق الويب تلقائيًا عندما توفر المنصة متغير `PORT`، مع إبقاء
+تشغيل البوت المحلي دون هذا المتغير كما هو. يحتوي `Dockerfile` على نقطة التشغيل
+الصحيحة؛ وفي خدمة Render ذات بيئة Python الأصلية تأكد أن Build Command يثبت
+`requirements.txt` وأن Start Command هو `python space_app.py` أو `python main.py`.
 
 **النسخ الاحتياطي:**
 
