@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
 import 'api.dart';
+import 'app_credits.dart';
 import 'pages.dart';
 import 'pages2.dart';
+import 'theme_menu.dart';
 import 'widgets.dart';
 import 'web_api.dart';
 
@@ -113,7 +115,11 @@ class _MainShellState extends State<MainShell> {
             ),
             if (!compact) ...[
               const SizedBox(width: 14),
-              Container(width: 1, height: 22, color: const Color(0xFF25382D)),
+              Container(
+                width: 1,
+                height: 22,
+                color: Theme.of(context).dividerColor,
+              ),
               const SizedBox(width: 14),
               const Text(
                 'مركز التحكم الموحد',
@@ -130,6 +136,12 @@ class _MainShellState extends State<MainShell> {
                 child: StateBadge('لوحة الإدارة', color: Color(0xFF67D6A6)),
               ),
             ),
+          const ThemeMenu(),
+          IconButton(
+            tooltip: 'الحقوق والإصدار',
+            onPressed: () => showCredits(context),
+            icon: const Icon(Icons.info_outline),
+          ),
           IconButton(
             tooltip: 'تسجيل الخروج',
             onPressed: () {
@@ -175,7 +187,7 @@ class _MainShellState extends State<MainShell> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(18),
                 child: ColoredBox(
-                  color: const Color(0xFF0C1711),
+                  color: Theme.of(context).colorScheme.surface,
                   child: pages[_selectedIndex],
                 ),
               ),

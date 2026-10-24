@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 
 import 'api.dart';
 import 'admin_shell.dart';
+import 'app_credits.dart';
 import 'app_theme.dart';
+import 'theme_menu.dart';
 import 'web_api.dart';
 import 'widgets.dart';
 
@@ -17,16 +19,21 @@ class AdminApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'لوحة الإدارة',
-      debugShowCheckedModeBanner: false,
-      theme: AdminTheme.dark,
-      // القاعدة: كل الصفحة من اليمين لليسار — أنظمة RTL لا تحتاج إعداداً لكل ويدجت
-      builder: (context, child) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: child ?? const SizedBox.shrink(),
-      ),
-      home: const AdminGate(),
+    return ValueListenableBuilder<String>(
+      valueListenable: themeController,
+      builder: (context, themeName, _) {
+        return MaterialApp(
+          title: 'لوحة الإدارة — ${AppCredits.project}',
+          debugShowCheckedModeBanner: false,
+          theme: AdminTheme.of(themeName),
+          // القاعدة: كل الصفحة من اليمين لليسار — أنظمة RTL لا تحتاج إعداداً لكل ويدجت
+          builder: (context, child) => Directionality(
+            textDirection: TextDirection.rtl,
+            child: child ?? const SizedBox.shrink(),
+          ),
+          home: const AdminGate(),
+        );
+      },
     );
   }
 }
@@ -104,10 +111,7 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final result = await probe.get('/api/admin/overview');
       if (result['ok'] != true) {
-        throw ApiException(
-          502,
-          (result['error'] ?? 'bad_response').toString(),
-        );
+        throw ApiException(502, (result['error'] ?? 'bad_response').toString());
       }
       if (!mounted) return;
       widget.onConnected(t);
@@ -124,82 +128,106 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 430),
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(26),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Icon(
-                      Icons.shield_outlined,
-                      size: 46,
-                      color: const Color(0xFF3FA66B),
+      body: Stack(
+        children: [
+          Positioned(top: 4, left: 4, child: ThemeMenu()),
+          Positioned(
+            top: 4,
+            right: 4,
+            child: IconButton(
+              tooltip: 'الحقوق والإصدار',
+              onPressed: () => showCredits(context),
+              icon: const Icon(Icons.info_outline, color: Colors.white70),
+            ),
+          ),
+          Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 430),
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(26),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Icon(
+                          Icons.shield_outlined,
+                          size: 46,
+                          color: AdminTheme.accent,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'لوحة الإدارة',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.headlineSmall,
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'منظومة استقبال البلاغات العسكرية',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white38),
+                        ),
+                        const SizedBox(height: 20),
+                        TextField(
+                          controller: _c,
+                          obscureText: true,
+                          autofocus: true,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          onSubmitted: (_) => _connect(),
+                          decoration: const InputDecoration(
+                            labelText: 'توكن الإدارة',
+                            prefixIcon: Icon(Icons.key_outlined),
+                          ),
+                        ),
+                        if (_err != null) ...[
+                          const SizedBox(height: 10),
+                          Text(
+                            _err!,
+                            style: const TextStyle(color: Color(0xFFE06C75)),
+                          ),
+                        ],
+                        const SizedBox(height: 14),
+                        FilledButton.icon(
+                          onPressed: _busy ? null : _connect,
+                          icon: _busy
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.login),
+                          label: const Text('الاتصال'),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'يُحفظ في هذا المتصفح ويُرسل إلى خدمة الإدارة عبر HTTPS فقط',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white24, fontSize: 12),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'لوحة الإدارة',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'منظومة استقبال البلاغات العسكرية',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white38),
-                    ),
-                    const SizedBox(height: 20),
-                    TextField(
-                      controller: _c,
-                      obscureText: true,
-                      autofocus: true,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      onSubmitted: (_) => _connect(),
-                      decoration: const InputDecoration(
-                        labelText: 'توكن الإدارة',
-                        prefixIcon: Icon(Icons.key_outlined),
-                      ),
-                    ),
-                    if (_err != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        _err!,
-                        style: const TextStyle(color: Color(0xFFE06C75)),
-                      ),
-                    ],
-                    const SizedBox(height: 14),
-                    FilledButton.icon(
-                      onPressed: _busy ? null : _connect,
-                      icon: _busy
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Icon(Icons.login),
-                      label: const Text('الاتصال'),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'يُحفظ في هذا المتصفح ويُرسل إلى خدمة الإدارة عبر HTTPS فقط',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white24, fontSize: 12),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
           ),
-        ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 8,
+            child: Text(
+              '${AppCredits.footer} · ${AppCredits.versionLabel}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white24, fontSize: 11),
+            ),
+          ),
+        ],
       ),
     );
   }

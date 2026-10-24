@@ -1,1 +1,7 @@
-{"app_name":"admin_web","version":"1.0.0","build_number":"1","package_name":"admin_web"}
+{
+  "version": "2.7.20261024",
+  "release_date": "2026-10-24",
+  "author": "ABU-AZZAM-COM / Azzam",
+  "github": "https://github.com/ABU-AZZAM-COM/mrw-bot",
+  "copyright": "© 2026 — جميع الحقوق محفوظة"
+}
