@@ -865,6 +865,7 @@ pdb = database.Database(pbase)
 pid = asyncio.run(pdb.add_report(
     user_id=777, username="panel_user", full_name="مستخدم لوحة",
     photo_path="media/x.jpg", photo_file_id="fid777",
+    contact_phone="+15551234567",
     post_link="https://t.me/x/9",
     description="بلاغ لتجربة واجهة الإدارة الكاملة هنا بالتفصيل الشديد",
     violation_type="مخالفة زي",
@@ -885,6 +886,8 @@ users_rows, users_total = asyncio.run(pdb.list_users())
 assert users_total == 1 and users_rows[0]["user_id"] == 777
 profile = asyncio.run(pdb.user_profile(777))
 assert profile["user_id"] == 777 and profile["total_reports"] == 1
+assert profile["contact_phone"] == "+15551234567"
+assert profile["contact_phone_seq"] == pid["seq"]
 assert asyncio.run(pdb.user_profile(42424242)) is None
 asyncio.run(pdb.record_user(778, "subscriber_only", "مشترك بلا بلاغ"))
 assert asyncio.run(pdb.total_users()) == 2
@@ -1020,6 +1023,8 @@ legacy_image = asyncio.run(photo_db.add_report(
     post_link="https://t.me/x/image", description="بلاغ صورة محفوظة محليًا",
 ))
 assert admin_api._safe_report(legacy_image)["has_photo"] is True
+missing_image = {**legacy_image, "photo_path": "missing-image.png"}
+assert admin_api._safe_report(missing_image)["has_photo"] is False
 
 class _PhotoRequest:
     headers = {}

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'api.dart';
 
 class DemoApi implements AdminApi {
@@ -532,6 +534,11 @@ class DemoApi implements AdminApi {
       if (report['id'] == id) return report;
     }
     return null;
+  }
+
+  @override
+  Future<Uint8List> getBytes(String path) async {
+    throw ApiException(404, 'demo_photo_unavailable');
   }
 
   void _record(String action, String target) {

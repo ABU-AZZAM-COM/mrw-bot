@@ -852,7 +852,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         from pathlib import Path as P  # noqa: PLC0415
 
         local_raw = str(r.get("photo_path") or "").strip()
-        local = P(local_raw) if local_raw else None
+        local = _local_photo_path(local_raw)
         if local is not None and local.is_file():
             media_type = mimetypes.guess_type(local.name)[0] or "application/octet-stream"
             if not media_type.startswith("image/"):
@@ -1380,8 +1380,22 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 def _safe_report(r: dict[str, Any]) -> dict[str, Any]:
     """نسخة صالحة للعرض عبر الإنترنت (الصورة تُسحب من تلغرام عبر file_id)."""
     safe = {k: v for k, v in r.items() if k != "photo_path"}
-    safe["has_photo"] = bool(r.get("photo_file_id") or r.get("photo_path"))
+    local = _local_photo_path(str(r.get("photo_path") or "").strip())
+    safe["has_photo"] = bool(
+        r.get("photo_file_id") or (local is not None and local.is_file())
+    )
     return safe
+
+
+def _local_photo_path(raw_path: str):
+    if not raw_path:
+        return None
+    from pathlib import Path  # noqa: PLC0415
+
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    return path
 
 
 async def _json(request) -> dict[str, Any]:

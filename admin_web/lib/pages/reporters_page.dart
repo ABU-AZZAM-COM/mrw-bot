@@ -270,6 +270,8 @@ class _UserCardState extends State<_UserCard> {
     }
     final b = (p['block'] ?? <String, dynamic>{}) as Map<String, dynamic>;
     final frozen = (b['frozen_until'] ?? '') as String;
+    final contactPhone = (p['contact_phone'] ?? '').toString().trim();
+    final contactPhoneSeq = (p['contact_phone_seq'] ?? '').toString().trim();
     return Column(
       children: [
         Container(
@@ -306,6 +308,19 @@ class _UserCardState extends State<_UserCard> {
                 _kv('المعرف', '${p['user_id'] ?? '-'}'),
                 _kv('الاسم', (p['full_name'] ?? '—') as String),
                 _kv('حساب تلغرام', '@${p['username'] ?? '—'}'),
+                _kv(
+                  'رقم التواصل',
+                  contactPhone.isEmpty
+                      ? 'لم يشارك رقم هاتف في بلاغاته.'
+                      : contactPhone,
+                ),
+                if (contactPhone.isNotEmpty)
+                  _kv(
+                    'سياق المشاركة',
+                    contactPhoneSeq.isEmpty
+                        ? 'رقم شاركه مع أحد بلاغاته.'
+                        : 'شاركه مع البلاغ $contactPhoneSeq.',
+                  ),
                 _kv('إجمالي البلاغات', '${p['total_reports'] ?? 0}'),
                 _kv('المعتمدة', '${p['approved_n'] ?? 0}'),
                 _kv('المرفوضة', '${p['rejected_n'] ?? 0}'),
