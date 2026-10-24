@@ -44,6 +44,7 @@ import archive
 import config
 import guards
 import image_moderation
+import sightengine_moderation
 import hub_backup
 import texts
 import utils
@@ -214,13 +215,13 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id: int):
-    """Screen locally; uncertainty requires review, never an automatic freeze."""
-    if not image_moderation.is_enabled():
-        return image_moderation.ScreeningResult(False)
-
+    """Screen private complaint uploads locally and with Sightengine when configured."""
     temporary_path: Path | None = None
+    source_path = Path(photo_path) if photo_path else None
+    local_result = image_moderation.ScreeningResult(False)
+    sightengine_scores = None
+    sightengine_error = ""
     try:
-        source_path = Path(photo_path) if photo_path else None
         if source_path is None:
             with tempfile.NamedTemporaryFile(
                 prefix="mrw-screen-", suffix=extension, delete=False
@@ -233,7 +234,64 @@ async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id
         if not source_path.is_file() or source_path.stat().st_size == 0:
             raise RuntimeError("downloaded image is empty")
 
-        return await asyncio.to_thread(image_moderation.screen_image, source_path)
+        if image_moderation.is_enabled():
+            try:
+                local_result = await asyncio.to_thread(
+                    image_moderation.screen_image, source_path
+                )
+            except Exception:
+                logger.exception(
+                    "تعذر فحص صورة المستخدم %s محليًا", user_id
+                )
+                local_result = image_moderation.ScreeningResult(
+                    False,
+                    review_required=True,
+                    error="تعذر إكمال الفحص المحلي؛ يلزم التحقق اليدوي",
+                )
+
+        if sightengine_moderation.credentials():
+            try:
+                sightengine_scores = await sightengine_moderation.inspect_image(
+                    source_path
+                )
+            except sightengine_moderation.SightengineError:
+                logger.exception(
+                    "تعذر فحص صورة المستخدم %s عبر Sightengine", user_id
+                )
+                sightengine_error = (
+                    "تعذر فحص الصورة عبر Sightengine؛ يلزم التحقق اليدوي"
+                )
+        else:
+            sightengine_error = (
+                "بيانات Sightengine غير مكتملة؛ تم الاعتماد على الفحص المحلي"
+            )
+
+        labels = set(local_result.labels)
+        max_score = local_result.max_score
+        sightengine_flagged = False
+        if sightengine_scores is not None:
+            max_score = max(
+                max_score,
+                sightengine_scores.raw,
+                sightengine_scores.sexual_activity,
+            )
+            sightengine_flagged = sightengine_scores.is_explicit
+            if sightengine_scores.raw >= 0.40:
+                labels.add("SIGHTENGINE_RAW")
+            if sightengine_scores.sexual_activity >= 0.40:
+                labels.add("SIGHTENGINE_SEXUAL_ACTIVITY")
+
+        return image_moderation.ScreeningResult(
+            flagged=local_result.flagged or sightengine_flagged,
+            review_required=(
+                local_result.review_required
+                or bool(labels)
+                or bool(sightengine_error)
+            ),
+            labels=tuple(sorted(labels)),
+            max_score=max_score,
+            error=sightengine_error or local_result.error,
+        )
     except Exception:
         logger.exception("تعذر فحص صورة المستخدم %s؛ أُحيل البلاغ للمراجعة اليدوية", user_id)
         return image_moderation.ScreeningResult(
@@ -258,7 +316,7 @@ async def _freeze_for_sensitive_image(
     user = update.effective_user
     db = _db(context)
     reason = (
-        "كشف آلي محلي لمؤشرات محتوى حساس: "
+        "كشف آلي لمؤشرات محتوى حساس: "
         + ", ".join(screening.labels)
         + f" (ثقة {screening.max_score:.0%})"
     )

@@ -27,7 +27,6 @@ import config  # noqa: E402  (بعد تهيئة الطرفية)
 import admin   # noqa: E402
 import archive  # noqa: E402
 import handlers
-import group_image_moderation  # noqa: E402
 import health_server  # noqa: E402
 import hub_backup  # noqa: E402
 from database import Database  # noqa: E402
@@ -216,15 +215,6 @@ def main() -> None:
             handlers.app_photo_received,
         )
     )
-    app.add_handler(
-        MessageHandler(
-            filters.ChatType.GROUPS
-            & (filters.PHOTO | filters.Document.IMAGE),
-            group_image_moderation.moderate_group_image,
-        ),
-        group=-1,
-    )
-
     # 1-ب) محادثة إدخال البلاغ العادية
     app.add_handler(handlers.build_conversation())
 
