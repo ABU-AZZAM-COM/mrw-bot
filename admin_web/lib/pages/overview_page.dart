@@ -87,6 +87,8 @@ class _OverviewPageState extends State<OverviewPage> {
     final workflow =
         (ov['workflow'] as Map?)?.cast<String, dynamic>() ??
         <String, dynamic>{};
+    final users =
+        (ov['users'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
     return RefreshIndicator(
       onRefresh: () => _load(),
       child: ListView(
@@ -112,7 +114,10 @@ class _OverviewPageState extends State<OverviewPage> {
               const SizedBox(width: 8),
               Text(
                 'تحديث: ${TimeOfDay.now().format(context)}',
-                style: const TextStyle(color: Colors.white38, fontSize: 12),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
             ],
           ),
@@ -134,6 +139,18 @@ class _OverviewPageState extends State<OverviewPage> {
                 mainAxisSpacing: 8,
                 crossAxisSpacing: 8,
                 children: [
+                  StatCard(
+                    title: 'مستخدمو البوت',
+                    value: '${users['total'] ?? 0}',
+                    color: const Color(0xFF64B5F6),
+                    icon: Icons.people_outline,
+                  ),
+                  StatCard(
+                    title: 'المحظورون النشطون',
+                    value: '${users['blocked'] ?? 0}',
+                    color: const Color(0xFFE06C75),
+                    icon: Icons.block_outlined,
+                  ),
                   StatCard(
                     title: 'جديد',
                     value: '${counts['جديد'] ?? 0}',
@@ -274,6 +291,7 @@ class WeekChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
     final now = DateTime.now();
     final days = List<String>.generate(7, (i) {
       final d = now.subtract(Duration(days: 6 - i));
@@ -303,8 +321,8 @@ class WeekChart extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 12,
                       color: (byDay[days[i]] ?? 0) > 0
-                          ? Colors.white70
-                          : Colors.white24,
+                          ? Theme.of(context).colorScheme.onSurface
+                          : muted.withValues(alpha: 0.55),
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -326,11 +344,14 @@ class WeekChart extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     wdNames[now.subtract(Duration(days: 6 - i)).weekday - 1],
-                    style: const TextStyle(fontSize: 11, color: Colors.white38),
+                    style: TextStyle(fontSize: 11, color: muted),
                   ),
                   Text(
                     days[i].substring(5),
-                    style: const TextStyle(fontSize: 10, color: Colors.white24),
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: muted.withValues(alpha: 0.7),
+                    ),
                   ),
                 ],
               ),

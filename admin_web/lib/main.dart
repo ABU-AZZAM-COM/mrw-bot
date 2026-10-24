@@ -146,10 +146,7 @@ class _AdminGateState extends State<AdminGate> {
 // شاشة الاتصال: فحص التوكن ضد /overview قبل الدخول
 // ==================================================================
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({
-    super.key,
-    required this.onConnected,
-  });
+  const LoginScreen({super.key, required this.onConnected});
 
   final ValueChanged<String> onConnected;
 
@@ -235,7 +232,7 @@ class _LoginScreenState extends State<LoginScreen> {
             child: IconButton(
               tooltip: 'الحقوق والإصدار',
               onPressed: () => showCredits(context),
-              icon: const Icon(Icons.info_outline, color: Colors.white70),
+              icon: const Icon(Icons.info_outline),
             ),
           ),
           Center(
@@ -262,10 +259,14 @@ class _LoginScreenState extends State<LoginScreen> {
                           style: Theme.of(context).textTheme.headlineSmall,
                         ),
                         const SizedBox(height: 4),
-                        const Text(
+                        Text(
                           'منظومة استقبال البلاغات العسكرية',
                           textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white38),
+                          style: TextStyle(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
+                          ),
                         ),
                         const SizedBox(height: 20),
                         TextField(
@@ -303,14 +304,19 @@ class _LoginScreenState extends State<LoginScreen> {
                           label: const Text('الاتصال'),
                         ),
                         const SizedBox(height: 8),
-                        const Text(
+                        Text(
                           'يُحفظ في هذا المتصفح ويُرسل إلى خدمة الإدارة عبر HTTPS فقط',
                           textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white24, fontSize: 12),
+                          style: TextStyle(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
+                            fontSize: 12,
+                          ),
                         ),
                       ],
                     ),
- ),
+                  ),
                 ),
               ),
             ),
@@ -322,7 +328,10 @@ class _LoginScreenState extends State<LoginScreen> {
             child: Text(
               '${AppCredits.footer} · ${AppCredits.versionLabel}',
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white24, fontSize: 11),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 11,
+              ),
             ),
           ),
         ],

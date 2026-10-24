@@ -276,7 +276,18 @@ def _report_caption(r: dict) -> str:
         username=texts.username_display(r["username"]),
         uid=r["user_id"],
         time=utils.fmt_local(r["created_at"]),
-        anchor=utils.link_anchor(r["post_link"]),
+        category=utils.esc(r.get("category") or r.get("violation_type") or "—"),
+        platform=utils.esc(r.get("platform") or "—"),
+        place=utils.esc(
+            r.get("place")
+            or (
+                f"{r['latitude']:.5f}, {r['longitude']:.5f}"
+                if r.get("latitude") is not None and r.get("longitude") is not None
+                else "—"
+            )
+        ),
+        contact=utils.esc(r.get("contact_phone") or "—"),
+        anchor=utils.link_anchor(r["post_link"]) if r.get("post_link") else "—",
         desc=utils.esc(utils.trunc(r["description"], 600)),
         review_line=review_line,
     )

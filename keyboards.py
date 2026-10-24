@@ -122,13 +122,13 @@ def app_kb() -> ReplyKeyboardMarkup | None:
 def main_menu_kb() -> InlineKeyboardMarkup:
     """القائمة الرئيسية الاحترافية: كل شيء بأزرار مضمنة، لا أوامر كتابية.
 
-    بلا زر فتح التطبيق — التطبيق متاح بأمر /app فقط عند الحاجة.
+    بلا زر فتح التطبيق؛ يستخدم المبلّغ الأزرار التفاعلية داخل المحادثة.
     """
     return InlineKeyboardMarkup([
         [_cb("📝 إرسال بلاغ جديد", f"{USR_PREFIX}report")],
         [
             _cb("📊 حالة بلاغي", f"{USR_PREFIX}status"),
-            _cb("ℹ️ عن النظام", f"{USR_PREFIX}about"),
+            _cb("ℹ️ التعليمات", f"{USR_PREFIX}about"),
         ],
         [_cb("📞 تواصل مع الإدارة", f"{USR_PREFIX}contact")],
     ])
@@ -162,6 +162,87 @@ def report_type_kb(
     return InlineKeyboardMarkup(rows)
 
 
+REPORT_CATEGORIES = {
+    "conduct": "🚨 تجاوزات وسلوك فردي",
+    "administrative": "⚖️ مخالفات إدارية ومالية",
+    "social": "📱 مخالفات النشر والتواصل الاجتماعي",
+    "field": "📍 بلاغ ميداني عاجل / أخرى",
+}
+
+SOCIAL_PLATFORM_LABELS = {
+    "facebook": "فيسبوك",
+    "instagram_tiktok": "إنستغرام / تيك توك",
+    "whatsapp": "واتساب",
+    "telegram": "تيليجرام",
+    "other": "منصة أخرى",
+}
+
+
+def report_category_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [_cb(label, f"{USR_PREFIX}category:{key}")]
+            for key, label in REPORT_CATEGORIES.items()
+        ]
+        + [[_cb("❌ إلغاء", f"{USR_PREFIX}cancel")]]
+    )
+
+
+def social_platform_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [_cb(label, f"{USR_PREFIX}platform:{key}")]
+            for key, label in SOCIAL_PLATFORM_LABELS.items()
+        ]
+        + [[_cb("❌ إلغاء", f"{USR_PREFIX}cancel")]]
+    )
+
+
+def optional_step_kb(step: str) -> InlineKeyboardMarkup:
+    labels = {
+        "photo": "⏭️ تخطي وإكمال البلاغ",
+        "link": "⏭️ لا أملك رابطًا",
+        "location": "⏭️ تخطي الموقع",
+        "contact": "⏭️ تخطي بيانات التواصل",
+    }
+    if step not in labels:
+        raise ValueError(f"Unknown optional report step: {step}")
+    return InlineKeyboardMarkup(
+        [
+            [_cb(labels[step], f"{USR_PREFIX}skip:{step}")],
+            [_cb("❌ إلغاء", f"{USR_PREFIX}cancel")],
+        ]
+    )
+
+
+def contact_request_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(text=texts.SHARE_CONTACT, request_contact=True)],
+            [KeyboardButton(text="⏭️ تخطي")],
+            [KeyboardButton(text=CANCEL_TEXT)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def location_request_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(text="📍 مشاركة الموقع", request_location=True)],
+            [KeyboardButton(text="⏭️ تخطي")],
+            [KeyboardButton(text=CANCEL_TEXT)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def cancel_inline_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[_cb("❌ إلغاء", f"{USR_PREFIX}cancel")]])
+
+
 def confirm_report_kb() -> InlineKeyboardMarkup:
     """أزرار تأكيد الإرسال النهائي أو الإلغاء."""
     return InlineKeyboardMarkup([
@@ -189,12 +270,16 @@ def my_reports_kb(items: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def report_open_kb() -> InlineKeyboardMarkup:
+def report_open_kb(report_id: int, followup_requested: bool = False) -> InlineKeyboardMarkup:
     """أزرار بطاقة بلاغ مفرد في «بلاغاتي»: عودة للقائمة أو للقائمة الرئيسية."""
-    return InlineKeyboardMarkup([
+    rows = []
+    if followup_requested:
+        rows.append([_cb("📩 إرسال المعلومات المطلوبة", f"{USR_PREFIX}followup:{report_id}")])
+    rows.extend([
         [_cb("⬅️ عودة إلى بلاغاتي", f"{USR_PREFIX}status")],
         [_cb("🏠 القائمة الرئيسية", f"{USR_PREFIX}menu")],
     ])
+    return InlineKeyboardMarkup(rows)
 
 
 # ------------------------------------------------------------------

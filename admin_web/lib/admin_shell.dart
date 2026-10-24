@@ -130,7 +130,7 @@ class _MainShellState extends State<MainShell> {
                       ),
                       const Text(
                         'منظومة المخالفات العسكرية',
-                        style: TextStyle(color: Colors.white54, fontSize: 11),
+                        style: TextStyle(fontSize: 11),
                       ),
                     ],
                   ),
@@ -178,10 +178,7 @@ class _MainShellState extends State<MainShell> {
                 color: Theme.of(context).dividerColor,
               ),
               const SizedBox(width: 14),
-              const Text(
-                'مركز التحكم الموحد',
-                style: TextStyle(color: Colors.white38, fontSize: 12),
-              ),
+              const Text('مركز التحكم الموحد', style: TextStyle(fontSize: 12)),
             ],
           ],
         ),

@@ -76,9 +76,15 @@ class _BlockedPageState extends State<BlockedPage> {
 
     setState(() => _busyUserId = uid);
     try {
-      await widget.api.post('/api/admin/users/$uid/unblock', {});
+      final result = await widget.api.post('/api/admin/users/$uid/unblock', {});
       if (!mounted) return;
-      toast(context, 'تم رفع الحجب عن المستخدم $uid');
+      toast(
+        context,
+        result['notified'] == true
+            ? 'تم رفع الحجب وإشعار المستخدم $uid'
+            : 'تم رفع الحجب، لكن تعذّر إرسال إشعار للمستخدم $uid',
+        error: result['notified'] != true,
+      );
       await _load();
     } catch (e) {
       if (mounted) toast(context, errMsg(e), error: true);
@@ -151,7 +157,9 @@ class _BlockedPageState extends State<BlockedPage> {
                   children: [
                     Text(
                       '$_total حجب سارٍ',
-                      style: const TextStyle(color: Colors.white54),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                     IconButton(
                       tooltip: 'تحديث القائمة',
@@ -189,7 +197,9 @@ class _BlockedPageState extends State<BlockedPage> {
               ),
               Text(
                 'الصفحة ${_page + 1} من $pages',
-                style: const TextStyle(color: Colors.white54),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               IconButton(
                 tooltip: 'الصفحة السابقة',

@@ -319,6 +319,24 @@ async def _send_block_notice(user_id: int, kind: str, reason: str, db) -> bool:
     return await _on_bot_loop(_sender)
 
 
+async def _send_unblock_notice(user_id: int) -> bool:
+    async def _sender():
+        bot, loop = _bot_runtime()
+        if bot is None:
+            return False
+        try:
+            await bot.send_message(
+                chat_id=int(user_id),
+                text="✅ تم رفع الحظر عن حسابك. يمكنك استخدام البوت وتقديم البلاغات من جديد.",
+            )
+            return True
+        except Exception:
+            logger.info("تعذر إرسال إشعار رفع الحظر للمستخدم", exc_info=True)
+            return False
+
+    return await _on_bot_loop(_sender)
+
+
 def _status_text(r: dict[str, Any], new_status: str, note_extra: str) -> str:
     """نص إشعار الحالة (صيغة HTML مثل نصوص لوحة تيليغرام نفسها)."""
     import admin as admin_mod  # noqa: PLC0415
@@ -400,6 +418,10 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "auto_freeze_paused_until": await guards.auto_freeze_pause_until(db),
             "bot_ready": await _bot_ready(),
             "workflow": await db.workflow_counts(),
+            "users": {
+                "total": await db.total_users(),
+                "blocked": await db.blocked_users_count(),
+            },
         })
 
     # ------------------------------------------------------------
@@ -715,11 +737,19 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if refuse:
             return refuse
         db = db_of()
+        previous_block = await db.get_block(uid) or {}
         await db.clear_block(uid)
+        notified = await _send_unblock_notice(uid)
+        previous_reason = str(previous_block.get("reason") or "غير مسجل")
+        previous_until = str(previous_block.get("frozen_until") or "غير محجوب")
         await db.audit(
-            _admin_actor(request), "user_unblocked", str(uid), "رفع الحجب من لوحة الإدارة"
+            _admin_actor(request),
+            "user_unblocked",
+            str(uid),
+            f"رفع شامل لقيود المستخدم؛ الحظر السابق: {previous_reason} ({previous_until})"
+            + (" — أُرسل إشعار للمستخدم" if notified else " — تعذر إرسال الإشعار"),
         )
-        return OK
+        return JSONResponse({"ok": True, "notified": notified})
 
     @app.get("/api/admin/blocked-users")
     async def blocked_users(request: Request) -> JSONResponse:
@@ -752,15 +782,37 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if not await db.user_profile(uid):
             return bad("not_found", 404)
         sent = await _send_direct_message(uid, text)
-        await db.audit(
-            0,
-            "user_message",
-            str(uid),
-            f"{'sent' if sent else 'failed'}: {text[:120]}",
-        )
         if not sent:
+            await db.audit(
+                _admin_actor(request), "user_message_failed", str(uid), text[:120]
+            )
             return bad("telegram_send_failed", 502)
+        await db.open_user_conversation(uid)
+        await db.add_user_message(uid, "out", text, _admin_actor(request))
+        await db.audit(
+            _admin_actor(request), "user_message", str(uid), f"sent: {text[:120]}"
+        )
         return JSONResponse({"ok": True, "sent": True})
+
+    @app.get("/api/admin/users/{uid}/messages")
+    async def user_messages(uid: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        try:
+            after_id = max(0, int(request.query_params.get("after_id", "0") or 0))
+            limit = min(int(request.query_params.get("limit", "100") or 100), 200)
+            if limit < 1:
+                return bad("bad_query")
+        except ValueError:
+            return bad("bad_query")
+        db = db_of()
+        if not await db.user_profile(uid):
+            return bad("not_found", 404)
+        return JSONResponse({
+            "ok": True,
+            "items": await db.list_user_messages(uid, after_id, limit),
+        })
 
     # ------------------------------------------------------------
     # 4) سجل التدقيق + التصدير (لتكميل أروقة الالتزام)
@@ -934,18 +986,16 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 
     @app.post("/api/admin/broadcast")
     async def broadcast(request: Request) -> JSONResponse:
-        """تعميم إلى كل من بلغ يوماً (سقف 300 حمايةً من العشوائية)."""
+        """Start a rate-limited background broadcast to every registered subscriber."""
         refuse = _auth(request)
         if refuse:
             return refuse
         body = await _json(request)
-        text = (str(body.get("text") or "").strip())
+        text = str(body.get("text") or "").strip()
         if not 3 <= len(text) <= 1000:
             return bad("text_length")
         db = db_of()
-        ids, overflow = await db.all_user_ids(cap=300)
-        if overflow:
-            return bad("too_many_users")
+        ids, _overflow = await db.all_user_ids()
         if not ids:
             return JSONResponse(
                 {"ok": True, "sent": 0, "failed": 0, "total": 0}
@@ -953,32 +1003,78 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         bot, loop = _bot_runtime()
         if bot is None:
             return bad("bot_not_ready", 503)
+        actor_id = _admin_actor(request)
+        job_id = await db.create_broadcast_job(text, actor_id, len(ids))
+        if job_id is None:
+            return bad("broadcast_in_progress", 409)
 
         async def _send_all():
             sent = failed = 0
             payload = texts.BROADCAST_NOTIF.format(text=utils.esc(text))
-            for uid in ids:
-                try:
-                    await bot.send_message(chat_id=uid, text=payload,
-                                           parse_mode=_parse_html())
-                    sent += 1
-                except Exception:  # noqa: BLE001 — مستخدم حاجب البوت أو غائب
-                    failed += 1
-                await asyncio.sleep(0.08)  # آداب معدل الإرسال في تلغرام
-            return sent, failed
+            try:
+                for index, uid in enumerate(ids, 1):
+                    try:
+                        await bot.send_message(
+                            chat_id=uid, text=payload, parse_mode=_parse_html()
+                        )
+                        sent += 1
+                    except Exception:
+                        failed += 1
+                        logger.debug("Broadcast delivery failed for one recipient")
+                    if index % 20 == 0:
+                        await db.update_broadcast_job(job_id, sent, failed)
+                    await asyncio.sleep(0.08)
+                await db.update_broadcast_job(
+                    job_id, sent, failed, status="completed"
+                )
+                await db.audit(
+                    actor_id,
+                    "broadcast",
+                    "الجميع",
+                    f"أُرسل لـ {sent} وفشل {failed}",
+                )
+            except Exception:
+                logger.exception("Broadcast job %s failed", job_id)
+                await db.update_broadcast_job(job_id, sent, failed, status="failed")
+                await db.audit(
+                    actor_id,
+                    "broadcast_failed",
+                    str(job_id),
+                    f"توقف بعد نجاح {sent} وتعذر {failed}",
+                )
 
-        fut = asyncio.run_coroutine_threadsafe(_send_all(), loop)
+        def _schedule():
+            asyncio.create_task(_send_all())
+
         try:
-            sent, failed = await asyncio.wrap_future(fut)
-        except Exception:  # noqa: BLE001
-            logger.warning("فشل التعميم", exc_info=True)
-            return bad("broadcast_failed", 503)
+            loop.call_soon_threadsafe(_schedule)
+        except RuntimeError:
+            await db.update_broadcast_job(job_id, 0, 0, status="failed")
+            await db.audit(
+                actor_id, "broadcast_failed", str(job_id), "حلقة البوت غير متاحة"
+            )
+            return bad("bot_not_ready", 503)
         await db.audit(
-            _admin_actor(request), "broadcast", "الجميع", f"أُرسل لـ {sent} وفشل {failed}"
+            actor_id, "broadcast_started", str(job_id), f"المستهدفون: {len(ids)}"
         )
-        return JSONResponse(
-            {"ok": True, "sent": sent, "failed": failed, "total": len(ids)}
-        )
+        return JSONResponse({
+            "ok": True,
+            "job_id": job_id,
+            "status": "running",
+            "sent": 0,
+            "failed": 0,
+            "total": len(ids),
+        })
+
+    @app.get("/api/admin/broadcast/{job_id}")
+    async def broadcast_status(job_id: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        job = await db_of().get_broadcast_job(job_id)
+        if not job:
+            return bad("not_found", 404)
+        return JSONResponse({"ok": True, **job})
 
     @app.get("/api/admin/templates")
     async def templates_get(request: Request) -> JSONResponse:

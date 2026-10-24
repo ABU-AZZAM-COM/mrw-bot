@@ -288,7 +288,9 @@ class _ReportsPageState extends State<ReportsPage> {
               ),
               Text(
                 'الصفحة ${_page + 1} — الإجمالي $_total',
-                style: const TextStyle(color: Colors.white54),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               IconButton(
                 onPressed: (_page + 1) * _size >= _total
@@ -313,7 +315,7 @@ class _ReportsPageState extends State<ReportsPage> {
         child: DataTable(
           showCheckboxColumn: false,
           headingRowColor: WidgetStatePropertyAll(
-            const Color(0xFF12221E).withOpacity(0.8),
+            Theme.of(context).colorScheme.surfaceContainerHighest,
           ),
           columns: const [
             DataColumn(label: Text('الرقم')),
@@ -335,7 +337,9 @@ class _ReportsPageState extends State<ReportsPage> {
     final style = kStatusStyles[status];
     return DataRow(
       color: WidgetStatePropertyAll(
-        status == 'جديد' ? const Color(0xFF16261E) : Colors.transparent,
+        status == 'جديد'
+            ? Theme.of(context).colorScheme.surfaceContainerHighest
+            : Colors.transparent,
       ),
       cells: [
         DataCell(
@@ -491,8 +495,8 @@ class _ReportDetailState extends State<_ReportDetail> {
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          decoration: const BoxDecoration(
-            color: Color(0xFF12221E),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
           ),
           child: Row(
@@ -545,13 +549,14 @@ class _ReportDetailState extends State<_ReportDetail> {
   }
 
   Widget _photo(BuildContext context, Map<String, dynamic> r) {
-    final hasFile = r['has_photo'] == true ||
+    final hasFile =
+        r['has_photo'] == true ||
         ((r['photo_file_id'] ?? '') as String).isNotEmpty;
     if (!hasFile) {
       return SizedBox(
         width: 330,
         child: Card(
-          color: const Color(0xFF0D1B16),
+          color: Theme.of(context).cardColor,
           child: const SizedBox(
             height: 210,
             child: Center(child: Text('بلا صورة في هذا البلاغ')),
@@ -562,22 +567,35 @@ class _ReportDetailState extends State<_ReportDetail> {
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 350),
       child: Card(
-        color: const Color(0xFF0D1B16),
+        color: Theme.of(context).cardColor,
         child: Image.network(
           widget.api.photoUrl(widget.rid, bust: '$_bust'),
           fit: BoxFit.contain,
           width: 340,
-          errorBuilder: (_, __, ___) => const SizedBox(
+          errorBuilder: (context, error, stackTrace) => SizedBox(
             height: 210,
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.broken_image_outlined, color: Colors.white24),
+                  Icon(
+                    Icons.broken_image_outlined,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                   SizedBox(height: 8),
                   Text(
-                    'الصورة غير متاحة مؤقتاً',
-                    style: TextStyle(color: Colors.white38),
+                    'تعذّر تحميل الصورة من الخادم. تحقق من توفر الملف أو اتصال Telegram.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => setState(
+                      () => _bust = DateTime.now().millisecondsSinceEpoch,
+                    ),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('إعادة المحاولة'),
                   ),
                 ],
               ),
@@ -615,7 +633,10 @@ class _ReportDetailState extends State<_ReportDetail> {
             Text(
               fmt((r['created_at'] ?? '') as String),
               textDirection: TextDirection.ltr,
-              style: const TextStyle(fontSize: 12, color: Colors.white38),
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
@@ -633,7 +654,7 @@ class _ReportDetailState extends State<_ReportDetail> {
         if ((r['followup_response'] ?? '').toString().isNotEmpty)
           _kv('رد المتبلّغ الإضافي', r['followup_response'] as String),
         if (link.isNotEmpty) ...[
-          const Text('رابط المخالفة:', style: TextStyle(color: Colors.white24)),
+          const Text('رابط المخالفة:'),
           SelectableText(
             link,
             textDirection: TextDirection.ltr,
@@ -641,7 +662,7 @@ class _ReportDetailState extends State<_ReportDetail> {
           ),
         ],
         const SizedBox(height: 8),
-        const Text('وصف البلاغ:', style: TextStyle(color: Colors.white24)),
+        const Text('وصف البلاغ:'),
         SelectableText((r['description'] ?? '—') as String),
       ],
     );
@@ -652,10 +673,7 @@ class _ReportDetailState extends State<_ReportDetail> {
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(
-          width: 110,
-          child: Text(k, style: const TextStyle(color: Colors.white24)),
-        ),
+        SizedBox(width: 110, child: Text(k)),
         Expanded(child: SelectableText(v.isEmpty ? '—' : v)),
       ],
     ),

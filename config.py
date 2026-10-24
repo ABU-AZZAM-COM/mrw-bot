@@ -48,6 +48,7 @@ def _parse_admin_ids(raw: str) -> tuple[int, ...]:
 
 
 ADMIN_IDS: tuple[int, ...] = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+VIRUSTOTAL_API_KEY: str = os.getenv("VIRUSTOTAL_API_KEY", "").strip()
 
 # ------------------------------------------------------------------
 # مجلدات العمل (تُنشأ تلقائيًا)

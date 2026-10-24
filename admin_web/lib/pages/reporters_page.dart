@@ -120,7 +120,9 @@ class _UsersPageState extends State<UsersPage> {
               ),
               Text(
                 'الصفحة ${_page + 1} — الإجمالي $_total',
-                style: const TextStyle(color: Colors.white54),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               IconButton(
                 tooltip: 'الصفحة السابقة',
@@ -149,7 +151,7 @@ class _UsersPageState extends State<UsersPage> {
         child: DataTable(
           showCheckboxColumn: false,
           headingRowColor: WidgetStatePropertyAll(
-            const Color(0xFF12221E).withOpacity(0.8),
+            Theme.of(context).colorScheme.surfaceContainerHighest,
           ),
           columns: const [
             DataColumn(label: Text('المعرف')),
@@ -272,8 +274,8 @@ class _UserCardState extends State<_UserCard> {
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          decoration: const BoxDecoration(
-            color: Color(0xFF12221E),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
           ),
           child: Row(
@@ -322,10 +324,7 @@ class _UserCardState extends State<_UserCard> {
                 ),
                 const SizedBox(height: 6),
                 if (_reports.isEmpty)
-                  const Text(
-                    'لا بلاغات مسجلة',
-                    style: TextStyle(color: Colors.white38),
-                  )
+                  const Text('لا بلاغات مسجلة')
                 else
                   for (final r in _reports.take(40))
                     Padding(
@@ -345,10 +344,7 @@ class _UserCardState extends State<_UserCard> {
                           Text(
                             fmt((r['created_at'] ?? '') as String),
                             textDirection: TextDirection.ltr,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: Colors.white24,
-                            ),
+                            style: const TextStyle(fontSize: 11),
                           ),
                         ],
                       ),
@@ -433,7 +429,12 @@ class _UserCardState extends State<_UserCard> {
       children: [
         SizedBox(
           width: 120,
-          child: Text(k, style: const TextStyle(color: Colors.white24)),
+          child: Text(
+            k,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
         ),
         Expanded(child: SelectableText(v.isEmpty ? '—' : v)),
       ],
@@ -477,9 +478,18 @@ class _UserCardState extends State<_UserCard> {
     );
     if (!ok) return;
     try {
-      await widget.api.post('/api/admin/users/${widget.uid}/unblock', {});
+      final result = await widget.api.post(
+        '/api/admin/users/${widget.uid}/unblock',
+        {},
+      );
       if (!mounted) return;
-      toast(context, 'رُفع الحجب ✅');
+      toast(
+        context,
+        result['notified'] == true
+            ? 'رُفع الحجب وأُشعر المستخدم ✅'
+            : 'رُفع الحجب لكن تعذّر إشعار المستخدم',
+        error: result['notified'] != true,
+      );
       widget.onChanged();
       _fetch();
     } catch (e) {

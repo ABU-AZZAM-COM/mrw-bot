@@ -106,11 +106,18 @@ class _AuditPageState extends State<AuditPage> {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: Row(
             children: [
-              const Icon(Icons.history, size: 18, color: Colors.white38),
+              Icon(
+                Icons.history,
+                size: 18,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
               const SizedBox(width: 8),
               Text(
                 '${_items.length} عملية مسجلة — تحديث تلقائي',
-                style: const TextStyle(color: Colors.white38, fontSize: 13),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 13,
+                ),
               ),
               const Spacer(),
               IconButton(
@@ -122,12 +129,12 @@ class _AuditPageState extends State<AuditPage> {
           ),
         ),
         const Divider(height: 1),
-        Expanded(child: _body()),
+        Expanded(child: _body(context)),
       ],
     );
   }
 
-  Widget _body() {
+  Widget _body(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_err != null) return ErrorView(_err!, () => _load());
     if (_items.isEmpty) return const EmptyView('لا عمليات مسجلة بعد');
@@ -137,7 +144,7 @@ class _AuditPageState extends State<AuditPage> {
         child: DataTable(
           showCheckboxColumn: false,
           headingRowColor: WidgetStatePropertyAll(
-            const Color(0xFF12221E).withOpacity(0.8),
+            Theme.of(context).colorScheme.surfaceContainerHighest,
           ),
           columns: const [
             DataColumn(label: Text('الوقت')),

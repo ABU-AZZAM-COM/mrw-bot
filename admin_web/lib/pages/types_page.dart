@@ -178,7 +178,9 @@ class _TypesPageState extends State<TypesPage> {
                   children: [
                     Text(
                       '${i + 1}.',
-                      style: const TextStyle(color: Colors.white24),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(child: Text(_items[i])),
@@ -206,10 +208,7 @@ class _TypesPageState extends State<TypesPage> {
                   ],
                 ),
               if (_items.isEmpty)
-                const Text(
-                  'لا تصنيفات — أضف 3 على الأقل قبل الحفظ',
-                  style: TextStyle(color: Colors.white38),
-                ),
+                const Text('لا تصنيفات — أضف 3 على الأقل قبل الحفظ'),
             ],
           ),
         ),

@@ -15,7 +15,9 @@ os.environ.setdefault("SAVE_MEDIA_LOCALLY", "0")
 import config  # noqa: E402
 import guards  # noqa: E402
 import image_moderation  # noqa: E402
+import virustotal  # noqa: E402
 from database import Database  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -159,6 +161,59 @@ async def main() -> None:
     v = guards.check_link("ftp://example.com/x")
     check("مخطط غير مسموح يُرفض", not v.allowed, v.code)
 
+    print("\n--- VirusTotal ---")
+    old_vt_key = config.VIRUSTOTAL_API_KEY
+    config.VIRUSTOTAL_API_KEY = "test-key"
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class FakeVirusTotalClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse({"data": {"id": "analysis-clean"}})
+
+        async def get(self, *_args, **_kwargs):
+            return FakeResponse({
+                "data": {
+                    "attributes": {
+                        "status": "completed",
+                        "stats": {"malicious": 0, "suspicious": 0},
+                    }
+                }
+            })
+
+    with patch.object(virustotal.httpx, "AsyncClient", FakeVirusTotalClient):
+        clean_scan = await virustotal.scan_url("https://clean.test/vt-check")
+    check(
+        "VirusTotal accepts completed clean result",
+        clean_scan.status == "completed" and not clean_scan.needs_review,
+        clean_scan.status,
+    )
+
+    config.VIRUSTOTAL_API_KEY = ""
+    missing_key_scan = await virustotal.scan_url("https://missing-key.test/vt-check")
+    check(
+        "VirusTotal missing key routes to review",
+        missing_key_scan.status == "not_configured" and missing_key_scan.needs_review,
+    )
+    config.VIRUSTOTAL_API_KEY = old_vt_key
+
     print("\n--- تطبيع الروابط وكشف التكرار ---")
     a = guards.normalize_link("https://www.example.com/post/1?utm_source=x&id=5")
     b = guards.normalize_link("https://example.com/post/1?id=5")
@@ -187,6 +242,13 @@ async def main() -> None:
     check("المحادثة الخاصة مسموحة", guards.is_private_chat("private"))
     check("المجموعة غير مسموحة", not guards.is_private_chat("group"))
     check("القناة غير مسموحة", not guards.is_private_chat("channel"))
+
+    print("\n--- صلاحيات الأوامر ---")
+    check("السماح بأمر /start للمستخدم العادي", guards.is_public_command_allowed(987654, "/start"))
+    check("السماح بصيغة /start@bot", guards.is_public_command_allowed(987654, "/start@blgh_bot"))
+    check("منع الأوامر الأخرى عن المستخدم العادي", not guards.is_public_command_allowed(987654, "/admin"))
+    check("منع الأمر العشوائي عن المستخدم العادي", not guards.is_public_command_allowed(987654, "/arbitrary"))
+    check("السماح للمشرف بالأوامر", guards.is_public_command_allowed(config.ADMIN_IDS[0], "/arbitrary"))
 
     print("\n--- حد رسائل البوت الصادرة ---")
     limiter = guards.OutgoingLimiter(per_minute=3)
@@ -262,7 +324,7 @@ async def main() -> None:
     print("\n--- قاعدة البيانات: أعمدة التطبيق ---")
     cols = {r["name"] for r in db._conn.execute("PRAGMA table_info(reports)").fetchall()}
     for col in ("violation_type", "place", "latitude", "longitude", "source",
-                "platform", "needs_review", "published"):
+                "platform", "category", "contact_phone", "needs_review", "published"):
         check(f"العمود {col} موجود", col in cols)
 
     report = await db.add_report(
@@ -271,21 +333,31 @@ async def main() -> None:
         description="سيارة سبورت تتجاوز السرعة ليلاً أمام دوار الحريص وتتجاوز الحافلة",
         violation_type="تجاوز السرعة", place="دوار الحريص",
         latitude=36.2, longitude=37.1, source="app", needs_review=1,
+        category="📍 بلاغ ميداني عاجل / أخرى", contact_phone="+963900000000",
     )
     check("حفظ بلاغ من التطبيق", report.get("source") == "app", str(report.get("source")))
     check("نوع المخالفة محفوظ", report.get("violation_type") == "تجاوز السرعة")
     check("الإحداثيات محفوظة", report.get("latitude") == 36.2)
+    check("قسم البلاغ محفوظ", report.get("category") == "📍 بلاغ ميداني عاجل / أخرى")
+    check("رقم التواصل الاختياري محفوظ", report.get("contact_phone") == "+963900000000")
 
     await db.add_fingerprint(report["id"], guards.link_hash("https://t.me/x"),
                              guards.text_hash(report["description"]), None)
+    old_vt_key = config.VIRUSTOTAL_API_KEY
+    config.VIRUSTOTAL_API_KEY = ""
     link_v, substance_v, duplicate_v = await guards.inspect_report_content(
         db, "https://t.me/x", report["description"]
     )
+    config.VIRUSTOTAL_API_KEY = old_vt_key
     check(
         "توحيد فحوص الرابط والوصف والتكرار",
         link_v.allowed and substance_v is not None and substance_v.allowed
         and duplicate_v is not None and duplicate_v.code == "exact_duplicate",
         duplicate_v.code if duplicate_v else "no duplicate verdict",
+    )
+    check(
+        "غياب مفتاح VirusTotal يوسم البلاغ للمراجعة",
+        link_v.extra.get("needs_review") is True,
     )
 
 

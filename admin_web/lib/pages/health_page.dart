@@ -93,10 +93,12 @@ class _HealthPageState extends State<HealthPage> {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'فحوص فعلية عبر API؛ العناصر غير المتاحة لا تُعرض كأنها سليمة.',
-                  style: TextStyle(color: Colors.white54),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
               IconButton(
@@ -111,7 +113,10 @@ class _HealthPageState extends State<HealthPage> {
               padding: const EdgeInsets.only(bottom: 10),
               child: Text(
                 'آخر فحص: ${TimeOfDay.fromDateTime(_checkedAt!).format(context)}',
-                style: const TextStyle(color: Colors.white38, fontSize: 12),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
             ),
           if (_loading && _checks.isEmpty)
@@ -187,14 +192,17 @@ class _HealthPageState extends State<HealthPage> {
             ),
           ),
           const SizedBox(height: 10),
-          const SectionCard(
+          SectionCard(
             'حدود الفحص',
             icon: Icons.info_outline,
             child: Text(
               'تعرض هذه الصفحة ما تؤكده واجهة الإدارة فقط. حالة النسخ السحابي '
               'والتخزين وتفاصيل Telegram تحتاج نقاط فحص مخصصة من الخادم؛ '
               'لن تُخمّن اللوحة حالتها.',
-              style: TextStyle(color: Colors.white70, height: 1.6),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface,
+                height: 1.6,
+              ),
             ),
           ),
         ],
@@ -262,7 +270,7 @@ class _StateTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = unknown
-        ? Colors.white38
+        ? Theme.of(context).colorScheme.onSurfaceVariant
         : ok
         ? const Color(0xFF67D6A6)
         : const Color(0xFFFFD166);

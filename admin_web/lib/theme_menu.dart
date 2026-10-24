@@ -13,7 +13,7 @@ class ThemeMenu extends StatelessWidget {
       builder: (context, current, _) {
         return PopupMenuButton<String>(
           tooltip: 'تغيير الثيم',
-          icon: const Icon(Icons.palette_outlined, color: Colors.white70),
+          icon: const Icon(Icons.palette_outlined),
           onSelected: themeController.select,
           itemBuilder: (context) => [
             for (final name in AdminTheme.names)
@@ -28,7 +28,7 @@ class ThemeMenu extends StatelessWidget {
                       size: 18,
                       color: current == name
                           ? AdminTheme.accent
-                          : Colors.white38,
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                     const SizedBox(width: 8),
                     Text(AdminTheme.labels[name] ?? name),
