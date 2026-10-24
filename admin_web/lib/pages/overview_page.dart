@@ -84,6 +84,9 @@ class _OverviewPageState extends State<OverviewPage> {
         (ov['counts'] ?? <String, dynamic>{}) as Map<String, dynamic>;
     final st = _st;
     final bool emergency = ov['emergency'] == true;
+    final workflow =
+        (ov['workflow'] as Map?)?.cast<String, dynamic>() ??
+        <String, dynamic>{};
     return RefreshIndicator(
       onRefresh: () => _load(),
       child: ListView(
@@ -180,6 +183,24 @@ class _OverviewPageState extends State<OverviewPage> {
                         ? const Color(0xFFE06C75)
                         : const Color(0xFF67D6A6),
                     icon: Icons.emergency_outlined,
+                  ),
+                  StatCard(
+                    title: 'أولوية عاجلة',
+                    value: '${workflow['urgent'] ?? 0}',
+                    color: const Color(0xFFFF6B6B),
+                    icon: Icons.priority_high,
+                  ),
+                  StatCard(
+                    title: 'متابعة متأخرة',
+                    value: '${workflow['overdue'] ?? 0}',
+                    color: const Color(0xFFFFB74D),
+                    icon: Icons.event_busy_outlined,
+                  ),
+                  StatCard(
+                    title: 'غير مسندة',
+                    value: '${workflow['unassigned'] ?? 0}',
+                    color: const Color(0xFF64B5F6),
+                    icon: Icons.assignment_late_outlined,
                   ),
                 ],
               );

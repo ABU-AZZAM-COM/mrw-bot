@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -65,20 +66,94 @@ def token_ok(got: str, expected: str) -> bool:
 
 
 def _auth(request):
-    """يعيد JSONResponse للرفض، أو None للموافقة (يُستدعى من كل نقطة)."""
+    """Authenticate the request and enforce the server-side token role."""
     expected = expected_token()
-    if not expected:
+    configured: list[dict[str, Any]] = []
+    raw = os.getenv("ADMIN_API_TOKENS_JSON", "").strip()
+    if raw:
+        try:
+            records = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.error("ADMIN_API_TOKENS_JSON is not valid JSON")
+            return JSONResponse(
+                {"ok": False, "error": "api_token_configuration_invalid"},
+                status_code=503,
+            )
+        if not isinstance(records, list):
+            return JSONResponse(
+                {"ok": False, "error": "api_token_configuration_invalid"},
+                status_code=503,
+            )
+        for entry in records:
+            if not isinstance(entry, dict):
+                continue
+            token = entry.get("token")
+            role = str(entry.get("role") or "")
+            if not isinstance(token, str) or not token.strip():
+                continue
+            if role not in ("viewer", "reviewer", "operator", "owner"):
+                continue
+            admin_id = entry.get("admin_id", 0)
+            if not isinstance(admin_id, int) or isinstance(admin_id, bool):
+                admin_id = 0
+            configured.append({
+                "token": token.strip(),
+                "role": role,
+                "admin_id": admin_id,
+            })
+    if expected:
+        configured.append({"token": expected, "role": "owner", "admin_id": 0})
+    if not configured:
         return JSONResponse(
             {"ok": False, "error": "api_token_not_configured"}, status_code=503
         )
-    got = (
-        request.headers.get("x-admin-token")
-        or request.query_params.get("token")
-        or ""
+    header_token = request.headers.get("x-admin-token") or ""
+    path = getattr(getattr(request, "url", None), "path", "")
+    query_token = request.query_params.get("token") or ""
+    query_token_allowed = (
+        path.startswith("/api/admin/photo/")
+        or path.startswith("/api/admin/export/")
+        or path == "/api/admin/backup/download"
     )
-    if not token_ok(got, expected):
+    got = header_token or (query_token if query_token_allowed else "")
+    principal = next(
+        (item for item in configured if token_ok(got, item["token"])), None
+    )
+    if principal is None:
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+
+    method = getattr(request, "method", "POST").upper()
+    if path.startswith("/api/admin/export/") or path.startswith("/api/admin/backup/"):
+        permission = "export"
+    elif method in ("GET", "HEAD", "OPTIONS"):
+        permission = "read"
+    elif method == "DELETE" and path.startswith("/api/admin/reports/"):
+        permission = "delete"
+    elif path.endswith(("/status", "/type", "/note", "/reply", "/workflow", "/followup")):
+        permission = "review"
+    elif path.startswith("/api/admin/users/"):
+        permission = "users"
+    else:
+        permission = "operate"
+
+    permissions = {
+        "viewer": {"read"},
+        "reviewer": {"read", "review"},
+        "operator": {"read", "review", "users", "operate", "export"},
+        "owner": {"read", "review", "users", "operate", "export", "delete"},
+    }
+    if permission not in permissions[principal["role"]]:
+        return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
+    try:
+        request.state.admin_role = principal["role"]
+        request.state.admin_id = principal["admin_id"]
+    except AttributeError:
+        pass
     return None
+
+
+def _admin_actor(request) -> int:
+    return int(getattr(getattr(request, "state", None), "admin_id", 0) or 0)
 
 
 # ==================================================================
@@ -205,16 +280,18 @@ async def _send_direct_message(user_id: int, text: str) -> bool:
     return await _on_bot_loop(_sender)
 
 
-async def _send_block_notice(user_id: int, kind: str, reason: str) -> bool:
+async def _send_block_notice(user_id: int, kind: str, reason: str, db) -> bool:
     async def _sender():
         bot, loop = _bot_runtime()
         if bot is None:
             return False
         try:
+            import guards  # noqa: PLC0415
+
             await bot.send_message(
                 chat_id=int(user_id),
-                text=texts.PANEL_BLOCK_NOTIF.format(
-                    kind=utils.esc(kind), reason=utils.esc(reason)
+                text=await guards.render_block_message(
+                    db, "manual_block", {"kind": kind, "reason": reason}
                 ),
                 parse_mode=_parse_html(),
             )
@@ -265,6 +342,18 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
     # ------------------------------------------------------------
     # 0) نظرة عامة
     # ------------------------------------------------------------
+    @app.get("/api/admin/session")
+    async def admin_session(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        role = getattr(request.state, "admin_role", "owner")
+        return JSONResponse({
+            "ok": True,
+            "role": role,
+            "admin_id": _admin_actor(request),
+        })
+
     @app.get("/api/admin/overview")
     async def overview(request: Request) -> JSONResponse:
         refuse = _auth(request)
@@ -278,6 +367,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             )
         )
         emergency = await db.get_state("emergency") == "1"
+        import guards  # noqa: PLC0415
+
         return JSONResponse({
             "ok": True,
             "counts": {
@@ -289,7 +380,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 "last24": last24,
             },
             "emergency": emergency,
+            "auto_freeze_paused_until": await guards.auto_freeze_pause_until(db),
             "bot_ready": await _bot_ready(),
+            "workflow": await db.workflow_counts(),
         })
 
     # ------------------------------------------------------------
@@ -303,10 +396,23 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         db = db_of()
         qp = request.query_params
         try:
+            priority = qp.get("priority") or None
+            if priority and priority not in ("low", "normal", "high", "urgent"):
+                return bad("bad_query")
+            if qp.get("overdue", "false") not in ("true", "false"):
+                return bad("bad_query")
+            if qp.get("unassigned", "false") not in ("true", "false"):
+                return bad("bad_query")
+            if qp.get("unassigned") == "true" and qp.get("assigned_to"):
+                return bad("bad_query")
             rows, total = await db.list_reports_filtered(
                 status=qp.get("status") or None,
                 vtype=qp.get("type") or None,
                 user_id=int(qp["user_id"]) if qp.get("user_id", "").strip() else None,
+                assigned_to=int(qp["assigned_to"]) if qp.get("assigned_to", "").strip() else None,
+                unassigned_only=qp.get("unassigned") == "true",
+                priority=priority,
+                overdue_only=qp.get("overdue") == "true",
                 q=qp.get("q") or None,
                 page=max(0, int(qp.get("page", "0") or 0)),
                 size=min(int(qp.get("size", str(DEFAULT_PAGE_SIZE)) or 20), MAX_PAGE_SIZE),
@@ -327,6 +433,94 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if not r:
             return bad("not_found", 404)
         return JSONResponse({"ok": True, "item": _safe_report(r)})
+
+    @app.put("/api/admin/reports/{rid}/workflow")
+    async def report_workflow(rid: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        db = db_of()
+        report = await db.get_by_id(rid)
+        if not report:
+            return bad("not_found", 404)
+
+        priority = body.get("priority", report.get("priority") or "normal")
+        if priority not in ("low", "normal", "high", "urgent"):
+            return bad("bad_priority")
+
+        assigned_to = report.get("assigned_to")
+        if "assigned_to" in body:
+            raw_assignee = body["assigned_to"]
+            if raw_assignee is None or raw_assignee == "":
+                assigned_to = None
+            else:
+                try:
+                    assigned_to = int(raw_assignee)
+                except (TypeError, ValueError):
+                    return bad("bad_assignee")
+                import config  # noqa: PLC0415
+                if assigned_to not in config.ADMIN_IDS:
+                    return bad("unknown_assignee")
+
+        due_at = report.get("due_at")
+        if "due_at" in body:
+            raw_due = body["due_at"]
+            if raw_due is None or raw_due == "":
+                due_at = None
+            elif not isinstance(raw_due, str):
+                return bad("bad_due_at")
+            else:
+                try:
+                    parsed_due = datetime.fromisoformat(raw_due.replace("Z", "+00:00"))
+                    if parsed_due.tzinfo is None:
+                        return bad("due_at_timezone_required")
+                    due_at = parsed_due.astimezone(timezone.utc).isoformat(timespec="seconds")
+                except ValueError:
+                    return bad("bad_due_at")
+
+        ok = await db.update_report_workflow(rid, priority, assigned_to, due_at)
+        if not ok:
+            return bad("not_found", 404)
+        await db.audit(
+            _admin_actor(request), "report_workflow_changed", str(rid),
+            f"priority={priority}; assigned_to={assigned_to}; due_at={due_at}",
+        )
+        return JSONResponse({
+            "ok": True,
+            "priority": priority,
+            "assigned_to": assigned_to,
+            "due_at": due_at,
+        })
+
+    @app.post("/api/admin/reports/{rid}/followup")
+    async def request_report_followup(rid: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        note = str(body.get("note") or "").strip()
+        if not 3 <= len(note) <= MAX_TEXT:
+            return bad("note_length")
+        db = db_of()
+        report = await db.get_by_id(rid)
+        if not report:
+            return bad("not_found", 404)
+        if report.get("status") in (STATUS_APPROVED, STATUS_REJECTED):
+            return bad("report_closed", 409)
+        sent = await _send_direct_message(
+            int(report["user_id"]),
+            f"نحتاج إلى معلومات إضافية بخصوص البلاغ {report.get('seq') or rid}:\n\n"
+            f"{note}\n\nأرسل المعلومات باستخدام الأمر:\n"
+            f"/reply {report.get('seq') or rid} نص المعلومات الإضافية",
+        )
+        if not sent:
+            return bad("telegram_send_failed", 502)
+        await db.set_followup_request(rid, note)
+        await db.audit(
+            _admin_actor(request), "report_followup_requested", str(rid), note[:MAX_TEXT]
+        )
+        return JSONResponse({"ok": True, "sent": True})
 
     # ------------------------------------------------------------
     # 2) إجراءات البلاغ: الحالة/التصنيف/الملاحظة/الرد/الحذف
@@ -350,13 +544,13 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if not r:
             return bad("not_found", 404)
 
-        ok = await db.update_status(rid, new_status, 0)  # 0 = لوحة الإدارة
+        ok = await db.update_status(rid, new_status, _admin_actor(request))
         if not ok:
             return bad("not_found", 404)
         audit_details = f"{new_status} (لوحة الإدارة)"
         if new_status == STATUS_REJECTED:
             audit_details += f" — سبب الرفض: {reason}"
-        await db.audit(0, "status_changed", str(rid),
+        await db.audit(_admin_actor(request), "status_changed", str(rid),
                        audit_details)
 
         # الإشعار: الرفض بسبب = دائمًا؛ غيره = مرة واحدة لكل حالة (نفس دفتر تيليغرام)
@@ -377,7 +571,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("type_too_long")
         ok = await db_of().set_violation_type(rid, vtype)
         if ok:
-            await db_of().audit(0, "type_changed", str(rid), vtype or "(فارغ)")
+            await db_of().audit(
+                _admin_actor(request), "type_changed", str(rid), vtype or "(فارغ)"
+            )
         return OK if ok else bad("not_found", 404)
 
     @app.post("/api/admin/reports/{rid}/note")
@@ -389,7 +585,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         note = (str(body.get("note") or "").strip())[:MAX_TEXT] or None
         ok = await db_of().set_admin_note(rid, note)
         if ok:
-            await db_of().audit(0, "note_changed", str(rid), note or "(فارغ)")
+            await db_of().audit(
+                _admin_actor(request), "note_changed", str(rid), note or "(فارغ)"
+            )
         return OK if ok else bad("not_found", 404)
 
     @app.post("/api/admin/reports/{rid}/reply")
@@ -406,7 +604,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if not r:
             return bad("not_found", 404)
         sent = await _send_panel_reply(r, text)
-        await db.audit(0, "panel_reply", str(rid),
+        await db.audit(_admin_actor(request), "panel_reply", str(rid),
                        text[:120] + ("…" if len(text) > 120 else ""))
         if not sent:
             return bad("bot_not_ready", 503)
@@ -426,7 +624,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("must_confirm_seq")
         ok = await db.delete_report(rid)
         if ok:
-            await db.audit(0, "report_deleted", str(r.get("seq") or str(rid)),
+            await db.audit(_admin_actor(request), "report_deleted", str(r.get("seq") or str(rid)),
                            f"المستخدم {r.get('user_id')}")
         return OK if ok else bad("not_found", 404)
 
@@ -488,8 +686,10 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         db = db_of()
         block = await db.get_block(uid) or {}
         await db.save_block(uid, int(block.get("strikes") or 0), until, reason)
-        await db.audit(0, "user_blocked", str(uid), f"{kind} — {reason}")
-        await _send_block_notice(uid, kind, reason)
+        await db.audit(
+            _admin_actor(request), "user_blocked", str(uid), f"{kind} — {reason}"
+        )
+        await _send_block_notice(uid, kind, reason, db)
         return JSONResponse({"ok": True, "frozen_until": until})
 
     @app.post("/api/admin/users/{uid}/unblock")
@@ -499,7 +699,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return refuse
         db = db_of()
         await db.clear_block(uid)
-        await db.audit(0, "user_unblocked", str(uid), "رفع الحجب من لوحة الإدارة")
+        await db.audit(
+            _admin_actor(request), "user_unblocked", str(uid), "رفع الحجب من لوحة الإدارة"
+        )
         return OK
 
     @app.get("/api/admin/blocked-users")
@@ -565,6 +767,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         return JSONResponse({
             "ok": True,
             "vtypes": list(config.VIOLATION_TYPES),
+            "admin_ids": config.ADMIN_IDS,
             "statuses": [STATUS_NEW, STATUS_REVIEW, STATUS_APPROVED, STATUS_REJECTED],
         })
 
@@ -604,7 +807,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if refuse:
             return refuse
         body = await _json(request)
-        on = bool(body.get("on"))
+        on = body.get("on")
+        if not isinstance(on, bool):
+            return bad("bad_setting_value")
         reason = (str(body.get("reason") or "").strip())[:MAX_TEXT]
         if on and not reason:
             return bad("reason_required")
@@ -612,9 +817,91 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 
         db = db_of()
         await guards.set_emergency(
-            db, on, 0, reason or ("استئناف من لوحة الإدارة")
+            db, on, _admin_actor(request), reason or ("استئناف من لوحة الإدارة")
         )
         return JSONResponse({"ok": True, "emergency": on})
+
+    @app.post("/api/admin/system/user-limits")
+    async def user_limits_toggle(request: Request) -> JSONResponse:
+        """Temporarily pause per-user limits; global flood and emergency safety stay active."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        on = body.get("on")
+        if not isinstance(on, bool):
+            return bad("bad_setting_value")
+        reason = (str(body.get("reason") or "").strip())[:MAX_TEXT]
+        db = db_of()
+        import config  # noqa: PLC0415
+        import guards  # noqa: PLC0415
+
+        if on:
+            if not reason:
+                return bad("reason_required")
+            duration = body.get("duration_minutes")
+            if isinstance(duration, bool):
+                return bad("bad_setting_value")
+            try:
+                duration = int(duration)
+            except (TypeError, ValueError):
+                return bad("bad_setting_value")
+            if not (
+                config.USER_LIMITS_PAUSE_MINUTES_MIN
+                <= duration
+                <= config.USER_LIMITS_PAUSE_MINUTES_MAX
+            ):
+                return bad("setting_out_of_range")
+            until = await guards.set_user_limits_pause(
+                db, duration, _admin_actor(request), reason
+            )
+            return JSONResponse({"ok": True, "paused": True, "paused_until": until})
+
+        await guards.resume_user_limits(db, _admin_actor(request), reason)
+        return JSONResponse({"ok": True, "paused": False, "paused_until": None})
+
+    @app.post("/api/admin/system/auto-freeze")
+    async def auto_freeze_toggle(request: Request) -> JSONResponse:
+        """Pause automatic user freezes for a bounded period; rate limits remain active."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        on = body.get("on")
+        if not isinstance(on, bool):
+            return bad("bad_setting_value")
+        reason = (str(body.get("reason") or "").strip())[:MAX_TEXT]
+        db = db_of()
+        import config  # noqa: PLC0415
+        import guards  # noqa: PLC0415
+
+        if on:
+            if not reason:
+                return bad("reason_required")
+            duration = body.get("duration_minutes")
+            if isinstance(duration, bool):
+                return bad("bad_setting_value")
+            try:
+                duration = int(duration)
+            except (TypeError, ValueError):
+                return bad("bad_setting_value")
+            if not (
+                config.AUTO_FREEZE_PAUSE_MINUTES_MIN
+                <= duration
+                <= config.AUTO_FREEZE_PAUSE_MINUTES_MAX
+            ):
+                return bad("setting_out_of_range")
+            until = await guards.set_auto_freeze_pause(
+                db, duration, _admin_actor(request), reason
+            )
+            return JSONResponse({
+                "ok": True,
+                "paused": True,
+                "paused_until": until,
+            })
+
+        await guards.resume_auto_freeze(db, _admin_actor(request), reason)
+        return JSONResponse({"ok": True, "paused": False, "paused_until": None})
 
     @app.post("/api/admin/broadcast")
     async def broadcast(request: Request) -> JSONResponse:
@@ -657,7 +944,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         except Exception:  # noqa: BLE001
             logger.warning("فشل التعميم", exc_info=True)
             return bad("broadcast_failed", 503)
-        await db.audit(0, "broadcast", "الجميع", f"أُرسل لـ {sent} وفشل {failed}")
+        await db.audit(
+            _admin_actor(request), "broadcast", "الجميع", f"أُرسل لـ {sent} وفشل {failed}"
+        )
         return JSONResponse(
             {"ok": True, "sent": sent, "failed": failed, "total": len(ids)}
         )
@@ -684,7 +973,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if any(not 2 <= len(t) <= 300 for t in clean):
             return bad("item_length")
         await db_of().set_templates(clean)
-        await db_of().audit(0, "templates_changed", "القوالب",
+        await db_of().audit(_admin_actor(request), "templates_changed", "القوالب",
                             f"عدد القوالب: {len(clean)}")
         return JSONResponse({"ok": True, "items": clean})
 
@@ -716,9 +1005,174 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("bad_list")
         db = db_of()
         await db.set_vtypes_override(clean)
-        await db.audit(0, "vtypes_changed", "التصنيفات",
+        await db.audit(_admin_actor(request), "vtypes_changed", "التصنيفات",
                        " / ".join(clean))
         return JSONResponse({"ok": True, "items": clean})
+
+    @app.get("/api/admin/settings")
+    async def runtime_settings_get(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        import config  # noqa: PLC0415
+
+        saved = await db_of().get_runtime_settings()
+        values = {
+            "MAX_DESC_LEN": config.MAX_DESC_LEN,
+            "MAX_PHOTO_MB": config.MAX_PHOTO_MB,
+            "MAX_REPORTS_PER_DAY": config.MAX_REPORTS_PER_DAY,
+            "MAX_REPORTS_PER_MINUTE": config.MAX_REPORTS_PER_MINUTE,
+            "MAX_REPORTS_PER_HOUR": config.MAX_REPORTS_PER_HOUR,
+            "MAX_REPORTS_PER_HOUR_GLOBAL": config.MAX_REPORTS_PER_HOUR_GLOBAL,
+            "MAX_REPORTS_PER_DAY_GLOBAL": config.MAX_REPORTS_PER_DAY_GLOBAL,
+            "FREEZE_AFTER_STRIKES": config.FREEZE_AFTER_STRIKES,
+            "FREEZE_MINUTES_FIRST": config.FREEZE_MINUTES_FIRST,
+            "FREEZE_MINUTES_SECOND": config.FREEZE_MINUTES_SECOND,
+            "FREEZE_MINUTES_REPEAT": config.FREEZE_MINUTES_REPEAT,
+        }
+        for key in values:
+            candidate = saved.get(key)
+            minimum, maximum = config.RUNTIME_SETTING_LIMITS[key]
+            if (
+                isinstance(candidate, int)
+                and not isinstance(candidate, bool)
+                and minimum <= candidate <= maximum
+            ):
+                values[key] = candidate
+        import guards  # noqa: PLC0415
+        db = db_of()
+
+        return JSONResponse({
+            "ok": True,
+            "items": {
+                "max_description_length": values["MAX_DESC_LEN"],
+                "max_photo_mb": values["MAX_PHOTO_MB"],
+                "max_reports_per_day": values["MAX_REPORTS_PER_DAY"],
+                "max_reports_per_minute": values["MAX_REPORTS_PER_MINUTE"],
+                "max_reports_per_hour": values["MAX_REPORTS_PER_HOUR"],
+                "max_reports_per_hour_global": values["MAX_REPORTS_PER_HOUR_GLOBAL"],
+                "max_reports_per_day_global": values["MAX_REPORTS_PER_DAY_GLOBAL"],
+                "freeze_after_strikes": values["FREEZE_AFTER_STRIKES"],
+                "freeze_minutes_first": values["FREEZE_MINUTES_FIRST"],
+                "freeze_minutes_second": values["FREEZE_MINUTES_SECOND"],
+                "freeze_minutes_repeat": values["FREEZE_MINUTES_REPEAT"],
+                "auto_freeze_paused_until": await guards.auto_freeze_pause_until(db),
+                "user_limits_paused_until": await guards.user_limits_pause_until(db),
+                "block_messages": await guards.get_block_messages(db),
+            },
+        })
+
+    @app.put("/api/admin/settings")
+    async def runtime_settings_put(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        import config  # noqa: PLC0415
+
+        body = await _json(request)
+        aliases = {
+            "max_description_length": "MAX_DESC_LEN",
+            "max_photo_mb": "MAX_PHOTO_MB",
+            "max_reports_per_day": "MAX_REPORTS_PER_DAY",
+            "max_reports_per_minute": "MAX_REPORTS_PER_MINUTE",
+            "max_reports_per_hour": "MAX_REPORTS_PER_HOUR",
+            "max_reports_per_hour_global": "MAX_REPORTS_PER_HOUR_GLOBAL",
+            "max_reports_per_day_global": "MAX_REPORTS_PER_DAY_GLOBAL",
+            "freeze_after_strikes": "FREEZE_AFTER_STRIKES",
+            "freeze_minutes_first": "FREEZE_MINUTES_FIRST",
+            "freeze_minutes_second": "FREEZE_MINUTES_SECOND",
+            "freeze_minutes_repeat": "FREEZE_MINUTES_REPEAT",
+        }
+        if not body or set(body) - set(aliases) - {"block_messages"}:
+            return bad("bad_settings")
+        db = db_of()
+        current = await db.get_runtime_settings()
+        clean = {}
+        for public_key, config_key in aliases.items():
+            raw = body.get(public_key, current.get(config_key, getattr(config, config_key)))
+            if isinstance(raw, bool):
+                return bad("bad_setting_value")
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                return bad("bad_setting_value")
+            minimum, maximum = config.RUNTIME_SETTING_LIMITS[config_key]
+            if not minimum <= value <= maximum:
+                return bad("setting_out_of_range")
+            clean[config_key] = value
+        if not (
+            clean["FREEZE_MINUTES_FIRST"]
+            <= clean["FREEZE_MINUTES_SECOND"]
+            <= clean["FREEZE_MINUTES_REPEAT"]
+        ):
+            return bad("freeze_duration_order")
+        import guards  # noqa: PLC0415
+
+        try:
+            current_messages = guards.clean_block_messages(
+                current.get("BLOCK_MESSAGES", texts.BLOCK_MESSAGES)
+            )
+            clean["BLOCK_MESSAGES"] = guards.clean_block_messages(
+                {**current_messages, **body.get("block_messages", {})}
+            )
+        except (TypeError, ValueError) as exc:
+            return bad(str(exc) or "bad_block_messages")
+
+        await db.set_runtime_settings(clean)
+        config.apply_runtime_settings(clean)
+        await db.audit(
+            _admin_actor(request), "runtime_settings_changed", "إعدادات التشغيل",
+            ", ".join(
+                [f"{key}={value}" for key, value in clean.items()
+                 if key != "BLOCK_MESSAGES"]
+                + (["تحديث رسائل الحظر"] if "block_messages" in body else [])
+            ),
+        )
+
+        return JSONResponse({
+            "ok": True,
+            "items": {
+                "max_description_length": clean["MAX_DESC_LEN"],
+                "max_photo_mb": clean["MAX_PHOTO_MB"],
+                "max_reports_per_day": clean["MAX_REPORTS_PER_DAY"],
+                "max_reports_per_minute": clean["MAX_REPORTS_PER_MINUTE"],
+                "max_reports_per_hour": clean["MAX_REPORTS_PER_HOUR"],
+                "max_reports_per_hour_global": clean["MAX_REPORTS_PER_HOUR_GLOBAL"],
+                "max_reports_per_day_global": clean["MAX_REPORTS_PER_DAY_GLOBAL"],
+                "freeze_after_strikes": clean["FREEZE_AFTER_STRIKES"],
+                "freeze_minutes_first": clean["FREEZE_MINUTES_FIRST"],
+                "freeze_minutes_second": clean["FREEZE_MINUTES_SECOND"],
+                "freeze_minutes_repeat": clean["FREEZE_MINUTES_REPEAT"],
+                "auto_freeze_paused_until": await guards.auto_freeze_pause_until(db),
+                "user_limits_paused_until": await guards.user_limits_pause_until(db),
+                "block_messages": clean["BLOCK_MESSAGES"],
+            },
+        })
+
+    @app.get("/api/admin/system/health")
+    async def system_health(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        try:
+            total = await db.total()
+            database_ready = db.path.exists()
+            database_error = None
+        except Exception:
+            logger.exception("تعذر فحص قاعدة البيانات")
+            total, database_ready, database_error = 0, False, "database_unavailable"
+        import hub_backup  # noqa: PLC0415
+
+        return JSONResponse({
+            "ok": True,
+            "bot_ready": await _bot_ready(),
+            "database_ready": database_ready,
+            "database_error": database_error,
+            "reports_total": total,
+            "backup_configured": hub_backup.is_configured(),
+            "emergency": await db.get_state("emergency") == "1",
+        })
 
     # ------------------------------------------------------------
     # 6) إحصاءات + نسخ القاعدة
@@ -750,7 +1204,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         p = db.path
         if not p.exists():
             return bad("no_backup", 404)
-        await db.audit(0, "panel_backup_download", p.name,
+        await db.audit(_admin_actor(request), "panel_backup_download", p.name,
                        "تنزيل نسخة قاعدة البيانات")
         fname = "reports-{ts}.db".format(
             ts=datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
@@ -768,7 +1222,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         import hub_backup  # noqa: PLC0415
 
         ok = await asyncio.to_thread(hub_backup.upload_backup, db.path)
-        await db.audit(0, "panel_backup_upload", "dataset",
+        await db.audit(_admin_actor(request), "panel_backup_upload", "dataset",
                        "نجاح" if ok else "غير مُهيأ/فشل")
         return JSONResponse({"ok": True, "uploaded": bool(ok)})
 
@@ -789,7 +1243,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         path = await aio.to_thread(
             exporters.export_excel if fmt == "xlsx" else exporters.export_text, rows
         )
-        await db.audit(0, "panel_export", fmt, f"عدد البلاغات: {len(rows)}")
+        await db.audit(
+            _admin_actor(request), "panel_export", fmt, f"عدد البلاغات: {len(rows)}"
+        )
         return FileResponse(str(path), filename=path.name)
 
 

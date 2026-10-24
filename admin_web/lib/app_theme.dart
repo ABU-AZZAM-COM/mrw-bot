@@ -44,62 +44,123 @@ abstract final class AdminTheme {
     ),
   };
 
-  static ThemeData of(String name) {
-    final palette = _palettes[name] ?? _palettes['forest']!;
-    final scheme = ColorScheme.fromSeed(
-      seedColor: accent,
-      brightness: Brightness.dark,
-      surface: palette.surface,
-    ).copyWith(primary: accent, surface: palette.surface);
+  static ThemeData get dark => build();
 
+  static ThemeData get light => build(mode: ThemeMode.light);
+
+  static ThemeData of(String name) => build(paletteName: name);
+
+  static ThemeData build({
+    ThemeMode mode = ThemeMode.dark,
+    String fontFamily = 'NotoSansArabic',
+    bool compact = false,
+    Color seed = accent,
+    String paletteName = 'forest',
+  }) {
+    final isDark = mode != ThemeMode.light;
+    final palette = _palettes[paletteName] ?? _palettes['forest']!;
+    final background = isDark ? palette.background : const Color(0xFFF2F5F3);
+    final surface = isDark ? palette.surface : const Color(0xFFFFFFFF);
+    final border = isDark ? palette.border : const Color(0xFFD7E0DA);
+    final field = isDark ? palette.field : const Color(0xFFF4F7F5);
+    final scheme = ColorScheme.fromSeed(
+      seedColor: seed,
+      brightness: isDark ? Brightness.dark : Brightness.light,
+      surface: surface,
+    ).copyWith(primary: seed, surface: surface);
     return ThemeData(
       useMaterial3: true,
-      fontFamily: 'NotoSansArabic',
+      fontFamily: fontFamily.isEmpty ? null : fontFamily,
       colorScheme: scheme,
-      scaffoldBackgroundColor: palette.background,
-      cardColor: palette.surface,
-      dividerColor: palette.border,
+      scaffoldBackgroundColor: background,
+      cardColor: surface,
+      dividerColor: border,
+      visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
       appBarTheme: AppBarTheme(
-        backgroundColor: palette.background,
+        backgroundColor: background,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white70),
-        actionsIconTheme: const IconThemeData(color: Colors.white70),
+        iconTheme: IconThemeData(
+          color: isDark ? Colors.white70 : const Color(0xFF36433B),
+        ),
+        actionsIconTheme: IconThemeData(
+          color: isDark ? Colors.white70 : const Color(0xFF36433B),
+        ),
       ),
       navigationRailTheme: NavigationRailThemeData(
-        backgroundColor: palette.surface,
-        indicatorColor: accent.withValues(alpha: 0.16),
-        selectedIconTheme: const IconThemeData(color: accent),
-        selectedLabelTextStyle: const TextStyle(
-          color: accent,
+        backgroundColor: surface,
+        indicatorColor: seed.withValues(alpha: 0.16),
+        selectedIconTheme: IconThemeData(color: seed),
+        selectedLabelTextStyle: TextStyle(
+          color: seed,
           fontWeight: FontWeight.w700,
         ),
       ),
-      drawerTheme: DrawerThemeData(backgroundColor: palette.surface),
+      drawerTheme: DrawerThemeData(backgroundColor: surface),
       snackBarTheme: const SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: palette.field,
+        fillColor: field,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: palette.border),
+          borderSide: BorderSide(color: border),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: palette.border),
+          borderSide: BorderSide(color: border),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: accent, width: 1.4),
+          borderSide: BorderSide(color: seed, width: 1.4),
         ),
       ),
     );
   }
+}
 
-  /// الوضع الافتراضي (يحافظ على المظهر السابق).
-  static ThemeData get dark => of('forest');
+abstract final class AdminPreferences {
+  static const _key = 'mrw_admin_visual_preferences';
+
+  static Map<String, dynamic> load() {
+    try {
+      final raw = web.window.localStorage.getItem(_key);
+      if (raw == null || raw.isEmpty) return _defaults;
+      final parts = raw.split('|');
+      if (parts.length != 5) return _defaults;
+      return {
+        'mode': parts[0],
+        'scale': double.tryParse(parts[1]) ?? 1.0,
+        'font': parts[2],
+        'compact': parts[3] == '1',
+        'seed': int.tryParse(parts[4]) ?? AdminTheme.accent.toARGB32(),
+      };
+    } catch (_) {
+      return _defaults;
+    }
+  }
+
+  static Map<String, dynamic> get _defaults => {
+    'mode': 'dark',
+    'scale': 1.0,
+    'font': 'NotoSansArabic',
+    'compact': false,
+    'seed': AdminTheme.accent.toARGB32(),
+  };
+
+  static void save(Map<String, dynamic> values) {
+    web.window.localStorage.setItem(
+      _key,
+      [
+        values['mode'] ?? 'dark',
+        values['scale'] ?? 1.0,
+        values['font'] ?? 'NotoSansArabic',
+        values['compact'] == true ? '1' : '0',
+        values['seed'] ?? AdminTheme.accent.toARGB32(),
+      ].join('|'),
+    );
+  }
 }
 
 class _Palette {

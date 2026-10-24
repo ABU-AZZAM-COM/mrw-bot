@@ -85,9 +85,14 @@ async def post_init(app) -> None:
     except RuntimeError:  # pragma: no cover
         pass
 
+    runtime_settings = await app.bot_data["db"].get_runtime_settings()
+    config.apply_runtime_settings(runtime_settings)
+
     base_commands = [
         BotCommand("start", "بدء إرسال بلاغ جديد"),
         BotCommand("cancel", "إلغاء العملية الحالية"),
+        BotCommand("reply", "إرسال معلومات إضافية عن بلاغ"),
+        BotCommand("status", "عرض بلاغاتي"),
         BotCommand("chatid", "معرّف هذه المحادثة (للإعداد)"),
     ]
     await app.bot.set_my_commands(base_commands)
@@ -242,6 +247,7 @@ def main() -> None:
     app.add_handler(CommandHandler("chatid", handlers.cmd_chatid))
     app.add_handler(CommandHandler(["help", "start"], handlers.cmd_help))
     app.add_handler(CommandHandler("status", handlers.cmd_status))
+    app.add_handler(CommandHandler("reply", handlers.cmd_reply))
 
     # 5) معالج الأخطاء العام
     app.add_error_handler(handlers.error_handler)

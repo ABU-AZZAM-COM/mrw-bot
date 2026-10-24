@@ -114,7 +114,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ------------------------------------------------------------------
     if await guards.is_emergency(db):
         await update.effective_message.reply_text(
-            texts.EMERGENCY_ON, parse_mode=ParseMode.HTML
+            await guards.render_block_message(db, "emergency"),
+            parse_mode=ParseMode.HTML,
         )
         return ConversationHandler.END
 
@@ -393,7 +394,8 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # الحماية: الإيقاف الطارئ + حدود المعدّل
     if await guards.is_emergency(db):
         await update.effective_message.reply_text(
-            texts.EMERGENCY_ON, parse_mode=ParseMode.HTML
+            await guards.render_block_message(db, "emergency"),
+            parse_mode=ParseMode.HTML,
         )
         return None
 
@@ -642,6 +644,61 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
         reply_markup=my_reports_kb(reports[:MY_REPORTS_MAX]),
     )
+
+
+async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Accept reporter follow-up only for a report awaiting requested information."""
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if message is None or user is None or len(context.args) < 2:
+        if message is not None:
+            await message.reply_text("الاستخدام: /reply رقم_البلاغ المعلومات الإضافية")
+        return
+    if chat is None or chat.type != "private":
+        await message.reply_text("أرسل المعلومات الإضافية في المحادثة الخاصة مع البوت.")
+        return
+
+    report = await _db(context).get_by_seq(context.args[0].strip())
+    if (
+        not report
+        or int(report.get("user_id") or 0) != user.id
+        or not report.get("followup_requested_at")
+    ):
+        await message.reply_text("لا يوجد طلب معلومات مفتوح لهذا البلاغ.")
+        return
+
+    response = " ".join(context.args[1:]).strip()
+    if not 2 <= len(response) <= 2000:
+        await message.reply_text("يجب أن تكون المعلومات بين حرفين و2000 حرف.")
+        return
+
+    db = _db(context)
+    await db.save_followup_response(int(report["id"]), response)
+    await db.audit(
+        user.id, "report_followup_received", str(report["id"]),
+        f"عدد الأحرف: {len(response)}",
+    )
+    delivered = 0
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    f"📩 معلومات إضافية للبلاغ {report.get('seq') or report['id']}\n"
+                    f"المبلّغ: {user.full_name} ({user.id})\n\n{response}"
+                ),
+            )
+            delivered += 1
+        except Exception:
+            logger.warning(
+                "تعذر إيصال معلومات متابعة البلاغ %s للمشرف %s",
+                report["id"], admin_id,
+            )
+    if delivered:
+        await message.reply_text("تم استلام المعلومات وإيصالها إلى الإدارة.")
+    else:
+        await message.reply_text("تم حفظ المعلومات، لكن تعذر إيصالها للمشرفين حاليًا.")
 
 
 # ==================================================================
@@ -988,6 +1045,7 @@ def build_conversation() -> ConversationHandler:
         },
         fallbacks=[
             CommandHandler("cancel", cmd_cancel),
+            CommandHandler("reply", cmd_reply),
             CommandHandler(["start", "report"], cmd_start),
             CommandHandler(["admin", "reports"], exit_to_admin),
             CommandHandler("app", cmd_app),

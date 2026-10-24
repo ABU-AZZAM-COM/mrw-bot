@@ -14,8 +14,26 @@ void main() {
   runApp(const AdminApp());
 }
 
-class AdminApp extends StatelessWidget {
+class AdminApp extends StatefulWidget {
   const AdminApp({super.key});
+
+  @override
+  State<AdminApp> createState() => _AdminAppState();
+}
+
+class _AdminAppState extends State<AdminApp> {
+  late Map<String, dynamic> _preferences;
+
+  @override
+  void initState() {
+    super.initState();
+    _preferences = AdminPreferences.load();
+  }
+
+  void _savePreferences(Map<String, dynamic> values) {
+    setState(() => _preferences = values);
+    AdminPreferences.save(values);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -25,13 +43,39 @@ class AdminApp extends StatelessWidget {
         return MaterialApp(
           title: 'لوحة الإدارة — ${AppCredits.project}',
           debugShowCheckedModeBanner: false,
-          theme: AdminTheme.of(themeName),
+          theme: AdminTheme.build(
+            mode: ThemeMode.light,
+            fontFamily: _preferences['font'] as String,
+            compact: _preferences['compact'] as bool,
+            seed: Color(_preferences['seed'] as int),
+            paletteName: themeName,
+          ),
+          darkTheme: AdminTheme.build(
+            fontFamily: _preferences['font'] as String,
+            compact: _preferences['compact'] as bool,
+            seed: Color(_preferences['seed'] as int),
+            paletteName: themeName,
+          ),
+          themeMode: ThemeMode.values.firstWhere(
+            (value) => value.name == _preferences['mode'],
+            orElse: () => ThemeMode.dark,
+          ),
           // القاعدة: كل الصفحة من اليمين لليسار — أنظمة RTL لا تحتاج إعداداً لكل ويدجت
           builder: (context, child) => Directionality(
             textDirection: TextDirection.rtl,
-            child: child ?? const SizedBox.shrink(),
+            child: MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                textScaler: TextScaler.linear(
+                  (_preferences['scale'] as num).toDouble(),
+                ),
+              ),
+              child: child ?? const SizedBox.shrink(),
+            ),
           ),
-          home: const AdminGate(),
+          home: AdminGate(
+            preferences: _preferences,
+            onPreferencesChanged: _savePreferences,
+          ),
         );
       },
     );
@@ -42,21 +86,28 @@ class AdminApp extends StatelessWidget {
 // بوابة الدخول: توكن من التخزين المحلي أو شاشة الاتصال
 // ==================================================================
 class AdminGate extends StatefulWidget {
-  const AdminGate({super.key});
+  const AdminGate({
+    super.key,
+    required this.preferences,
+    required this.onPreferencesChanged,
+  });
+
+  final Map<String, dynamic> preferences;
+  final ValueChanged<Map<String, dynamic>> onPreferencesChanged;
 
   @override
   State<AdminGate> createState() => _AdminGateState();
 }
 
 class _AdminGateState extends State<AdminGate> {
-  Api? _api;
+  AdminApi? _api;
 
   @override
   void initState() {
     super.initState();
     final t = Api.loadToken();
     if (t != null && t.isNotEmpty) {
-      _api = Api(token: t, onUnauthorized: _logout);
+      _api = Api(token: t, onUnauthorized: _logout, baseUrl: Api.loadBaseUrl());
     }
   }
 
@@ -72,11 +123,22 @@ class _AdminGateState extends State<AdminGate> {
       return LoginScreen(
         onConnected: (t) {
           Api.saveToken(t);
-          setState(() => _api = Api(token: t, onUnauthorized: _logout));
+          setState(
+            () => _api = Api(
+              token: t,
+              onUnauthorized: _logout,
+              baseUrl: Api.loadBaseUrl(),
+            ),
+          );
         },
       );
     }
-    return MainShell(api: api, onLogout: _logout);
+    return MainShell(
+      api: api,
+      onLogout: _logout,
+      preferences: widget.preferences,
+      onPreferencesChanged: widget.onPreferencesChanged,
+    );
   }
 }
 
@@ -84,7 +146,10 @@ class _AdminGateState extends State<AdminGate> {
 // شاشة الاتصال: فحص التوكن ضد /overview قبل الدخول
 // ==================================================================
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.onConnected});
+  const LoginScreen({
+    super.key,
+    required this.onConnected,
+  });
 
   final ValueChanged<String> onConnected;
 
@@ -94,20 +159,53 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _c = TextEditingController();
+  late final TextEditingController _baseUrl;
   bool _busy = false;
   String? _err;
 
+  @override
+  void initState() {
+    super.initState();
+    _baseUrl = TextEditingController(
+      text:
+          Api.loadBaseUrl() ??
+          const String.fromEnvironment(
+            'ADMIN_API_BASE_URL',
+            defaultValue: 'https://mrw-bot.onrender.com',
+          ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    _baseUrl.dispose();
+    super.dispose();
+  }
+
   Future<void> _connect() async {
     final t = _c.text.trim();
+    final base = _baseUrl.text.trim().replaceFirst(RegExp(r'/+$'), '');
     if (t.isEmpty) {
       setState(() => _err = 'أدخل توكن الإدارة');
       return;
     }
+    final parsedBase = Uri.tryParse(base);
+    if (parsedBase == null ||
+        !parsedBase.hasScheme ||
+        (parsedBase.scheme != 'https' && parsedBase.scheme != 'http') ||
+        parsedBase.host.isEmpty) {
+      setState(
+        () => _err = 'أدخل عنوان API صحيحًا يبدأ بـ https:// أو http://',
+      );
+      return;
+    }
+    Api.saveBaseUrl(base);
     setState(() {
       _busy = true;
       _err = null;
     });
-    final probe = Api(token: t, onUnauthorized: null);
+    final probe = Api(token: t, onUnauthorized: null, baseUrl: base);
     try {
       final result = await probe.get('/api/admin/overview');
       if (result['ok'] != true) {
@@ -212,7 +310,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ],
                     ),
-                  ),
+ ),
                 ),
               ),
             ),

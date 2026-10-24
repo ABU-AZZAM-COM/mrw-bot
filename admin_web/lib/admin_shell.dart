@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'api.dart';
 import 'app_credits.dart';
+import 'app_theme.dart';
 import 'pages.dart';
 import 'pages2.dart';
 import 'theme_menu.dart';
@@ -9,10 +10,18 @@ import 'widgets.dart';
 import 'web_api.dart';
 
 class MainShell extends StatefulWidget {
-  const MainShell({super.key, required this.api, required this.onLogout});
+  const MainShell({
+    super.key,
+    required this.api,
+    required this.onLogout,
+    required this.preferences,
+    required this.onPreferencesChanged,
+  });
 
   final AdminApi api;
   final VoidCallback onLogout;
+  final Map<String, dynamic> preferences;
+  final ValueChanged<Map<String, dynamic>> onPreferencesChanged;
 
   @override
   State<MainShell> createState() => _MainShellState();
@@ -20,6 +29,35 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
+  String _roleLabel = 'لوحة الإدارة';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRole();
+  }
+
+  Future<void> _loadRole() async {
+    try {
+      final session = await widget.api.get('/api/admin/session');
+      if (!mounted) return;
+      const roles = {
+        'viewer': 'مشاهدة',
+        'reviewer': 'مراجع',
+        'operator': 'مشغّل',
+        'owner': 'مالك',
+      };
+      setState(() => _roleLabel = roles[session['role']] ?? 'لوحة الإدارة');
+    } on ApiException catch (error) {
+      if (error.status == 404 && mounted) {
+        setState(() => _roleLabel = 'لوحة الإدارة');
+        return;
+      }
+      if (mounted) toast(context, errMsg(error), error: true);
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
 
   static const _destinations = <(String, IconData)>[
     ('نظرة عامة', Icons.dashboard_outlined),
@@ -30,6 +68,9 @@ class _MainShellState extends State<MainShell> {
     ('التصنيفات', Icons.category_outlined),
     ('سجل التدقيق', Icons.history_outlined),
     ('المُقيَّدون', Icons.block_outlined),
+    ('التحليلات', Icons.query_stats_outlined),
+    ('سلامة النظام', Icons.monitor_heart_outlined),
+    ('التفضيلات', Icons.palette_outlined),
   ];
 
   List<Widget> get _pages => [
@@ -41,6 +82,22 @@ class _MainShellState extends State<MainShell> {
     TypesPage(api: widget.api),
     AuditPage(api: widget.api),
     BlockedPage(api: widget.api),
+    AnalyticsPage(api: widget.api),
+    HealthPage(api: widget.api),
+    PreferencesPage(
+      mode: ThemeMode.values.firstWhere(
+        (value) => value.name == widget.preferences['mode'],
+        orElse: () => ThemeMode.dark,
+      ),
+      textScale: (widget.preferences['scale'] as num?)?.toDouble() ?? 1,
+      fontFamily: widget.preferences['font'] as String? ?? 'NotoSansArabic',
+      compact: widget.preferences['compact'] == true,
+      seed: Color(
+        (widget.preferences['seed'] as num?)?.toInt() ??
+            AdminTheme.accent.toARGB32(),
+      ),
+      onChanged: widget.onPreferencesChanged,
+    ),
   ];
 
   void _select(int index) {
@@ -130,10 +187,10 @@ class _MainShellState extends State<MainShell> {
         ),
         actions: [
           if (!compact)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
               child: Center(
-                child: StateBadge('لوحة الإدارة', color: Color(0xFF67D6A6)),
+                child: StateBadge(_roleLabel, color: Color(0xFF67D6A6)),
               ),
             ),
           const ThemeMenu(),

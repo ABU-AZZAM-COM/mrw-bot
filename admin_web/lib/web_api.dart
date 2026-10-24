@@ -6,27 +6,46 @@ import 'package:web/web.dart' as web;
 import 'api.dart';
 
 class Api implements AdminApi {
-  Api({required this.token, required this.onUnauthorized});
+  Api({required this.token, required this.onUnauthorized, this.baseUrl});
 
   static const _configuredBase = String.fromEnvironment(
     'ADMIN_API_BASE_URL',
     defaultValue: '',
   );
+  static const String _baseUrlKey = 'mrw_admin_api_base_url';
 
   final String token;
   final void Function()? onUnauthorized;
+  final String? baseUrl;
   final http.Client _client = http.Client();
 
   /// منبع الـ API:
   /// - فارغ (الافتراضي) → نفس منبع الصفحة، وهو الأنسب على Render.
   /// - عنوان صريح → عند تشغيل اللوحة محليًا وربطها بخادم Render.
   String get base {
+    final explicit = (baseUrl ?? loadBaseUrl() ?? '').trim();
+    if (explicit.isNotEmpty) {
+      return explicit.replaceFirst(RegExp(r'/+$'), '');
+    }
     final configured = _configuredBase.trim().replaceFirst(RegExp(r'/+$'), '');
     if (configured.isNotEmpty) return configured;
     return web.window.location.origin;
   }
 
   static const String _tokenKey = 'mrw_admin_token';
+
+  static String? loadBaseUrl() {
+    try {
+      final value = web.window.localStorage.getItem(_baseUrlKey);
+      if (value == null || value.trim().isEmpty) return null;
+      return value.trim();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static void saveBaseUrl(String baseUrl) =>
+      web.window.localStorage.setItem(_baseUrlKey, baseUrl.trim());
 
   static String? loadToken() {
     try {
@@ -81,6 +100,9 @@ class Api implements AdminApi {
     if (response.statusCode == 401) {
       onUnauthorized?.call();
       throw ApiException(401, 'unauthorized');
+    }
+    if (response.statusCode == 404) {
+      throw ApiException(404, 'service_not_found');
     }
     if (response.statusCode >= 400) {
       throw ApiException(

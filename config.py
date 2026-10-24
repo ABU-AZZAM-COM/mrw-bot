@@ -76,17 +76,41 @@ LOCAL_UTC_OFFSET: float = float(os.getenv("LOCAL_UTC_OFFSET", "3") or 3)
 # حدود زمنية سريعة لكل مبلّغ (تمنع الإغراق والسبام)
 MAX_REPORTS_PER_MINUTE: int = int(os.getenv("MAX_REPORTS_PER_MINUTE", "2"))
 MAX_REPORTS_PER_HOUR: int = int(os.getenv("MAX_REPORTS_PER_HOUR", "5"))
-
-# حدود عامة للنظام كله (لو تجاوزها الجميع = إغراق أو هجوم → إيقاف تلقائي)
 MAX_REPORTS_PER_HOUR_GLOBAL: int = int(os.getenv("MAX_REPORTS_PER_HOUR_GLOBAL", "60"))
 MAX_REPORTS_PER_DAY_GLOBAL: int = int(os.getenv("MAX_REPORTS_PER_DAY_GLOBAL", "300"))
-
-# مدة التجميد التصاعدي عند تجاوز الحدود (بالدقائق)
+FREEZE_AFTER_STRIKES: int = int(os.getenv("FREEZE_AFTER_STRIKES", "1"))
 FREEZE_MINUTES_FIRST: int = int(os.getenv("FREEZE_MINUTES_FIRST", "60"))
 FREEZE_MINUTES_SECOND: int = int(os.getenv("FREEZE_MINUTES_SECOND", "1440"))
+FREEZE_MINUTES_REPEAT: int = int(os.getenv("FREEZE_MINUTES_REPEAT", "8640"))
+AUTO_FREEZE_PAUSE_MINUTES_MIN = 5
+AUTO_FREEZE_PAUSE_MINUTES_MAX = 1440
+USER_LIMITS_PAUSE_MINUTES_MIN = 5
+USER_LIMITS_PAUSE_MINUTES_MAX = 1440
 
 # حدود المحتوى: الحد الأدنى من Substance في الوصف (لرفض البلاغات الفارغة)
 MIN_DESC_LEN: int = int(os.getenv("MIN_DESC_LEN", "40"))
+RUNTIME_SETTING_LIMITS: dict[str, tuple[int, int]] = {
+    "MAX_DESC_LEN": (200, 4000),
+    "MAX_PHOTO_MB": (1, 20),
+    "MAX_REPORTS_PER_DAY": (1, 100),
+    "MAX_REPORTS_PER_MINUTE": (1, 10),
+    "MAX_REPORTS_PER_HOUR": (1, 100),
+    "MAX_REPORTS_PER_HOUR_GLOBAL": (10, 10000),
+    "MAX_REPORTS_PER_DAY_GLOBAL": (100, 100000),
+    "FREEZE_AFTER_STRIKES": (1, 10),
+    "FREEZE_MINUTES_FIRST": (1, 10080),
+    "FREEZE_MINUTES_SECOND": (1, 43200),
+    "FREEZE_MINUTES_REPEAT": (1, 43200),
+}
+
+
+def apply_runtime_settings(values: dict) -> None:
+    """Apply validated, database-backed operational limits to this process."""
+    for name, (minimum, maximum) in RUNTIME_SETTING_LIMITS.items():
+        value = values.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            if minimum <= value <= maximum:
+                globals()[name] = value
 MIN_DESC_WORDS: int = int(os.getenv("MIN_DESC_WORDS", "6"))
 
 # تشابه النص لكشف البلاغات المكررة/الكيدية (0..1)

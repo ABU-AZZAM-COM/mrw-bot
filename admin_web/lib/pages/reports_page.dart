@@ -5,6 +5,13 @@ import '../widgets.dart';
 import 'overview_page.dart' show fmt, kStatusOrder, kStatusStyles;
 import 'shared_dialogs.dart';
 
+String priorityLabel(String value) => switch (value) {
+  'low' => 'منخفضة',
+  'high' => 'عالية',
+  'urgent' => 'عاجلة',
+  _ => 'عادية',
+};
+
 class ReportsPage extends StatefulWidget {
   const ReportsPage({super.key, required this.api});
 
@@ -17,11 +24,16 @@ class ReportsPage extends StatefulWidget {
 class _ReportsPageState extends State<ReportsPage> {
   List<Map<String, dynamic>> _items = [];
   List<String> _types = [];
+  List<int> _adminIds = [];
   int _total = 0;
   int _page = 0;
   static const int _size = 25;
   String? _status;
   String? _type;
+  String? _priorityFilter;
+  int? _assignedFilter;
+  bool _overdueOnly = false;
+  bool _unassignedOnly = false;
   final TextEditingController _q = TextEditingController();
   bool _loading = true;
   String? _err;
@@ -49,6 +61,18 @@ class _ReportsPageState extends State<ReportsPage> {
         // قائمة التصنيفات ليست حاكمة
       }
     }
+    try {
+      final meta = await widget.api.get('/api/admin/meta');
+      if (mounted) {
+        setState(() => _adminIds = List<int>.from(meta['admin_ids'] ?? []));
+      }
+    } on ApiException catch (error) {
+      if (error.status != 404 && mounted) {
+        toast(context, errMsg(error), error: true);
+      }
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
     _load();
   }
 
@@ -62,6 +86,10 @@ class _ReportsPageState extends State<ReportsPage> {
       'size': '$_size',
       if (_status != null) 'status': _status!,
       if (_type != null) 'type': _type!,
+      if (_priorityFilter != null) 'priority': _priorityFilter!,
+      if (_assignedFilter != null) 'assigned_to': '$_assignedFilter',
+      if (_unassignedOnly) 'unassigned': 'true',
+      if (_overdueOnly) 'overdue': 'true',
       if (_q.text.trim().isNotEmpty) 'q': _q.text.trim(),
     };
     try {
@@ -113,6 +141,84 @@ class _ReportsPageState extends State<ReportsPage> {
                 onChanged: (v) {
                   setState(() {
                     _status = v;
+                    _page = 0;
+                  });
+                  _load();
+                },
+              ),
+              DropdownButton<int?>(
+                value: _assignedFilter,
+                hint: const Text('كل المشرفين'),
+                underline: const SizedBox(),
+                items: [
+                  const DropdownMenuItem<int?>(
+                    value: null,
+                    child: Text('كل المشرفين'),
+                  ),
+                  for (final id in _adminIds)
+                    DropdownMenuItem<int?>(value: id, child: Text('مشرف $id')),
+                ],
+                onChanged: (value) {
+                  setState(() {
+                    _assignedFilter = value;
+                    if (value != null) _unassignedOnly = false;
+                    _page = 0;
+                  });
+                  _load();
+                },
+              ),
+              DropdownButton<String?>(
+                value: _priorityFilter,
+                hint: const Text('كل الأولويات'),
+                underline: const SizedBox(),
+                items: const [
+                  DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text('كل الأولويات'),
+                  ),
+                  DropdownMenuItem<String?>(
+                    value: 'urgent',
+                    child: Text('عاجلة'),
+                  ),
+                  DropdownMenuItem<String?>(
+                    value: 'high',
+                    child: Text('عالية'),
+                  ),
+                  DropdownMenuItem<String?>(
+                    value: 'normal',
+                    child: Text('عادية'),
+                  ),
+                  DropdownMenuItem<String?>(
+                    value: 'low',
+                    child: Text('منخفضة'),
+                  ),
+                ],
+                onChanged: (value) {
+                  setState(() {
+                    _priorityFilter = value;
+                    _page = 0;
+                  });
+                  _load();
+                },
+              ),
+              FilterChip(
+                label: const Text('متأخرة'),
+                selected: _overdueOnly,
+                onSelected: (value) {
+                  setState(() {
+                    _overdueOnly = value;
+                    _page = 0;
+                  });
+                  _load();
+                },
+              ),
+              FilterChip(
+                label: const Text('غير مسندة'),
+                selected: _unassignedOnly,
+                onSelected: (value) {
+                  setState(() {
+                    _unassignedOnly = value;
+                    if (value) _assignedFilter = null;
                     _page = 0;
                   });
                   _load();
@@ -215,6 +321,7 @@ class _ReportsPageState extends State<ReportsPage> {
             DataColumn(label: Text('الاسم')),
             DataColumn(label: Text('المعرف')),
             DataColumn(label: Text('التصنيف')),
+            DataColumn(label: Text('الأولوية')),
             DataColumn(label: Text('التاريخ')),
           ],
           rows: [for (final r in _items) _row(context, r)],
@@ -259,6 +366,7 @@ class _ReportsPageState extends State<ReportsPage> {
           ),
         ),
         DataCell(Text('${r['violation_type'] ?? '—'}')),
+        DataCell(Text(priorityLabel('${r['priority'] ?? 'normal'}'))),
         DataCell(
           Text(
             fmt((r['created_at'] ?? '') as String),
@@ -321,6 +429,11 @@ class _ReportDetailState extends State<_ReportDetail> {
   int _bust = DateTime.now().millisecondsSinceEpoch;
   final TextEditingController _reply = TextEditingController();
   final TextEditingController _note = TextEditingController();
+  final TextEditingController _followup = TextEditingController();
+  List<int> _adminIds = [];
+  int? _assignedTo;
+  String _priority = 'normal';
+  DateTime? _dueAt;
   String? _typeSel;
 
   @override
@@ -347,12 +460,23 @@ class _ReportDetailState extends State<_ReportDetail> {
     } catch (_) {
       // القوالب إضافة اختيارية
     }
+    List<int> admins = [];
+    try {
+      final meta = await widget.api.get('/api/admin/meta');
+      admins = List<int>.from(meta['admin_ids'] ?? <dynamic>[]);
+    } catch (_) {
+      // المشرفون غير متاحين في مزود API أقدم.
+    }
     if (!mounted) return;
     setState(() {
       _r = item;
       _templates = tpl;
+      _adminIds = admins;
       _typeSel = (item['violation_type'] ?? '') as String?;
       _note.text = (item['admin_note'] ?? '') as String? ?? '';
+      _assignedTo = int.tryParse('${item['assigned_to'] ?? ''}');
+      _priority = (item['priority'] ?? 'normal') as String;
+      _dueAt = DateTime.tryParse('${item['due_at'] ?? ''}');
     });
   }
 
@@ -501,6 +625,12 @@ class _ReportDetailState extends State<_ReportDetail> {
         _kv('الاسناد الذاتي', (r['suggested_type'] ?? '—') as String),
         _kv('التصنيف الحالي', (r['violation_type'] ?? '—') as String),
         _kv('ملاحظة إدارية', (r['admin_note'] ?? '—') as String),
+        _kv('الأولوية', priorityLabel('${r['priority'] ?? 'normal'}')),
+        _kv('المشرف المكلّف', '${r['assigned_to'] ?? 'غير مسند'}'),
+        if ((r['due_at'] ?? '').toString().isNotEmpty)
+          _kv('موعد المتابعة', fmt(r['due_at'] as String)),
+        if ((r['followup_response'] ?? '').toString().isNotEmpty)
+          _kv('رد المتبلّغ الإضافي', r['followup_response'] as String),
         if (link.isNotEmpty) ...[
           const Text('رابط المخالفة:', style: TextStyle(color: Colors.white24)),
           SelectableText(
@@ -537,6 +667,102 @@ class _ReportDetailState extends State<_ReportDetail> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          Text('سير العمل', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(
+                width: 180,
+                child: DropdownButtonFormField<String>(
+                  initialValue: _priority,
+                  decoration: const InputDecoration(
+                    labelText: 'الأولوية',
+                    isDense: true,
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'low', child: Text('منخفضة')),
+                    DropdownMenuItem(value: 'normal', child: Text('عادية')),
+                    DropdownMenuItem(value: 'high', child: Text('عالية')),
+                    DropdownMenuItem(value: 'urgent', child: Text('عاجلة')),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setState(() => _priority = value);
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 220,
+                child: DropdownButtonFormField<int?>(
+                  initialValue: _assignedTo,
+                  decoration: const InputDecoration(
+                    labelText: 'المشرف المكلّف',
+                    isDense: true,
+                  ),
+                  items: [
+                    const DropdownMenuItem<int?>(
+                      value: null,
+                      child: Text('غير مسند'),
+                    ),
+                    if (_assignedTo != null && !_adminIds.contains(_assignedTo))
+                      DropdownMenuItem<int?>(
+                        value: _assignedTo,
+                        child: Text('مشرف سابق ${_assignedTo!}'),
+                      ),
+                    for (final id in _adminIds)
+                      DropdownMenuItem<int?>(
+                        value: id,
+                        child: Text('مشرف $id'),
+                      ),
+                  ],
+                  onChanged: (value) => setState(() => _assignedTo = value),
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: _chooseDueAt,
+                icon: const Icon(Icons.event_outlined),
+                label: Text(
+                  _dueAt == null
+                      ? 'تحديد موعد'
+                      : fmt(_dueAt!.toIso8601String()),
+                ),
+              ),
+              if (_dueAt != null)
+                IconButton(
+                  tooltip: 'مسح الموعد',
+                  onPressed: () => setState(() => _dueAt = null),
+                  icon: const Icon(Icons.event_busy_outlined),
+                ),
+              FilledButton.tonalIcon(
+                onPressed: _saveWorkflow,
+                icon: const Icon(Icons.save_outlined),
+                label: const Text('حفظ سير العمل'),
+              ),
+            ],
+          ),
+          const Divider(height: 24),
+          TextField(
+            controller: _followup,
+            maxLines: 2,
+            maxLength: 1000,
+            decoration: const InputDecoration(
+              labelText: 'طلب معلومات إضافية من المتبلّغ',
+              hintText:
+                  'يرسل الطلب عبر Telegram، ويستطيع المبلّغ الرد بـ /reply',
+              alignLabelWithHint: true,
+            ),
+          ),
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: OutlinedButton.icon(
+              onPressed: _requestFollowup,
+              icon: const Icon(Icons.help_outline),
+              label: const Text('إرسال طلب معلومات'),
+            ),
+          ),
+          const Divider(height: 22),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -642,6 +868,66 @@ class _ReportDetailState extends State<_ReportDetail> {
         ],
       ),
     );
+  }
+
+  Future<void> _chooseDueAt() async {
+    final now = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: _dueAt ?? now,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 10),
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_dueAt ?? now),
+    );
+    if (time == null || !mounted) return;
+    setState(() {
+      _dueAt = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        time.hour,
+        time.minute,
+      );
+    });
+  }
+
+  Future<void> _saveWorkflow() async {
+    try {
+      await widget.api.put('/api/admin/reports/${widget.rid}/workflow', {
+        'priority': _priority,
+        'assigned_to': _assignedTo,
+        'due_at': _dueAt?.toIso8601String(),
+      });
+      if (!mounted) return;
+      toast(context, 'حُفظ سير العمل ✅');
+      widget.onChanged();
+      _fetch();
+    } catch (e) {
+      if (mounted) toast(context, errMsg(e), error: true);
+    }
+  }
+
+  Future<void> _requestFollowup() async {
+    final note = _followup.text.trim();
+    if (note.length < 3) {
+      toast(context, 'اكتب المعلومات المطلوبة من المتبلّغ', error: true);
+      return;
+    }
+    try {
+      await widget.api.post('/api/admin/reports/${widget.rid}/followup', {
+        'note': note,
+      });
+      if (!mounted) return;
+      setState(() => _followup.clear());
+      toast(context, 'أُرسل طلب المعلومات عبر Telegram ✅');
+      _fetch();
+    } catch (e) {
+      if (mounted) toast(context, errMsg(e), error: true);
+    }
   }
 
   // -------- الإجراءات --------

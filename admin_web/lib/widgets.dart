@@ -38,9 +38,13 @@ class StatCard extends StatelessWidget {
               children: [
                 Icon(icon, color: color, size: 18),
                 const SizedBox(width: 6),
-                Text(
-                  title,
-                  style: TextStyle(color: color, fontWeight: FontWeight.w600),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: color, fontWeight: FontWeight.w600),
+                  ),
                 ),
               ],
             ),
@@ -129,17 +133,35 @@ String errMsg(Object e) {
   if (e is ApiException) {
     switch (e.code) {
       case 'network_error':
-        return 'تعذّر الاتصال بواجهة الإدارة. تحقق من تشغيل space_app.py وإعداد CORS على Render.';
+        return 'تعذّر الاتصال بالخدمة. تحقق من عنوان API واتصال الإنترنت.';
       case 'bad_response':
-        return 'الخدمة لا تعرض واجهة الإدارة المتوقعة. يجب تشغيل space_app.py على Render بدل خادم الصحة فقط.';
+        return 'استجابة الخدمة غير مفهومة. تحقق من أن عنوان API يشير إلى واجهة الإدارة.';
+      case 'service_not_found':
+        return 'المسار غير موجود على هذه الخدمة. قد تكون الخدمة متوقفة أو لا تستضيف API الإدارة.';
       case 'unauthorized':
         return 'التوكن غير مقبول — أعد الاتصال';
+      case 'forbidden':
+        return 'صلاحيات هذا الحساب لا تسمح بهذا الإجراء';
+      case 'api_token_configuration_invalid':
+        return 'إعداد رموز الإدارة غير صالح على الخادم';
       case 'bot_not_ready':
         return 'البوت قيد التشغيل — أعِد المحاولة بعد لحظات';
       case 'telegram_send_failed':
         return 'تعذر تسليم الرسالة عبر Telegram؛ قد يكون المستخدم حظر البوت';
       case 'reason_required':
         return 'سبب الرفض إلزامي — لم تُغيّر حالة البلاغ';
+      case 'report_closed':
+        return 'لا يمكن طلب معلومات إضافية عن بلاغ مغلق';
+      case 'bad_priority':
+      case 'setting_out_of_range':
+        return 'القيمة المختارة خارج الحدود المسموح بها';
+      case 'unknown_assignee':
+        return 'المشرف المحدد غير موجود في إعدادات الخدمة';
+      case 'due_at_timezone_required':
+      case 'bad_due_at':
+        return 'موعد المتابعة غير صالح';
+      case 'note_length':
+        return 'اكتب طلب معلومات من 3 إلى 2000 حرف';
       case 'text_length':
         return 'النص قصيراً جداً أو طويلاً جداً';
       case 'must_confirm_seq':
@@ -153,7 +175,7 @@ String errMsg(Object e) {
       case 'not_found':
         return 'غير موجود (قد يكون محذوفاً)';
       case 'api_token_not_configured':
-        return 'سر الخادم غير مضبوط — راجع الإعداد';
+        return 'لم يُضبط رمز الإدارة على الخدمة بعد';
       default:
         return e.code;
     }

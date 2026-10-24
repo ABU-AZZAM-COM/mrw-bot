@@ -9,7 +9,15 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 Set-Location $root
 
-$version = '2.7.' + (Get-Date -Format 'yyyyMMdd')
+$buildTime = [DateTime]::UtcNow
+$version = '2.7.' + $buildTime.ToString(
+    'yyyyMMdd',
+    [Globalization.CultureInfo]::InvariantCulture
+)
+$releaseDate = $buildTime.ToString(
+    'yyyy-MM-dd',
+    [Globalization.CultureInfo]::InvariantCulture
+)
 $apiBase = if ($env:API_BASE) { $env:API_BASE.TrimEnd('/') } else { '' }
 
 Write-Host "==> الإصدار: $version"
@@ -43,7 +51,7 @@ Get-ChildItem $buildDir -Force | Copy-Item -Destination $distDir -Recurse -Force
 # ملف الإصدار المرافق للوحة
 $meta = [ordered]@{
     version      = $version
-    release_date = (Get-Date -Format 'yyyy-MM-dd')
+    release_date = $releaseDate
     author       = 'ABU-AZZAM-COM / Azzam'
     github       = 'https://github.com/ABU-AZZAM-COM/mrw-bot'
     copyright    = '© 2026 — جميع الحقوق محفوظة'
