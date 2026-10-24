@@ -42,6 +42,12 @@ from telegram.ext import (
 
 logger = logging.getLogger(__name__)
 
+# عند التشغيل المباشر `python main.py` يكون اسم الوحدة __main__، بينما
+# space_app / admin_api يستوردان `main`. نوحّد الاسمين حتى يقرأ الجميع
+# نفس الكائن app ونفس قاعدة البيانات bot_data["db"].
+if __name__ == "__main__":
+    sys.modules.setdefault("main", sys.modules[__name__])
+
 # كائن تطبيق البوت (يُضبط في main) — يستخدمه مسار التطبيق في space_app
 app = None
 

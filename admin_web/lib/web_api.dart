@@ -10,14 +10,21 @@ class Api implements AdminApi {
 
   static const _configuredBase = String.fromEnvironment(
     'ADMIN_API_BASE_URL',
-    defaultValue: 'https://mrw-bot.onrender.com',
+    defaultValue: '',
   );
 
   final String token;
   final void Function()? onUnauthorized;
   final http.Client _client = http.Client();
 
-  String get base => _configuredBase.replaceFirst(RegExp(r'/+$'), '');
+  /// منبع الـ API:
+  /// - فارغ (الافتراضي) → نفس منبع الصفحة، وهو الأنسب على Render.
+  /// - عنوان صريح → عند تشغيل اللوحة محليًا وربطها بخادم Render.
+  String get base {
+    final configured = _configuredBase.trim().replaceFirst(RegExp(r'/+$'), '');
+    if (configured.isNotEmpty) return configured;
+    return web.window.location.origin;
+  }
 
   static const String _tokenKey = 'mrw_admin_token';
 

@@ -3,13 +3,14 @@
 import hashlib
 import hmac
 import json
+import os
 import time
 import urllib.parse
 
 import httpx
 
 BASE = "https://azzam1992-mrw-bot.hf.space"
-TOKEN = "8860507439:AAFvla8GegpsJl5ZNbdhIop5k0GmJyeApYE"
+TOKEN = os.environ.get("BOT_TOKEN", "")
 
 PAYLOAD = {
     "v": 1,

@@ -55,7 +55,7 @@
 $env:HF_TOKEN='hf_...'
 $env:HF_SPACE='azzam1992/mrw-bot'
 .\.venv\Scripts\python.exe deploy\deploy_to_hf.py `
-  --bot-token '8860507439:AAFvla8GegpsJl5ZNbdhIop5k0GmJyeApYE' `
+  --bot-token '<BOT_TOKEN>' `
   --admin-ids '1557513643' `
   --keepalive-url 'https://azzam1992-mrw-bot.hf.space' `
   --mini-app-url 'https://azzam1992-mrw-bot.hf.space/'

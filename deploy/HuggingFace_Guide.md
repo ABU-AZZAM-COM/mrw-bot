@@ -105,7 +105,7 @@ $env:HF_SPACE  = "اسم-المستخدم/mrw-bot"
 
 # 2) شغّل النشر
 .\.venv\Scripts\python.exe deploy\deploy_to_hf.py `
-    --bot-token "8860507439:AAFvla8GegpsJl5ZNbdhIop5k0GmJyeApYE" `
+    --bot-token "<BOT_TOKEN>" `
     --admin-ids "1557513643" `
     --archive-chat-id "-100xxxxxxxxxx" `
     --keepalive-url "https://اسم-المستخدم-mrw-bot.hf.space"
