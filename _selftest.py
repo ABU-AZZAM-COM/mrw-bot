@@ -23,6 +23,128 @@ import admin
 import archive
 import health_server
 import main as main_mod
+import group_image_moderation
+from unittest.mock import AsyncMock, patch
+
+assert not group_image_moderation.parse_scores({
+    "status": "success",
+    "nudity": {"raw": 0.70, "sexual_activity": 0.10},
+}).is_explicit
+assert group_image_moderation.parse_scores({
+    "status": "success",
+    "nudity": {"raw": 0.7001, "sexual_activity": 0.10},
+}).is_explicit
+assert group_image_moderation.parse_scores({
+    "status": "success",
+    "nudity": {"raw": 0.10, "sexual_activity": 0.71},
+}).is_explicit
+
+_sightengine_request = {}
+
+class _SightengineResponse:
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {
+            "status": "success",
+            "nudity": {"raw": 0.2, "sexual_activity": 0.1},
+        }
+
+class _SightengineClient:
+    def __init__(self, **_kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def post(self, url, *, data, files):
+        _sightengine_request.update(
+            url=url,
+            data=data,
+            filename=files["media"][0],
+            content=files["media"][1].read(),
+        )
+        return _SightengineResponse()
+
+_old_sightengine_user = os.environ.get("SIGHTENGINE_API_USER")
+_old_sightengine_secret = os.environ.get("SIGHTENGINE_API_SECRET")
+os.environ["SIGHTENGINE_API_USER"] = "test-user"
+os.environ["SIGHTENGINE_API_SECRET"] = "test-secret"
+with tempfile.TemporaryDirectory(prefix="mrw-sightengine-selftest-") as sightengine_dir:
+    sightengine_image = Path(sightengine_dir) / "test.jpg"
+    sightengine_image.write_bytes(b"api-test-image")
+    with patch.object(group_image_moderation.httpx, "AsyncClient", _SightengineClient):
+        _api_scores = asyncio.run(
+            group_image_moderation.inspect_image(sightengine_image)
+        )
+assert _api_scores.raw == 0.2 and _api_scores.sexual_activity == 0.1
+assert _sightengine_request["url"] == group_image_moderation.SIGHTENGINE_URL
+assert _sightengine_request["data"]["models"] == "nudity-2.0"
+assert _sightengine_request["content"] == b"api-test-image"
+group_temp_paths = []
+
+class _GroupTelegramFile:
+    async def download_to_drive(self, custom_path):
+        group_temp_paths.append(Path(custom_path))
+        Path(custom_path).write_bytes(b"temporary-image")
+
+class _GroupMedia:
+    file_size = 15
+
+    async def get_file(self):
+        return _GroupTelegramFile()
+
+class _GroupMessage:
+    photo = [_GroupMedia()]
+    document = None
+    chat_id = -100123
+    message_id = 456
+    delete = AsyncMock()
+
+class _GroupUser:
+    id = 654321
+    is_bot = False
+
+    def mention_html(self):
+        return f'<a href="tg://user?id={self.id}">member</a>'
+
+_group_message = _GroupMessage()
+_group_bot = SimpleNamespace(
+    ban_chat_member=AsyncMock(),
+    send_message=AsyncMock(),
+)
+_group_update = SimpleNamespace(
+    effective_message=_group_message,
+    effective_user=_GroupUser(),
+)
+with patch.object(
+    group_image_moderation,
+    "inspect_image",
+    new=AsyncMock(return_value=group_image_moderation.NudityScores(0.71, 0.10)),
+):
+    asyncio.run(group_image_moderation.moderate_group_image(
+        _group_update,
+        SimpleNamespace(bot=_group_bot),
+    ))
+assert _group_message.delete.await_count == 1
+_group_bot.ban_chat_member.assert_awaited_once_with(
+    chat_id=-100123, user_id=654321, revoke_messages=True
+)
+assert any(call.kwargs.get("chat_id") == -100123 for call in _group_bot.send_message.await_args_list)
+assert group_temp_paths and all(not path.exists() for path in group_temp_paths)
+if _old_sightengine_user is None:
+    os.environ.pop("SIGHTENGINE_API_USER", None)
+else:
+    os.environ["SIGHTENGINE_API_USER"] = _old_sightengine_user
+if _old_sightengine_secret is None:
+    os.environ.pop("SIGHTENGINE_API_SECRET", None)
+else:
+    os.environ["SIGHTENGINE_API_SECRET"] = _old_sightengine_secret
+print("Sightengine group moderation: threshold, delete, permanent ban, notice, and temp cleanup OK")
 
 _db_test_dir = tempfile.TemporaryDirectory(prefix="mrw-selftest-")
 DB_PATH = Path(_db_test_dir.name) / "test_reports.db"
