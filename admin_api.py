@@ -782,8 +782,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("not_found", 404)
         from pathlib import Path as P  # noqa: PLC0415
 
-        local = P(str(r.get("photo_path") or ""))
-        if local.exists():
+        local_raw = str(r.get("photo_path") or "").strip()
+        local = P(local_raw) if local_raw else None
+        if local is not None and local.is_file():
             return FileResponse(str(local), media_type="image/jpeg")
         file_id = r.get("photo_file_id")
         if not file_id:

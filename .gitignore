@@ -28,3 +28,10 @@ admin_web/.flutter-plugins
 admin_web/.flutter-plugins-dependencies
 admin_web/build_output*
 
+# مخرجات flutter create لمنصات لا نستخدمها (اللوحة تُشغَّل كويب/سطح مكتب)
+admin_web/android/
+admin_web/ios/
+admin_web/linux/
+admin_web/macos/
+admin_web/windows/
+

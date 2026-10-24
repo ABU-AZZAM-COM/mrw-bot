@@ -1,0 +1,38 @@
+# ============================================================
+#  render_keepalive.yml — إبقاء خدمة Render مستيقظة
+# ============================================================
+#  خطة Render المجانية تُنيم الخدمة بعد ~15 دقيقة بلا طلبات HTTP.
+#  هذا المراقب يطلب /health كل 10 دقائق من GitHub Actions (مجاني
+#  للمستودعات العامة)، فيمنع النوم ويُبقي البوت ولوحة الإدارة متاحين.
+# ============================================================
+name: render-keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    name: إبقاء Render نشطًا
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: طلب /health
+        run: |
+          set -u
+          URL="https://mrw-bot.onrender.com/health"
+          for attempt in 1 2 3 4; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 "$URL" || true)
+            echo "المحاولة $attempt — رمز الاستجابة: $code"
+            if [ "$code" = "200" ]; then
+              echo "✅ الخدمة مستيقظة"
+              exit 0
+            fi
+            sleep 25
+          done
+          echo "⚠️ لم تستجب الخدمة بعد 4 محاولات"
+          exit 1

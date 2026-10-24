@@ -17,7 +17,7 @@ r"""
   # 2) شغّل السكربت (يمكن تمرير الأسرار اختياريًا):
   .\.venv\Scripts\python.exe deploy\deploy_to_hf.py `
       --archive-chat-id "-1001234567890" `
-      --bot-token "8860507439:AAFvla8GegpsJl5ZNbdhIop5k0GmJyeApYE" `
+      --bot-token "<BOT_TOKEN>" `
       --admin-ids "1557513643"
 
 ملاحظة مهمة:

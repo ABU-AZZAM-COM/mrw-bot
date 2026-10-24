@@ -219,12 +219,17 @@ def _inject_app_update(user_id: int, payload: dict, tg_user: dict) -> bool:
 def build_app() -> FastAPI:
     """يبني تطبيق الويب: فحص + صفحة حالة + ملفات التطبيق."""
     app = FastAPI(title="نظام بلاغات المخالفات العسكرية", docs_url=None, redoc_url=None)
+    _origins = [
+        origin.strip()
+        for origin in os.getenv(
+            "ADMIN_CORS_ORIGINS",
+            "http://localhost:9000,http://127.0.0.1:9000",
+        ).split(",")
+        if origin.strip()
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:9000",
-            "http://127.0.0.1:9000",
-        ],
+        allow_origins=_origins or ["*"],
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["x-admin-token", "content-type"],
@@ -335,18 +340,26 @@ def build_app() -> FastAPI:
 
     # 5) واجهة التحكم الإدارية (Admin API) — نقاط محمية للمشرف، تُربط قبل
     #    ربط الملفات الثابتة حتى لا تحجبها.
-    admin_api.register(app)
-    logger.info("🛡️ واجهة التحكم الإدارية جاهزة (+ADMIN_API_TOKEN)")
+    admin_enabled = os.getenv("ADMIN_WEB_ENABLED", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+    if admin_enabled:
+        admin_api.register(app)
+        logger.info("🛡️ واجهة التحكم الإدارية جاهزة (+ADMIN_API_TOKEN)")
 
-    # 6) لوحة الإدارة (Flutter وب) على مسار فرعي خاص — قبل جذر التطبيق
-    ADMIN_WEB_DIR = BASE_DIR / "admin_web" / "dist"
-    if ADMIN_WEB_DIR.is_dir():
-        app.mount(
-            "/admin",
-            StaticFiles(directory=str(ADMIN_WEB_DIR), html=True),
-            name="adminweb",
-        )
-        logger.info("🖥️ لوحة الإدارة (Flutter) متاحة على /admin")
+        # 6) لوحة الإدارة (Flutter وب) على مسار فرعي خاص — قبل جذر التطبيق
+        ADMIN_WEB_DIR = BASE_DIR / "admin_web" / "dist"
+        if ADMIN_WEB_DIR.is_dir():
+            app.mount(
+                "/admin",
+                StaticFiles(directory=str(ADMIN_WEB_DIR), html=True),
+                name="adminweb",
+            )
+            logger.info("🖥️ لوحة الإدارة (Flutter) متاحة على /admin")
+        else:
+            logger.warning("⚠️ لم يُعثر على بناء لوحة الإدارة (admin_web/dist)")
+    else:
+        logger.info("لوحة الإدارة معطّلة (ADMIN_WEB_ENABLED=0)")
 
     # 7) تطبيق البلاغ (ملفات ثابتة) — يُربط أخيرًا حتى لا يحجب المسارات الأخرى
     if WEBAPP_DIR.is_dir():
@@ -358,11 +371,30 @@ def build_app() -> FastAPI:
     return app
 
 
+def _wait_for_bot(seconds: float = 60.0) -> bool:
+    """ينتظر جهوزية تطبيق البوت (وقاعدة البيانات) قبل فتح خادم الويب.
+
+    بدون هذا الانتظار قد تصل أول طلبات لوحة الإدارة قبل أن يضبط البوت
+    `main.app` و `bot_data["db"]`، فترد 500 رغم أن كل شيء سليم.
+    """
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        application = getattr(bot_main, "app", None)
+        if application is not None and application.bot_data.get("db") is not None:
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def main() -> None:
     import uvicorn
 
     # تشغيل البوت في الخلفية عند إقلاع المساحة
     threading.Thread(target=_run_bot, daemon=True, name="bot-thread").start()
+    if _wait_for_bot():
+        logger.info("✅ البوت وقاعدة البيانات جاهزان — فتح لوحة الإدارة الآن")
+    else:
+        logger.warning("⚠️ البوت لم يجهز خلال 60 ثانية — سنفتح الخادم على أي حال")
 
     port = int(os.getenv("PORT", "7860") or 7860)
     _zerogpu_startup_report()

@@ -9,3 +9,5 @@ python-dotenv~=1.0
 pandas~=2.2
 openpyxl~=3.1
 huggingface_hub
+fastapi~=0.115
+uvicorn[standard]~=0.34

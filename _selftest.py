@@ -101,7 +101,9 @@ tot = asyncio.run(DB.total())
 assert tot == 2 and counts.get("جديد") == 1 and counts.get("قيد المراجعة") == 1, (counts, tot)
 print("stats OK:", counts, "total =", tot)
 
-n24 = asyncio.run(DB.count_since(utils.utc_now_iso()))
+n24 = asyncio.run(
+    DB.count_since((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat())
+)
 day = asyncio.run(DB.count_since(utils.local_day_start_iso(), user_id=999))
 assert n24 == 2 and day == 2, (n24, day)
 print("count_since OK (24h =", n24, "| today per-user =", day, ")")

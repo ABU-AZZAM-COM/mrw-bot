@@ -10,7 +10,7 @@ class Api implements AdminApi {
 
   static const _configuredBase = String.fromEnvironment(
     'ADMIN_API_BASE_URL',
-    defaultValue: 'https://azzam1992-mrw-bot.hf.space',
+    defaultValue: '',
   );
   static const String _baseUrlKey = 'mrw_admin_api_base_url';
 
@@ -19,9 +19,18 @@ class Api implements AdminApi {
   final String? baseUrl;
   final http.Client _client = http.Client();
 
-  String get base => (baseUrl ?? loadBaseUrl() ?? _configuredBase)
-      .trim()
-      .replaceFirst(RegExp(r'/+$'), '');
+  /// منبع الـ API:
+  /// - فارغ (الافتراضي) → نفس منبع الصفحة، وهو الأنسب على Render.
+  /// - عنوان صريح → عند تشغيل اللوحة محليًا وربطها بخادم Render.
+  String get base {
+    final explicit = (baseUrl ?? loadBaseUrl() ?? '').trim();
+    if (explicit.isNotEmpty) {
+      return explicit.replaceFirst(RegExp(r'/+$'), '');
+    }
+    final configured = _configuredBase.trim().replaceFirst(RegExp(r'/+$'), '');
+    if (configured.isNotEmpty) return configured;
+    return web.window.location.origin;
+  }
 
   static const String _tokenKey = 'mrw_admin_token';
 
