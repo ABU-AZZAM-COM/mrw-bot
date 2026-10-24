@@ -87,6 +87,51 @@ async def main() -> None:
     v = await guards.check_rate_limits(db, 1)
     check("المستخدم المجمَّد يُمنع فورًا", not v.allowed, v.code)
 
+    print("\n--- إيقاف التجميد التلقائي مؤقتًا ---")
+    pause_until = await guards.set_auto_freeze_pause(db, 5, 1557513643, "اختبار")
+    check("الإيقاف المؤقت له موعد انتهاء", bool(pause_until))
+    await db.log_event(2, "report")
+    await db.log_event(2, "report")
+    v = await guards.check_rate_limits(db, 2)
+    check("حد المحاولات يبقى فعالًا أثناء الإيقاف", not v.allowed, v.code)
+    block = await db.get_block(2)
+    check("لا يُنشأ تجميد جديد أثناء الإيقاف", not block.get("frozen_until"))
+    await guards.resume_auto_freeze(db, 1557513643, "اختبار")
+    check("استئناف التجميد يزيل الإيقاف", not await guards.auto_freeze_pause_until(db))
+
+    print("\n--- إيقاف حدود المستخدم مؤقتًا ---")
+    await db.log_event(3, "report")
+    await db.log_event(3, "report")
+    until = await guards.set_user_limits_pause(db, 5, 1557513643, "اختبار")
+    v = await guards.check_rate_limits(db, 3)
+    check("حدود الدقيقة تتوقف ضمن المدة المحددة", v.allowed, v.code)
+    v = await guards.check_daily_limit(db, 3)
+    check("الحد اليومي يتوقف مؤقتًا", v.allowed, v.code)
+    check("موعد انتهاء الإيقاف محفوظ", until == await guards.user_limits_pause_until(db))
+    await guards.resume_user_limits(db, 1557513643, "اختبار")
+    check("استئناف حدود المستخدم يمسح الإيقاف", not await guards.user_limits_pause_until(db))
+
+    from datetime import datetime, timedelta, timezone
+
+    await db.set_state(
+        "user_limits_paused_until",
+        (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+    )
+    check("ينتهي الإيقاف تلقائيًا", not await guards.user_limits_pause_until(db))
+    check("تُمسح الحالة المنتهية", await db.get_state("user_limits_paused_until") is None)
+
+    old_freeze_after = config.FREEZE_AFTER_STRIKES
+    config.FREEZE_AFTER_STRIKES = 2
+    await db.log_event(4, "report")
+    await db.log_event(4, "report")
+    await guards.check_rate_limits(db, 4)
+    block = await db.get_block(4)
+    check("يمكن تأخير التجميد حتى عتبة المخالفات", block.get("strikes") == 1 and not block.get("frozen_until"))
+    await guards._register_strike(db, 4, "اختبار العتبة")
+    check("يُطبق التجميد عند بلوغ العتبة", bool((await db.get_block(4)).get("frozen_until")))
+    config.FREEZE_AFTER_STRIKES = old_freeze_after
+    await db.clear_block(4)
+
     print("\n--- الإيقاف الطارئ ---")
     check("ليس في وضع طارئ", not await guards.is_emergency(db))
     await guards.set_emergency(db, True, 1557513643, "اختبار")
@@ -131,6 +176,13 @@ async def main() -> None:
     v = guards.check_link("https://www.facebook.com/abc")
     check("رابط معروف بلا تنبيه", v.allowed and v.code == "ok", v.code)
     check("المنصة مستخرجة من النتيجة", v.extra.get("platform") == "فيسبوك")
+
+    old_global_day_limit = config.MAX_REPORTS_PER_DAY_GLOBAL
+    config.MAX_REPORTS_PER_DAY_GLOBAL = 1
+    daily_global = await guards.check_daily_limit(db, 10)
+    check("حد الإغراق اليومي العام يوقف الاستقبال", daily_global.code == "global_daily_flood")
+    await db.set_state("emergency", None)
+    config.MAX_REPORTS_PER_DAY_GLOBAL = old_global_day_limit
 
     db.close()
     print("\n" + ("=" * 50))

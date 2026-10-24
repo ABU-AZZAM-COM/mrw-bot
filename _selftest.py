@@ -3,6 +3,8 @@
 (التوكن يُزوَّر عبر متغيرات البيئة خلال الاختبار فقط)
 """
 import os, time, tempfile, asyncio, json
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,6 +51,50 @@ assert ok, "update_status failed"
 r2b = asyncio.run(DB.get_by_id(r2["id"]))
 assert r2b["status"] == "قيد المراجعة" and r2b["reviewed_by"] == 111111111
 print("update_status OK ->", r2b["status"])
+
+workflow_due = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(
+    timespec="seconds"
+)
+assert asyncio.run(
+    DB.update_report_workflow(r1["id"], "urgent", 111111111, workflow_due)
+)
+workflow_report = asyncio.run(DB.get_by_id(r1["id"]))
+assert workflow_report["priority"] == "urgent"
+assert workflow_report["assigned_to"] == 111111111
+assert workflow_report["due_at"] == workflow_due
+assert asyncio.run(DB.workflow_counts()) == {
+    "urgent": 1, "overdue": 1, "unassigned": 1,
+}
+asyncio.run(DB.set_runtime_settings({"MAX_DESC_LEN": 1800}))
+assert asyncio.run(DB.get_runtime_settings()) == {"MAX_DESC_LEN": 1800}
+print("report workflow and persisted runtime settings OK")
+
+legacy_tmp = tempfile.TemporaryDirectory(
+    prefix="mrw-legacy-selftest-", ignore_cleanup_errors=True
+)
+legacy_path = Path(legacy_tmp.name) / "legacy.db"
+with sqlite3.connect(legacy_path) as legacy_conn:
+    legacy_conn.execute(
+        "CREATE TABLE reports (id INTEGER PRIMARY KEY, seq TEXT, user_id INTEGER, "
+        "username TEXT, full_name TEXT, photo_path TEXT NOT NULL, photo_file_id TEXT, "
+        "post_link TEXT NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL, "
+        "created_at TEXT NOT NULL, reviewed_by INTEGER, reviewed_at TEXT, admin_note TEXT, "
+        "violation_type TEXT, place TEXT, latitude REAL, longitude REAL, source TEXT, "
+        "platform TEXT, needs_review INTEGER, published INTEGER)"
+    )
+    legacy_conn.execute(
+        "INSERT INTO reports (id, seq, user_id, photo_path, post_link, description, "
+        "status, created_at) VALUES (1, 'LEGACY-1', 123, '', '', 'قديم', 'جديد', ?)",
+        (utils.utc_now_iso(),),
+    )
+legacy_db = database.Database(legacy_path)
+legacy_report = asyncio.run(legacy_db.get_by_id(1))
+assert legacy_report["seq"] == "LEGACY-1"
+assert legacy_report["priority"] == "normal"
+assert legacy_report["assigned_to"] is None
+legacy_db.close()
+legacy_tmp.cleanup()
+print("legacy database migration preserves existing reports")
 
 counts = asyncio.run(DB.count_by_status())
 tot = asyncio.run(DB.total())
@@ -152,6 +198,29 @@ _os.environ.pop("ADMIN_API_TOKEN")
 assert admin_api.expected_token() == ""
 print("admin_api: حماية التوكن OK")
 
+_os.environ["ADMIN_API_TOKENS_JSON"] = json.dumps([
+    {"token": "reviewer-test-token", "role": "reviewer", "admin_id": 111111111},
+])
+
+class _RoleRequest:
+    headers = {"x-admin-token": "reviewer-test-token"}
+    query_params = {}
+    method = "POST"
+    state = SimpleNamespace()
+
+    def __init__(self, path):
+        self.url = SimpleNamespace(path=path)
+
+review_req = _RoleRequest("/api/admin/reports/1/status")
+assert admin_api._auth(review_req) is None
+assert review_req.state.admin_role == "reviewer"
+assert review_req.state.admin_id == 111111111
+denied_req = _RoleRequest("/api/admin/settings")
+denied = admin_api._auth(denied_req)
+assert denied is not None and denied.status_code == 403
+_os.environ.pop("ADMIN_API_TOKENS_JSON")
+print("admin_api: server-side role authorization OK")
+
 # أزرار رفض البلاغ من إشعار البوت والتفاصيل تطلب السبب.
 notify_callbacks = [
     button.callback_data
@@ -238,6 +307,27 @@ status_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/reports/{rid}/status"
 )
+workflow_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/reports/{rid}/workflow"
+)
+settings_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/settings"
+    and "PUT" in getattr(route, "methods", set())
+)
+auto_freeze_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/system/auto-freeze"
+)
+user_limits_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/system/user-limits"
+)
+followup_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/reports/{rid}/followup"
+)
 message_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/users/{uid}/message"
@@ -263,6 +353,96 @@ assert response.status_code == 400
 assert json.loads(response.body)["error"] == "reason_required"
 assert asyncio.run(pdb.get_by_id(reject_report["id"]))["status"] == database.STATUS_NEW
 
+due_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+workflow_response = asyncio.run(workflow_endpoint(
+    reject_report["id"],
+    _Request({
+        "priority": "high",
+        "assigned_to": 111111111,
+        "due_at": due_at,
+    }),
+))
+assert workflow_response.status_code == 200
+workflow_saved = asyncio.run(pdb.get_by_id(reject_report["id"]))
+assert workflow_saved["priority"] == "high"
+assert workflow_saved["assigned_to"] == 111111111
+
+old_runtime_settings = {
+    name: getattr(config, name) for name in config.RUNTIME_SETTING_LIMITS
+}
+settings_response = asyncio.run(settings_endpoint(
+    _Request({
+        "max_description_length": 1800,
+        "max_reports_per_hour": 7,
+        "max_reports_per_hour_global": 120,
+        "max_reports_per_day_global": 600,
+        "freeze_after_strikes": 2,
+        "freeze_minutes_first": 15,
+        "freeze_minutes_second": 120,
+        "freeze_minutes_repeat": 720,
+        "block_messages": {
+            "frozen": "اختبار حظر: {minutes} دقيقة",
+            "manual_block": "تم تقييد الحساب: {kind} — {reason}",
+        },
+    })
+))
+assert settings_response.status_code == 200
+assert config.MAX_DESC_LEN == 1800
+assert config.MAX_REPORTS_PER_HOUR == 7
+assert config.MAX_REPORTS_PER_HOUR_GLOBAL == 120
+assert config.MAX_REPORTS_PER_DAY_GLOBAL == 600
+assert config.FREEZE_AFTER_STRIKES == 2
+assert config.FREEZE_MINUTES_FIRST == 15
+assert config.FREEZE_MINUTES_SECOND == 120
+assert config.FREEZE_MINUTES_REPEAT == 720
+saved_messages = json.loads(settings_response.body)["items"]["block_messages"]
+assert saved_messages["frozen"] == "اختبار حظر: {minutes} دقيقة"
+assert saved_messages["manual_block"] == "تم تقييد الحساب: {kind} — {reason}"
+bad_message_response = asyncio.run(settings_endpoint(
+    _Request({"block_messages": {"frozen": "تجاوز غير مدعوم {unknown}"}})
+))
+assert bad_message_response.status_code == 400
+bad_order_response = asyncio.run(settings_endpoint(
+    _Request({
+        "freeze_minutes_first": 500,
+        "freeze_minutes_second": 200,
+        "freeze_minutes_repeat": 700,
+    })
+))
+assert bad_order_response.status_code == 400
+config.apply_runtime_settings(old_runtime_settings)
+rendered_message = asyncio.run(
+    handlers.guards.render_block_message(pdb, "frozen", {"minutes": "<12>"})
+)
+assert "&lt;12&gt;" in rendered_message and "<12>" not in rendered_message
+
+invalid_pause = asyncio.run(auto_freeze_endpoint(
+    _Request({"on": True, "duration_minutes": 4, "reason": "اختبار"})
+))
+assert invalid_pause.status_code == 400
+assert asyncio.run(pdb.get_state("auto_freeze_paused_until")) is None
+pause_response = asyncio.run(auto_freeze_endpoint(
+    _Request({"on": True, "duration_minutes": 30, "reason": "اختبار لوحة"})
+))
+assert pause_response.status_code == 200
+assert json.loads(pause_response.body)["paused"] is True
+resume_response = asyncio.run(auto_freeze_endpoint(
+    _Request({"on": False, "reason": "انتهاء الاختبار"})
+))
+assert resume_response.status_code == 200
+assert asyncio.run(pdb.get_state("auto_freeze_paused_until")) is None
+
+limits_pause_response = asyncio.run(user_limits_endpoint(
+    _Request({"on": True, "duration_minutes": 60, "reason": "اختبار لوحة"})
+))
+assert limits_pause_response.status_code == 200
+assert asyncio.run(pdb.get_state("user_limits_paused_until"))
+limits_resume_response = asyncio.run(user_limits_endpoint(
+    _Request({"on": False, "reason": "انتهاء الاختبار"})
+))
+assert limits_resume_response.status_code == 200
+assert asyncio.run(pdb.get_state("user_limits_paused_until")) is None
+
 send_calls = []
 
 async def _fake_send_direct_message(user_id, text):
@@ -271,12 +451,20 @@ async def _fake_send_direct_message(user_id, text):
 
 original_sender = admin_api._send_direct_message
 admin_api._send_direct_message = _fake_send_direct_message
+followup_response = asyncio.run(followup_endpoint(
+    reject_report["id"], _Request({"note": "أرسل تفاصيل إضافية"})
+))
+assert followup_response.status_code == 200
+followup_saved = asyncio.run(pdb.get_by_id(reject_report["id"]))
+assert followup_saved["followup_requested_at"]
+assert len(send_calls) == 1 and "/reply" in send_calls[0][1]
 message_response = asyncio.run(message_endpoint(
     777, _Request({"text": "رسالة اختبار"})
 ))
 assert message_response.status_code == 200
 assert json.loads(message_response.body)["sent"] is True
-assert send_calls == [(777, "رسالة اختبار")]
+assert send_calls[0][0] == 909 and "/reply" in send_calls[0][1]
+assert send_calls[1] == (777, "رسالة اختبار")
 assert any(
     row["action"] == "user_message" and row["target"] == "777"
     for row in asyncio.run(pdb.recent_audit(20))

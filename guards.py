@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import ipaddress
 import logging
 import re
+import string
 import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -27,6 +29,7 @@ from typing import Optional
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 import config
+import texts
 import utils
 
 logger = logging.getLogger(__name__)
@@ -115,6 +118,128 @@ def _since_iso(seconds: int) -> str:
     return moment.isoformat(timespec="seconds")
 
 
+BLOCK_MESSAGE_VARIABLES = {
+    "frozen": {"minutes"},
+    "minute_limit": {"limit"},
+    "hour_limit": {"limit"},
+    "daily_limit": {"limit"},
+    "emergency": set(),
+    "manual_block": {"kind", "reason"},
+}
+
+
+def clean_block_messages(value: object) -> dict[str, str]:
+    """Validate plain-text user notices and their supported placeholders."""
+    defaults = texts.BLOCK_MESSAGES
+    if not isinstance(value, dict):
+        raise ValueError("bad_block_messages")
+    if set(value) - set(defaults):
+        raise ValueError("bad_block_message_key")
+    cleaned = dict(defaults)
+    for key, raw in value.items():
+        if not isinstance(raw, str):
+            raise ValueError("bad_block_message")
+        message = raw.strip()
+        if not message or len(message) > 500:
+            raise ValueError("bad_block_message")
+        try:
+            placeholders = set()
+            for _literal, name, format_spec, conversion in string.Formatter().parse(message):
+                if name is None:
+                    continue
+                if format_spec or conversion:
+                    raise ValueError("bad_block_message_placeholder")
+                placeholders.add(name)
+        except ValueError as exc:
+            raise ValueError("bad_block_message_placeholder") from exc
+        if placeholders - BLOCK_MESSAGE_VARIABLES[key]:
+            raise ValueError("bad_block_message_placeholder")
+        cleaned[key] = message
+    return cleaned
+
+
+async def get_block_messages(db) -> dict[str, str]:
+    """Return saved templates over safe defaults."""
+    saved = await db.get_runtime_settings()
+    value = saved.get("BLOCK_MESSAGES")
+    if not isinstance(value, dict):
+        return dict(texts.BLOCK_MESSAGES)
+    return {
+        key: message if isinstance(message, str) and 0 < len(message) <= 500 else default
+        for key, default in texts.BLOCK_MESSAGES.items()
+        for message in [value.get(key, default)]
+    }
+
+
+async def render_block_message(db, key: str, values: Optional[dict[str, object]] = None) -> str:
+    """Render a configured plain-text notice, escaping it for HTML parse mode."""
+    template = (await get_block_messages(db)).get(key, texts.BLOCK_MESSAGES["emergency"])
+    rendered = html.escape(template)
+    for name, value in (values or {}).items():
+        rendered = rendered.replace("{" + name + "}", html.escape(str(value)))
+    return rendered
+
+
+async def _timed_pause_until(db, state_key: str, expired_action: str) -> Optional[str]:
+    value = await db.get_state(state_key)
+    if not value:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        until = datetime.fromisoformat(value)
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.warning("قيمة انتهاء الإيقاف المؤقت غير صالحة؛ تُمسح (%s)", state_key)
+        await db.set_state(state_key, None)
+        return None
+    if until <= datetime.now(timezone.utc):
+        await db.set_state(state_key, None)
+        await db.audit(None, expired_action, None, "انتهت مدة الإيقاف المؤقت")
+        return None
+    return until.isoformat(timespec="seconds")
+
+
+async def auto_freeze_pause_until(db) -> Optional[str]:
+    """Return an active automatic-freeze pause, clearing it after expiration."""
+    return await _timed_pause_until(
+        db, "auto_freeze_paused_until", "auto_freeze_pause_expired"
+    )
+
+
+async def user_limits_pause_until(db) -> Optional[str]:
+    """Return an active per-user limits pause, clearing it after expiration."""
+    return await _timed_pause_until(
+        db, "user_limits_paused_until", "user_limits_pause_expired"
+    )
+
+
+async def set_user_limits_pause(
+    db, duration_minutes: int, actor_id: Optional[int], reason: str
+) -> str:
+    """Temporarily pause per-user rate caps; system-wide flood protection remains active."""
+    if not config.USER_LIMITS_PAUSE_MINUTES_MIN <= duration_minutes <= config.USER_LIMITS_PAUSE_MINUTES_MAX:
+        raise ValueError("duration_out_of_range")
+    from datetime import datetime, timedelta, timezone
+
+    until = (datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)).isoformat(
+        timespec="seconds"
+    )
+    await db.set_state("user_limits_paused_until", until)
+    await db.audit(
+        actor_id, "user_limits_paused", None,
+        f"{duration_minutes} دقيقة — {reason.strip()[:500]}",
+    )
+    return until
+
+
+async def resume_user_limits(db, actor_id: Optional[int], reason: str = "") -> None:
+    """Resume per-user limits immediately and record the administrative action."""
+    await db.set_state("user_limits_paused_until", None)
+    await db.audit(actor_id, "user_limits_resumed", None, reason.strip()[:500])
+
+
 async def check_rate_limits(db, user_id: int) -> Verdict:
     """يفحص حدود المعدّل لمبلّغ واحد، ويجمّده عند التجاوز المتكرر."""
     block = await db.get_block(user_id)
@@ -134,11 +259,7 @@ async def check_rate_limits(db, user_id: int) -> Verdict:
                 allowed=False,
                 code="frozen",
                 severity="block",
-                message=(
-                    f"⛔ تم إيقاف حسابك مؤقتًا بسبب تكرار المحاولات غير النظامية.\n"
-                    f"المدة المتبقية: {minutes} دقيقة.\n"
-                    f"إذا كان هذا خطأً تواصل مع المشرف."
-                ),
+                message=await render_block_message(db, "frozen", {"minutes": minutes}),
                 extra={"frozen_until": frozen_until},
             )
         # انتهت المدة → مسح التجميد
@@ -154,11 +275,11 @@ async def check_rate_limits(db, user_id: int) -> Verdict:
             allowed=False,
             code="global_flood",
             severity="block",
-            message=(
-                "🛑 تم إيقاف الاستقبال مؤقتًا لتجاوز حد الأمان للنظام ككل.\n"
-                "تم إبلاغ المشرف، وسيعود الاستقبال تلقائيًا."
-            ),
+            message=await render_block_message(db, "emergency"),
         )
+
+    if await user_limits_pause_until(db):
+        return Verdict(allowed=True, code="user_limits_paused")
 
     # حدود المبلّغ: دقيقة ثم ساعة
     in_minute = await db.count_events(_since_iso(60), user_id=user_id)
@@ -168,10 +289,8 @@ async def check_rate_limits(db, user_id: int) -> Verdict:
             allowed=False,
             code="minute_limit",
             severity="warn",
-            message=(
-                "⏱️ يرجى التأنّي — أُرسلت محاولات كثيرة خلال دقيقة واحدة.\n"
-                "الحد المسموح: "
-                f"{config.MAX_REPORTS_PER_MINUTE} بلاغ/دقيقة."
+            message=await render_block_message(
+                db, "minute_limit", {"limit": config.MAX_REPORTS_PER_MINUTE}
             ),
         )
 
@@ -182,26 +301,65 @@ async def check_rate_limits(db, user_id: int) -> Verdict:
             allowed=False,
             code="hour_limit",
             severity="warn",
-            message=(
-                "⏳ تجاوزت الحد الساعي للبلاغات.\n"
-                f"الحد المسموح: {config.MAX_REPORTS_PER_HOUR} بلاغ/ساعة."
+            message=await render_block_message(
+                db, "hour_limit", {"limit": config.MAX_REPORTS_PER_HOUR}
             ),
         )
 
     return Verdict(allowed=True)
 
 
+async def set_auto_freeze_pause(
+    db, duration_minutes: int, actor_id: Optional[int], reason: str
+) -> str:
+    """Temporarily pause automatic freezes while keeping rate caps enforced."""
+    if not (
+        config.AUTO_FREEZE_PAUSE_MINUTES_MIN
+        <= duration_minutes
+        <= config.AUTO_FREEZE_PAUSE_MINUTES_MAX
+    ):
+        raise ValueError("duration_out_of_range")
+    from datetime import datetime, timedelta, timezone
+
+    until = (datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)).isoformat(
+        timespec="seconds"
+    )
+    await db.set_state("auto_freeze_paused_until", until)
+    await db.audit(
+        actor_id,
+        "auto_freeze_paused",
+        None,
+        f"{duration_minutes} دقيقة — {reason.strip()[:500]}",
+    )
+    return until
+
+
+async def resume_auto_freeze(db, actor_id: Optional[int], reason: str = "") -> None:
+    """Resume automatic freezes immediately and record the administrative action."""
+    await db.set_state("auto_freeze_paused_until", None)
+    await db.audit(actor_id, "auto_freeze_resumed", None, reason.strip()[:500])
+
+
 async def _register_strike(db, user_id: int, reason: str) -> int:
     """يسجّل مخالفة ويزيد مدة التجميد تصاعديًا."""
+    if await auto_freeze_pause_until(db):
+        return int((await db.get_block(user_id)).get("strikes") or 0)
     block = await db.get_block(user_id)
     strikes = int(block.get("strikes") or 0) + 1
+    if strikes < config.FREEZE_AFTER_STRIKES:
+        await db.save_block(user_id, strikes, None, reason)
+        await db.audit(None, "user_strike", str(user_id), reason)
+        logger.info("تجاوز المستخدم %s الحدود (%d/%d)", user_id, strikes,
+                    config.FREEZE_AFTER_STRIKES)
+        return strikes
+    freeze_level = strikes - config.FREEZE_AFTER_STRIKES + 1
     minutes = (
         config.FREEZE_MINUTES_FIRST
-        if strikes == 1
-        else config.FREEZE_MINUTES_SECOND * min(strikes - 1, 1)
+        if freeze_level == 1
+        else config.FREEZE_MINUTES_SECOND
     )
-    if strikes > 2:
-        minutes = config.FREEZE_MINUTES_SECOND * 6      # أسبوع
+    if freeze_level > 2:
+        minutes = config.FREEZE_MINUTES_REPEAT
     from datetime import datetime, timedelta, timezone
 
     until = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
@@ -213,15 +371,30 @@ async def _register_strike(db, user_id: int, reason: str) -> int:
 
 async def check_daily_limit(db, user_id: int) -> Verdict:
     """الحد اليومي لكل مبلّغ."""
+    global_used = await db.count_since(utils.local_day_start_iso())
+    if global_used >= config.MAX_REPORTS_PER_DAY_GLOBAL:
+        await db.set_state("emergency", "1")
+        await db.audit(
+            None, "emergency_auto", "global",
+            f"تجاوز الحد اليومي العام: {global_used} محاولة/يوم",
+        )
+        return Verdict(
+            allowed=False,
+            code="global_daily_flood",
+            severity="block",
+            message=await render_block_message(db, "emergency"),
+        )
+    if await user_limits_pause_until(db):
+        return Verdict(allowed=True, code="user_limits_paused")
+
     used = await db.count_since(utils.local_day_start_iso(), user_id=user_id)
     if used >= config.MAX_REPORTS_PER_DAY:
         return Verdict(
             allowed=False,
             code="daily_limit",
             severity="warn",
-            message=(
-                f"📅 بلغت الحد اليومي ({config.MAX_REPORTS_PER_DAY} بلاغ).\n"
-                "يمكنك الإرسال غدًا، أو التواصل مع المشرف إن كان بلاغك مستثنى."
+            message=await render_block_message(
+                db, "daily_limit", {"limit": config.MAX_REPORTS_PER_DAY}
             ),
         )
     return Verdict(allowed=True)

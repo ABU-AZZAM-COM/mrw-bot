@@ -4,7 +4,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 set "WEB_DIR=%~dp0admin_web\build\web"
-set "API_URL=https://mrw-bot.onrender.com"
+if not defined ADMIN_API_BASE_URL set "ADMIN_API_BASE_URL=https://azzam1992-mrw-bot.hf.space"
 set "FLUTTER_CMD="
 set "PYTHONW_CMD="
 
@@ -21,9 +21,9 @@ if not defined PYTHONW_CMD (
     exit /b 1
 )
 
-echo [1/3] بناء لوحة الإدارة للاتصال بالبوت على Render...
+echo [1/3] بناء لوحة الإدارة (يمكن تغيير API عبر ADMIN_API_BASE_URL)...
 pushd admin_web
-call "%FLUTTER_CMD%" build web --release --base-href=/ --dart-define=ADMIN_API_BASE_URL=%API_URL%
+call "%FLUTTER_CMD%" build web --release --base-href=/ --dart-define=ADMIN_API_BASE_URL=%ADMIN_API_BASE_URL%
 if errorlevel 1 (
     popd
     echo [خطأ] فشل بناء لوحة الإدارة.
@@ -40,6 +40,7 @@ timeout /t 2 /nobreak >nul
 start "" "http://127.0.0.1:9000/"
 
 echo.
-echo تعمل واجهة اللوحة محليًا، بينما تبقى API والبوت على خدمة Render.
+echo يمكنك اختيار "دخول تدريبي محلي" لعرض بيانات وهمية دون اتصال بالخدمة.
+echo عنوان API الافتراضي: %ADMIN_API_BASE_URL%
 echo لا تغلق نافذة خادم الملفات إذا أردت إبقاء اللوحة متاحة.
 endlocal

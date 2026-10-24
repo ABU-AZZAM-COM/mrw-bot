@@ -54,7 +54,13 @@ CREATE TABLE IF NOT EXISTS reports (
     source       TEXT NOT NULL DEFAULT 'chat',      -- مصدر البلاغ: chat | app
     platform     TEXT,                              -- منصة التواصل التي نُشر عليها
     needs_review INTEGER NOT NULL DEFAULT 0,        -- يحتاج مراجعة (تكرار/شك)
-    published    INTEGER NOT NULL DEFAULT 0         -- هل نُشر في القناة الرسمية
+    published    INTEGER NOT NULL DEFAULT 0,        -- هل نُشر في القناة الرسمية
+    priority     TEXT NOT NULL DEFAULT 'normal',
+    assigned_to  INTEGER,
+    due_at       TEXT,
+    followup_requested_at TEXT,
+    followup_note TEXT,
+    followup_response TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
@@ -150,6 +156,12 @@ class Database:
         ("platform", "TEXT"),
         ("needs_review", "INTEGER NOT NULL DEFAULT 0"),
         ("published", "INTEGER NOT NULL DEFAULT 0"),
+        ("priority", "TEXT NOT NULL DEFAULT 'normal'"),
+        ("assigned_to", "INTEGER"),
+        ("due_at", "TEXT"),
+        ("followup_requested_at", "TEXT"),
+        ("followup_note", "TEXT"),
+        ("followup_response", "TEXT"),
     )
 
     def _migrate(self) -> None:
@@ -161,6 +173,10 @@ class Database:
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE reports ADD COLUMN {column} {ddl}")
                 print(f"🗄️ تمت إضافة العمود الجديد: {column}")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reports_workflow "
+            "ON reports(status, priority, due_at, assigned_to)"
+        )
         self._conn.commit()
 
     # --------------------------------------------------------------
@@ -551,6 +567,10 @@ class Database:
         status: Optional[str] = None,
         vtype: Optional[str] = None,
         user_id: Optional[int] = None,
+        assigned_to: Optional[int] = None,
+        unassigned_only: bool = False,
+        priority: Optional[str] = None,
+        overdue_only: bool = False,
         q: Optional[str] = None,
         page: int = 0,
         size: int = 20,
@@ -566,6 +586,21 @@ class Database:
         if user_id:
             clauses.append("user_id = ?")
             params.append(int(user_id))
+        if assigned_to is not None:
+            clauses.append("assigned_to = ?")
+            params.append(int(assigned_to))
+        if unassigned_only:
+            clauses.append("assigned_to IS NULL")
+        if priority:
+            clauses.append("priority = ?")
+            params.append(priority)
+        if overdue_only:
+            clauses.append("due_at IS NOT NULL AND due_at < ? AND status NOT IN (?, ?)")
+            params.extend([
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                STATUS_APPROVED,
+                STATUS_REJECTED,
+            ])
         if q:
             like = f"%{q.strip()}%"
             clauses.append(
@@ -582,13 +617,111 @@ class Database:
             ).fetchone()[0]
             rows = self._conn.execute(
                 f"SELECT * FROM reports{where}"
-                " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                " ORDER BY CASE priority WHEN 'urgent' THEN 0 "
+                "WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, "
+                "CASE WHEN due_at IS NULL THEN 1 ELSE 0 END, due_at ASC, "
+                "created_at DESC, id DESC LIMIT ? OFFSET ?",
                 [*params, size, page * size],
             ).fetchall()
             return [_row_to_dict(r) for r in rows], int(total)
 
     async def list_reports_filtered(self, **kwargs):
         return await asyncio.to_thread(self._list_reports_filtered, **kwargs)
+
+    def _workflow_counts(self) -> dict[str, int]:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT "
+                "SUM(CASE WHEN priority = 'urgent' AND status NOT IN (?, ?) "
+                "THEN 1 ELSE 0 END) AS urgent, "
+                "SUM(CASE WHEN due_at IS NOT NULL AND due_at < ? "
+                "AND status NOT IN (?, ?) THEN 1 ELSE 0 END) AS overdue, "
+                "SUM(CASE WHEN assigned_to IS NULL AND status NOT IN (?, ?) "
+                "THEN 1 ELSE 0 END) AS unassigned "
+                "FROM reports",
+                (
+                    STATUS_APPROVED, STATUS_REJECTED, now,
+                    STATUS_APPROVED, STATUS_REJECTED,
+                    STATUS_APPROVED, STATUS_REJECTED,
+                ),
+            ).fetchone()
+            return {key: int(row[key] or 0) for key in ("urgent", "overdue", "unassigned")}
+
+    async def workflow_counts(self) -> dict[str, int]:
+        return await asyncio.to_thread(self._workflow_counts)
+
+    def _update_report_workflow(
+        self, rid: int, priority: str, assigned_to: Optional[int],
+        due_at: Optional[str],
+    ) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE reports SET priority = ?, assigned_to = ?, due_at = ? WHERE id = ?",
+                (priority, assigned_to, due_at, rid),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    async def update_report_workflow(
+        self, rid: int, priority: str, assigned_to: Optional[int],
+        due_at: Optional[str],
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._update_report_workflow, rid, priority, assigned_to, due_at
+        )
+
+    def _set_followup_request(self, rid: int, note: Optional[str]) -> bool:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE reports SET followup_requested_at = ?, followup_note = ?, "
+                "followup_response = NULL WHERE id = ?",
+                (now, note, rid),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    async def set_followup_request(self, rid: int, note: Optional[str]) -> bool:
+        return await asyncio.to_thread(self._set_followup_request, rid, note)
+
+    def _clear_followup_request(self, rid: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE reports SET followup_requested_at = NULL, followup_note = NULL WHERE id = ?",
+                (rid,),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    async def clear_followup_request(self, rid: int) -> bool:
+        return await asyncio.to_thread(self._clear_followup_request, rid)
+
+    def _save_followup_response(self, rid: int, response: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE reports SET followup_response = ?, "
+                "followup_requested_at = NULL, followup_note = NULL WHERE id = ?",
+                (response, rid),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    async def save_followup_response(self, rid: int, response: str) -> bool:
+        return await asyncio.to_thread(self._save_followup_response, rid, response)
+
+    async def get_runtime_settings(self) -> dict[str, Any]:
+        raw = await self.get_state("runtime_settings")
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            parsed = {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    async def set_runtime_settings(self, settings: dict[str, Any]) -> None:
+        await self.set_state(
+            "runtime_settings", json.dumps(settings, ensure_ascii=False, sort_keys=True)
+        )
 
     def _set_violation_type(self, rid: int, vtype: Optional[str]) -> bool:
         with self._lock:
