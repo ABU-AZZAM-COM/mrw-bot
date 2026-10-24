@@ -1,32 +1,59 @@
 {
-  "session_id": "2026-10-23-restore-point",
-  "saved_at": "2026-10-23T08:52:24+03:00",
+  "session_id": "2026-10-24-restore-point",
+  "saved_at": "2026-10-24T00:00:00+03:00",
   "workspace": "D:\\Users\\AZZAM\\Desktop\\مشروع المخالفات العسكرية",
   "project": "mrw-bot / @blgh_bot",
   "status": {
-    "hf_space": "azzam1992/mrw-bot",
-    "hf_state": "RUNNING",
-    "hardware": "zero-a10g",
-    "public": true,
-    "health": "ok",
-    "mini_app": "https://azzam1992-mrw-bot.hf.space/",
+    "hosting": "Render (free plan) — هو المضيف الأساسي الآن",
+    "render_service": "srv-dbdrqr4ipgvc739tuhg0",
+    "public_url": "https://mrw-bot.onrender.com",
+    "start_command": "python main.py",
     "bot": "@blgh_bot",
-    "polling": true,
-    "pending_updates": 0,
-    "webhook_url": ""
+    "bot_ready": true,
+    "emergency": false,
+    "health_200": true,
+    "admin_panel": "https://mrw-bot.onrender.com/admin/",
+    "admin_panel_200": true,
+    "panel_version": "2.7.20261024",
+    "panel_author": "ABU-AZZAM-COM / Azzam",
+    "repo": "https://github.com/ABU-AZZAM-COM/mrw-bot",
+    "repo_visibility": "public",
+    "deploy_branch": "origin/main auto-deploy",
+    "last_commit": "10170e7",
+    "keepalive_workflow": ".github/workflows/render_keepalive.yml (كل 10 دقائق — مثبت ويعمل)",
+    "backup_branch": "backup/live-api-ours — نسخة عمل موازية للرجوع إليها"
   },
-  "local_changes_uncommitted": true,
-  "key_files_modified": ["handlers.py", "keyboards.py", "main.py", "space_app.py", "texts.py", "webapp/app.js"],
-  "stability": {
-    "published": "stable (pre-inline-menu)",
-    "local": "draft with 4 known bugs (not published)"
-  },
-  "known_bugs_local": [
-    {"file": "texts.py", "issue": "missing ASK_PHOTO"},
-    {"file": "database.py", "issue": "missing last_report_by_user"},
-    {"file": "handlers.py", "issue": "missing InlineKeyboardMarkup import"},
-    {"file": "handlers.py/main.py", "issue": "usr:report not entry point in ConversationHandler"}
+  "verified_live_2026_10_24": [
+    "GET /health → 200 {status:ok, bot:@blgh_bot}",
+    "GET /admin/ → 200",
+    "GET /admin/version.json → 200 (2.7.20261024)",
+    "GET /api/admin/overview (بالتوكن) → 200 {bot_ready:true, emergency:false}",
+    "GET /api/admin/photo/2 → 200 image/jpeg (~180KB)",
+    "تسجيل دخول حي من متصفح + داشبورد ببيانات حقيقية (بلاغ MRV-2026-0002)"
   ],
-  "docs": ["جلسة_العمل.md", "تعريف_النظام.md", "آلية_العمل.md", "README.md"],
-  "next_step": "awaiting user approval: fix 4 bugs OR redesign UI as requested"
+  "major_completed_this_session": [
+    "الربط الحي كامل: البوت على Render + اللوحة تُخدم على /admin/ من نفس الخادم (space_app.py)",
+    "إصلاح سباق الإقلاع: space_app._wait_for_bot() ينتظر جهوزية البوت قبل فتح المنفذ",
+    "توحيد وحدة main بين main.py / space_app.py / admin_api.py (sys.modules.setdefault)",
+    "لوحة فلاتر احترافية: هيكل admin_shell.dart (Drawer/Rail) + صفحات pages/*.dart + عميل web_api.dart/api.dart كـAdminApi",
+    "أربعة ثيمات داكنة (forest/midnight/ocean/graphite) بلون ثابت #67D6A6 محفوظة في localStorage + ThemeMenu",
+    "حقوق وإصدار داخل التطبيق: app_credits.dart (الإصدار يتحدث مع كل تعديل)",
+    "سكربت بناء admin_web/build_release.ps1 (+ dist/version.json) — الإصدار بصيغة 2.7.YYYYMMDD",
+    "إصلاح صورة البلاغ 500→200 (مسار فارغ → جلب من تلغرام عبر file_id)",
+    "workflows/keepalive.yml (صفحات/جودة سابقة) + render_keepalive.yml لمنع نوم Render",
+    "حذف التوكنات المسرّبة من الملفات + .env.example أزرة إعدادات الإدارة",
+    "تسليم ملف المفاتيح كاملًا على سطح المكتب: D:\\Users\\AZZAM\\Desktop\\مفاتيح_المشروع.txt (خارج المستودع)"
+  ],
+  "local_changes_uncommitted": false,
+  "working_tree": "clean — كل شيء ملتزم",
+  "open_items": [
+    "تدوير BOT_TOKEN (مسرّب في تاريخ git العام) — من BotFather /revoke ثم تحديث سر Render + ملف المفاتيح",
+    "تدوير HF_TOKEN (مسرّب) — من إعدادات HuggingFace ثم تحديث سر Render",
+    "جعل المستودع خاصًا في GitHub (الحساب المفعل يسف غير مفعّل لكن التاريخ عام)",
+    "بناء .exe حقيقي يحتاج Visual Studio (غير مثبت) — البديل الحالي: admin_web/launch_desktop.bat",
+    "اختبار بصري نهائي: إظهار صورة البلاغ داخل الواجهة بعد Ctrl+F5"
+  ],
+  "restart_note": "كل التشغيلات التي تمت فيها المحادثة تعمل الآن على Render؛ محليًا تنطلق 바وتك دون مشاكل",
+  "git_branches": ["main", "backup/live-api-ours", "abu-azzam-com-admin-reports-dashboard"],
+  "next_step": "بعد المعالجة الأمنية (تدوير التوكنان + المستودع خاصًا) المشروع في حالة تسليم نهائي؛ الأفكار المستقبلية: تعدد مدراء/توكنات، exe حقيقي بعد تنصيب Visual Studio"
 }
