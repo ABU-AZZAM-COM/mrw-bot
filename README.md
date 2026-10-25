@@ -87,7 +87,7 @@ python main.py
 
 | المسار | الحالة | الدليل |
 |---|---|---|
-| **خدمة Render** | `https://mrw-bot.onrender.com`؛ نشر Turso المؤكد `47db5e11ee35c6646a43db381025f6be89531719` | `/version` مطابق و`/db-health` أعاد 200 بعد الإقلاع |
+| **خدمة Render** | `https://mrw-bot.onrender.com`؛ آخر نشر مؤكد `b496847eabe21df0612f453299508fbefbc8df34` | `/version` مطابق؛ `/admin/` و`/db-health` وصحة Turso أعادت نجاحًا |
 | **Hugging Face Space** | عنوان افتراضي اختياري في اللوحة؛ أعاد `/health` و`/api/admin/overview` حالة 404 عند الفحص | ليس عنوان الخدمة الفعلية الحالية |
 | **Hugging Face Dataset** | مخزن النسخ الاحتياطية | `hub_backup.py` |
 
