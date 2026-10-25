@@ -15,9 +15,16 @@ String priorityLabel(String value) => switch (value) {
 };
 
 class ReportsPage extends StatefulWidget {
-  const ReportsPage({super.key, required this.api});
+  const ReportsPage({
+    super.key,
+    required this.api,
+    this.focusReportId,
+    this.onFocusHandled,
+  });
 
   final AdminApi api;
+  final int? focusReportId;
+  final VoidCallback? onFocusHandled;
 
   @override
   State<ReportsPage> createState() => _ReportsPageState();
@@ -75,7 +82,21 @@ class _ReportsPageState extends State<ReportsPage> {
     } catch (error) {
       if (mounted) toast(context, errMsg(error), error: true);
     }
-    _load();
+    await _load();
+    final focusReportId = widget.focusReportId;
+    if (focusReportId != null && mounted) {
+      try {
+        final result = await widget.api.get(
+          '/api/admin/reports/$focusReportId',
+        );
+        final item = (result['item'] as Map).cast<String, dynamic>();
+        if (mounted) await _detailDialog(context, item);
+      } catch (error) {
+        if (mounted) toast(context, errMsg(error), error: true);
+      } finally {
+        widget.onFocusHandled?.call();
+      }
+    }
   }
 
   Future<void> _load() async {

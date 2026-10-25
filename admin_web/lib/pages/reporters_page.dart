@@ -5,9 +5,16 @@ import '../widgets.dart';
 import 'overview_page.dart' show fmt;
 
 class UsersPage extends StatefulWidget {
-  const UsersPage({super.key, required this.api});
+  const UsersPage({
+    super.key,
+    required this.api,
+    this.initialUserId,
+    this.onFocusHandled,
+  });
 
   final AdminApi api;
+  final int? initialUserId;
+  final VoidCallback? onFocusHandled;
 
   @override
   State<UsersPage> createState() => _UsersPageState();
@@ -26,7 +33,13 @@ class _UsersPageState extends State<UsersPage> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _load().then((_) {
+      final userId = widget.initialUserId;
+      if (!mounted || userId == null) return;
+      _cardDialog(context, userId).whenComplete(
+        () => widget.onFocusHandled?.call(),
+      );
+    });
   }
 
   @override
@@ -332,6 +345,15 @@ class _UserCardState extends State<_UserCard> {
                       ? '🟢 نشط بلا حجب'
                       : '⛔ محجوب حتى ${fmt(frozen, chars: 19)}\nالسبب: ${b['reason'] ?? '—'}',
                 ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('السماح بالتواصل المباشر'),
+                  subtitle: const Text(
+                    'سيُرسل للمستخدم إشعار عند تغيير هذا الخيار',
+                  ),
+                  value: p['contact_enabled'] != false,
+                  onChanged: _setContact,
+                ),
                 const Divider(height: 22),
                 const Text(
                   'بلاغات المتبلّغ',
@@ -435,6 +457,26 @@ class _UserCardState extends State<_UserCard> {
         ),
       ],
     );
+  }
+
+  Future<void> _setContact(bool enabled) async {
+    try {
+      final result = await widget.api.put(
+        '/api/admin/users/${widget.uid}/contact',
+        {'enabled': enabled},
+      );
+      if (!mounted) return;
+      toast(
+        context,
+        result['notified'] == true
+            ? 'تم تحديث الإعداد وإشعار المستخدم'
+            : 'تم تحديث الإعداد، لكن تعذّر إشعار المستخدم',
+        error: result['notified'] != true,
+      );
+      await _fetch();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
   }
 
   Widget _kv(String k, String v) => Padding(

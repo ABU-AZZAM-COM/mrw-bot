@@ -22,9 +22,10 @@ String fmt(String? iso, {int chars = 16}) {
 // 1) النظرة العامة
 // ==================================================================
 class OverviewPage extends StatefulWidget {
-  const OverviewPage({super.key, required this.api});
+  const OverviewPage({super.key, required this.api, this.onNavigate});
 
   final AdminApi api;
+  final ValueChanged<int>? onNavigate;
 
   @override
   State<OverviewPage> createState() => _OverviewPageState();
@@ -144,54 +145,63 @@ class _OverviewPageState extends State<OverviewPage> {
                     value: '${users['total'] ?? 0}',
                     color: const Color(0xFF64B5F6),
                     icon: Icons.people_outline,
+                    onTap: () => widget.onNavigate?.call(2),
                   ),
                   StatCard(
                     title: 'المحظورون النشطون',
                     value: '${users['blocked'] ?? 0}',
                     color: const Color(0xFFE06C75),
                     icon: Icons.block_outlined,
+                    onTap: () => widget.onNavigate?.call(7),
                   ),
                   StatCard(
                     title: 'جديد',
                     value: '${counts['جديد'] ?? 0}',
                     color: const Color(0xFFFFD166),
                     icon: Icons.fiber_new_outlined,
+                    onTap: () => widget.onNavigate?.call(1),
                   ),
                   StatCard(
                     title: 'قيد المراجعة',
                     value: '${counts['قيد المراجعة'] ?? 0}',
                     color: const Color(0xFF8AB4FF),
                     icon: Icons.search,
+                    onTap: () => widget.onNavigate?.call(1),
                   ),
                   StatCard(
                     title: 'معتمد',
                     value: '${counts['معتمد'] ?? 0}',
                     color: const Color(0xFF67D6A6),
                     icon: Icons.verified_outlined,
+                    onTap: () => widget.onNavigate?.call(1),
                   ),
                   StatCard(
                     title: 'مرفوض',
                     value: '${counts['مرفوض'] ?? 0}',
                     color: const Color(0xFFE06C75),
                     icon: Icons.cancel_outlined,
+                    onTap: () => widget.onNavigate?.call(1),
                   ),
                   StatCard(
                     title: 'الإجمالي',
                     value: '${counts['total'] ?? 0}',
                     color: const Color(0xFF9AB8AA),
                     icon: Icons.inventory_2_outlined,
+                    onTap: () => widget.onNavigate?.call(1),
                   ),
                   StatCard(
                     title: 'آخر 24 ساعة',
                     value: '${counts['last24'] ?? 0}',
                     color: const Color(0xFFC4A2FF),
                     icon: Icons.schedule,
+                    onTap: () => widget.onNavigate?.call(1),
                   ),
                   StatCard(
                     title: 'متوسط الأسبوع/يوم',
                     value: '${_st?['week_avg'] ?? '-'}',
                     color: const Color(0xFF8BD4AE),
                     icon: Icons.insights,
+                    onTap: () => widget.onNavigate?.call(8),
                   ),
                   StatCard(
                     title: 'حالة الاستقبال',
@@ -200,24 +210,28 @@ class _OverviewPageState extends State<OverviewPage> {
                         ? const Color(0xFFE06C75)
                         : const Color(0xFF67D6A6),
                     icon: Icons.emergency_outlined,
+                    onTap: () => widget.onNavigate?.call(3),
                   ),
                   StatCard(
                     title: 'أولوية عاجلة',
                     value: '${workflow['urgent'] ?? 0}',
                     color: const Color(0xFFFF6B6B),
                     icon: Icons.priority_high,
+                    onTap: () => widget.onNavigate?.call(1),
                   ),
                   StatCard(
                     title: 'متابعة متأخرة',
                     value: '${workflow['overdue'] ?? 0}',
                     color: const Color(0xFFFFB74D),
                     icon: Icons.event_busy_outlined,
+                    onTap: () => widget.onNavigate?.call(1),
                   ),
                   StatCard(
                     title: 'غير مسندة',
                     value: '${workflow['unassigned'] ?? 0}',
                     color: const Color(0xFF64B5F6),
                     icon: Icons.assignment_late_outlined,
+                    onTap: () => widget.onNavigate?.call(1),
                   ),
                 ],
               );

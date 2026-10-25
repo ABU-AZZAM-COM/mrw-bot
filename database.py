@@ -14,7 +14,7 @@ import os
 import queue
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -162,6 +162,21 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_read_created
     ON notifications(is_read, id);
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at
+    ON notifications(created_at);
+
+CREATE TABLE IF NOT EXISTS user_contact_settings (
+    user_id INTEGER PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS blocked_user_evidence (
+    user_id INTEGER PRIMARY KEY,
+    photo_path TEXT,
+    photo_file_id TEXT,
+    created_at TEXT NOT NULL
+);
 
 -- بصمات المحتوى لكشف التكرار (رابط مطبَّع + تشابه الوصف)
 CREATE TABLE IF NOT EXISTS report_fingerprints (
@@ -697,8 +712,15 @@ class Database:
     async def get_block(self, user_id: int) -> dict[str, Any]:
         return await asyncio.to_thread(self._get_block, user_id)
 
-    def _save_block(self, user_id: int, strikes: int, frozen_until: Optional[str],
-                    reason: str) -> None:
+    def _save_block(
+        self,
+        user_id: int,
+        strikes: int,
+        frozen_until: Optional[str],
+        reason: str,
+        evidence_photo_path: str | None = None,
+        evidence_photo_file_id: str | None = None,
+    ) -> None:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         notification = None
         with self._lock:
@@ -718,23 +740,61 @@ class Database:
                 """,
                 (user_id, strikes, frozen_until, reason, now_iso),
             )
+            if evidence_photo_path or evidence_photo_file_id:
+                self._conn.execute(
+                    """
+                    INSERT INTO blocked_user_evidence
+                        (user_id, photo_path, photo_file_id, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        photo_path = excluded.photo_path,
+                        photo_file_id = excluded.photo_file_id,
+                        created_at = excluded.created_at
+                    """,
+                    (
+                        user_id,
+                        evidence_photo_path or None,
+                        evidence_photo_file_id or None,
+                        now_iso,
+                    ),
+                )
             if frozen_until and (
                 not previous or previous["frozen_until"] != frozen_until
             ):
+                latest_report = self._conn.execute(
+                    "SELECT id FROM reports WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                    (user_id,),
+                ).fetchone()
                 notification = self._insert_notification_locked(
                     "user_blocked",
                     {
                         "user_id": user_id,
                         "reason": reason,
                         "frozen_until": frozen_until,
+                        "report_id": int(latest_report["id"]) if latest_report else None,
                     },
                 )
             self._conn.commit()
         self._publish_notification(notification)
 
-    async def save_block(self, user_id: int, strikes: int, frozen_until: Optional[str],
-                         reason: str) -> None:
-        await asyncio.to_thread(self._save_block, user_id, strikes, frozen_until, reason)
+    async def save_block(
+        self,
+        user_id: int,
+        strikes: int,
+        frozen_until: Optional[str],
+        reason: str,
+        evidence_photo_path: str | None = None,
+        evidence_photo_file_id: str | None = None,
+    ) -> None:
+        await asyncio.to_thread(
+            self._save_block,
+            user_id,
+            strikes,
+            frozen_until,
+            reason,
+            evidence_photo_path,
+            evidence_photo_file_id,
+        )
 
     def _clear_block(self, user_id: int) -> None:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="microseconds")
@@ -756,6 +816,10 @@ class Database:
                 ON CONFLICT(user_id) DO UPDATE SET reset_at = excluded.reset_at
                 """,
                 (user_id, now_iso),
+            )
+            self._conn.execute(
+                "DELETE FROM blocked_user_evidence WHERE user_id = ?",
+                (user_id,),
             )
             self._conn.commit()
 
@@ -786,6 +850,39 @@ class Database:
 
     async def recent_audit(self, limit: int = 30) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._recent_audit, limit)
+
+    def _audit_range(
+        self, start_iso: str, end_exclusive_iso: str, limit: int = 5000
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 5000))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM audit_log WHERE ts >= ? AND ts < ? "
+                "ORDER BY id DESC LIMIT ?",
+                (start_iso, end_exclusive_iso, limit),
+            ).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    async def audit_range(
+        self, start_iso: str, end_exclusive_iso: str, limit: int = 5000
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._audit_range, start_iso, end_exclusive_iso, limit
+        )
+
+    def _delete_audit_range(self, start_iso: str, end_exclusive_iso: str) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM audit_log WHERE ts >= ? AND ts < ?",
+                (start_iso, end_exclusive_iso),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount)
+
+    async def delete_audit_range(self, start_iso: str, end_exclusive_iso: str) -> int:
+        return await asyncio.to_thread(
+            self._delete_audit_range, start_iso, end_exclusive_iso
+        )
 
     def _get_state(self, key: str) -> Optional[str]:
         with self._lock:
@@ -901,16 +998,25 @@ class Database:
         )
 
     def _list_notifications(
-        self, unread_only: bool = False, limit: int = 20
+        self, unread_only: bool = False, limit: int = 20, kind: str | None = None
     ) -> tuple[list[dict[str, Any]], int]:
         limit = max(1, min(int(limit), 100))
+        if kind not in (None, "regular", "heartbeat"):
+            raise ValueError("invalid notification kind")
         with self._lock:
             unread_count = int(
                 self._conn.execute(
                     "SELECT COUNT(*) AS count FROM notifications WHERE is_read = 0"
                 ).fetchone()["count"]
             )
-            where = "WHERE is_read = 0" if unread_only else ""
+            clauses: list[str] = []
+            if unread_only:
+                clauses.append("is_read = 0")
+            if kind == "heartbeat":
+                clauses.append("type = 'heartbeat_fail'")
+            elif kind == "regular":
+                clauses.append("type != 'heartbeat_fail'")
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             rows = self._conn.execute(
                 f"SELECT * FROM notifications {where} ORDER BY id DESC LIMIT ?",
                 (limit,),
@@ -924,9 +1030,63 @@ class Database:
         return items, unread_count
 
     async def list_notifications(
-        self, unread_only: bool = False, limit: int = 20
+        self, unread_only: bool = False, limit: int = 20, kind: str | None = None
     ) -> tuple[list[dict[str, Any]], int]:
-        return await asyncio.to_thread(self._list_notifications, unread_only, limit)
+        return await asyncio.to_thread(
+            self._list_notifications, unread_only, limit, kind
+        )
+
+    def _notification_stats(self) -> dict[str, Any]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread,
+                       MIN(created_at) AS oldest_created_at,
+                       MIN(CASE WHEN is_read = 1 THEN created_at END)
+                           AS oldest_read_created_at
+                FROM notifications
+                """
+            ).fetchone()
+        return {
+            "total": int(row["total"] or 0),
+            "unread": int(row["unread"] or 0),
+            "oldest_created_at": row["oldest_created_at"],
+            "oldest_read_created_at": row["oldest_read_created_at"],
+        }
+
+    async def notification_stats(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._notification_stats)
+
+    def _cleanup_notifications(
+        self,
+        now: datetime | None = None,
+    ) -> int:
+        current = now or datetime.now(timezone.utc)
+        read_cutoff = (current - timedelta(days=7)).isoformat(timespec="seconds")
+        unread_cutoff = (current - timedelta(days=30)).isoformat(timespec="seconds")
+        protected_cutoff = (current - timedelta(days=90)).isoformat(
+            timespec="seconds"
+        )
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                DELETE FROM notifications
+                WHERE
+                    (type IN ('emergency', 'heartbeat_fail') AND created_at < ?)
+                    OR
+                    (type NOT IN ('emergency', 'heartbeat_fail') AND (
+                        (is_read = 1 AND created_at < ?)
+                        OR (is_read = 0 AND created_at < ?)
+                    ))
+                """,
+                (protected_cutoff, read_cutoff, unread_cutoff),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount)
+
+    async def cleanup_notifications(self) -> int:
+        return await asyncio.to_thread(self._cleanup_notifications)
 
     def _mark_notification_read(self, notification_id: int) -> bool:
         with self._lock:
@@ -1258,13 +1418,15 @@ class Database:
                    COALESCE(r.reports_count, 0) AS reports_count,
                    u.last_seen_at AS last_at,
                    b.frozen_until AS frozen_until,
-                   b.reason AS block_reason
+                   b.reason AS block_reason,
+                   COALESCE(c.enabled, 1) AS contact_enabled
             FROM bot_users u
             LEFT JOIN (
                 SELECT user_id, COUNT(*) AS reports_count
                 FROM reports GROUP BY user_id
             ) r ON r.user_id = u.user_id
             LEFT JOIN user_blocks b ON b.user_id = u.user_id
+            LEFT JOIN user_contact_settings c ON c.user_id = u.user_id
             {where}
             ORDER BY u.last_seen_at DESC
             LIMIT ? OFFSET ?
@@ -1283,42 +1445,70 @@ class Database:
         return await asyncio.to_thread(self._list_users, q, page, size)
 
     def _list_blocked_users(
-        self, page: int = 0, size: int = 50
+        self, page: int = 0, size: int = 50, user_id: int | None = None
     ) -> tuple[list[dict[str, Any]], int]:
         """قائمة الحجب الساري، بما يشمل المعرفات التي لا تملك بلاغات."""
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         size = max(1, min(int(size), 100))
         page = max(0, int(page))
         active = "b.frozen_until IS NOT NULL AND b.frozen_until > ?"
+        params: list[Any] = [now_iso]
+        if user_id is not None:
+            active += " AND b.user_id = ?"
+            params.append(int(user_id))
         query = f"""
             SELECT b.user_id AS user_id,
                    COALESCE(u.full_name, r.full_name) AS full_name,
                    COALESCE(u.username, r.username) AS username,
+                   r.id AS report_id,
                    b.frozen_until AS frozen_until,
                    b.reason AS reason,
                    b.strikes AS strikes,
-                   b.updated_at AS updated_at
+                   COALESCE(c.enabled, 1) AS contact_enabled,
+                   b.updated_at AS updated_at,
+                   CASE WHEN e.user_id IS NOT NULL THEN 1 ELSE 0 END
+                       AS has_evidence_photo
             FROM user_blocks b
             LEFT JOIN bot_users u ON u.user_id = b.user_id
             LEFT JOIN reports r ON r.id = (
                 SELECT MAX(r2.id) FROM reports r2 WHERE r2.user_id = b.user_id
             )
+            LEFT JOIN user_contact_settings c ON c.user_id = b.user_id
+            LEFT JOIN blocked_user_evidence e ON e.user_id = b.user_id
             WHERE {active}
             ORDER BY b.frozen_until DESC, b.user_id
             LIMIT ? OFFSET ?
         """
         with self._lock:
             total = self._conn.execute(
-                f"SELECT COUNT(*) FROM user_blocks b WHERE {active}",
-                (now_iso,),
+                f"SELECT COUNT(*) FROM user_blocks b WHERE {active}", params
             ).fetchone()[0]
             rows = self._conn.execute(
-                query, (now_iso, size, page * size)
+                query, (*params, size, page * size)
             ).fetchall()
             return [_row_to_dict(row) for row in rows], int(total)
 
-    async def list_blocked_users(self, page: int = 0, size: int = 50):
-        return await asyncio.to_thread(self._list_blocked_users, page, size)
+    async def list_blocked_users(
+        self, page: int = 0, size: int = 50, user_id: int | None = None
+    ):
+        return await asyncio.to_thread(
+            self._list_blocked_users, page, size, user_id
+        )
+
+    def _get_block_evidence(self, user_id: int) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT photo_path, photo_file_id
+                FROM blocked_user_evidence
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+
+    async def get_block_evidence(self, user_id: int) -> Optional[dict[str, Any]]:
+        return await asyncio.to_thread(self._get_block_evidence, user_id)
 
     def _blocked_users_count(self) -> int:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -1355,6 +1545,10 @@ class Database:
             user = self._conn.execute(
                 "SELECT * FROM bot_users WHERE user_id = ?", (user_id,)
             ).fetchone()
+            contact = self._conn.execute(
+                "SELECT enabled FROM user_contact_settings WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
             phone = self._conn.execute(
                 "SELECT contact_phone, seq FROM reports"
                 " WHERE user_id = ? AND contact_phone IS NOT NULL"
@@ -1375,6 +1569,7 @@ class Database:
                 "block": _row_to_dict(block) if block is not None else None,
                 "contact_phone": phone["contact_phone"] if phone else None,
                 "contact_phone_seq": phone["seq"] if phone else None,
+                "contact_enabled": bool(contact["enabled"]) if contact else True,
             })
             return profile
         profile = _row_to_dict(row)
@@ -1389,11 +1584,49 @@ class Database:
             "block": _row_to_dict(block) if block is not None else None,
             "contact_phone": phone["contact_phone"] if phone else None,
             "contact_phone_seq": phone["seq"] if phone else None,
+            "contact_enabled": bool(contact["enabled"]) if contact else True,
         })
         return profile
 
     async def user_profile(self, user_id: int):
         return await asyncio.to_thread(self._user_profile, user_id)
+
+    def _set_user_contact_enabled(self, user_id: int, enabled: bool) -> bool:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT enabled FROM user_contact_settings WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            changed = row is None or bool(row["enabled"]) != enabled
+            self._conn.execute(
+                """
+                INSERT INTO user_contact_settings (user_id, enabled, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, int(enabled), now_iso),
+            )
+            self._conn.commit()
+            return changed
+
+    async def set_user_contact_enabled(self, user_id: int, enabled: bool) -> bool:
+        return await asyncio.to_thread(
+            self._set_user_contact_enabled, user_id, enabled
+        )
+
+    def _user_contact_enabled(self, user_id: int) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT enabled FROM user_contact_settings WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return bool(row["enabled"]) if row else True
+
+    async def user_contact_enabled(self, user_id: int) -> bool:
+        return await asyncio.to_thread(self._user_contact_enabled, user_id)
 
     def _open_user_conversation(self, user_id: int) -> None:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")

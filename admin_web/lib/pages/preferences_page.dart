@@ -12,6 +12,8 @@ class PreferencesPage extends StatelessWidget {
     required this.seed,
     required this.soundEnabled,
     required this.soundUnlocked,
+    required this.heartbeatMuteUntil,
+    required this.onHeartbeatMuteHours,
     required this.soundSounds,
     required this.onChanged,
   });
@@ -23,6 +25,8 @@ class PreferencesPage extends StatelessWidget {
   final Color seed;
   final bool soundEnabled;
   final bool soundUnlocked;
+  final int? heartbeatMuteUntil;
+  final ValueChanged<int> onHeartbeatMuteHours;
   final Map<String, String> soundSounds;
   final ValueChanged<Map<String, dynamic>> onChanged;
 
@@ -35,6 +39,7 @@ class PreferencesPage extends StatelessWidget {
       'seed': seed.toARGB32(),
       'soundEnabled': soundEnabled,
       'soundUnlocked': soundUnlocked,
+      'heartbeatMuteUntil': heartbeatMuteUntil,
       for (final type in const [
         'report_new',
         'report_urgent',
@@ -198,6 +203,46 @@ class PreferencesPage extends StatelessWidget {
           ],
         ),
       ),
+      const SizedBox(height: 14),
+      SectionCard(
+        'تنبيهات نبضة البوت',
+        icon: Icons.monitor_heart_outlined,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'تبقى تنبيهات النبض محفوظة في سجلها المنفصل حتى عند كتم الصوت والفقاعات.',
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<int>(
+              initialValue: _heartbeatMuteChoice(),
+              decoration: const InputDecoration(labelText: 'مدة الكتم'),
+              items: const [
+                DropdownMenuItem(value: 0, child: Text('بدون كتم')),
+                DropdownMenuItem(value: 1, child: Text('ساعة واحدة')),
+                DropdownMenuItem(value: 8, child: Text('8 ساعات')),
+                DropdownMenuItem(value: 24, child: Text('24 ساعة')),
+                DropdownMenuItem(value: -1, child: Text('حتى إلغاء الكتم')),
+              ],
+              onChanged: (hours) {
+                if (hours != null) onHeartbeatMuteHours(hours);
+              },
+            ),
+          ],
+        ),
+      ),
     ],
   );
+
+  int _heartbeatMuteChoice() {
+    final until = heartbeatMuteUntil;
+    if (until == -1) return -1;
+    if (until == null || until <= DateTime.now().millisecondsSinceEpoch) {
+      return 0;
+    }
+    final remaining = until - DateTime.now().millisecondsSinceEpoch;
+    if (remaining <= const Duration(hours: 1).inMilliseconds) return 1;
+    if (remaining <= const Duration(hours: 8).inMilliseconds) return 8;
+    return 24;
+  }
 }
