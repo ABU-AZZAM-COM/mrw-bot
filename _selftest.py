@@ -60,6 +60,29 @@ assert asyncio.run(
         None,
     )
 ) is None
+start_reply = AsyncMock()
+start_db = SimpleNamespace(
+    record_user=AsyncMock(),
+    log_event=AsyncMock(),
+    get_state=AsyncMock(return_value=None),
+)
+start_update = SimpleNamespace(
+    effective_user=SimpleNamespace(
+        id=222222222, username="start_test", full_name="اختبار البدء"
+    ),
+    effective_chat=SimpleNamespace(type="private"),
+    effective_message=SimpleNamespace(reply_text=start_reply),
+)
+start_context = SimpleNamespace(
+    bot_data={"db": start_db}, user_data={"stale": "draft"}
+)
+assert asyncio.run(handlers.cmd_start(start_update, start_context)) is (
+    handlers.ConversationHandler.END
+)
+start_reply.assert_awaited_once()
+assert start_reply.await_args.args[0] == texts.WELCOME
+assert start_context.user_data == {}
+print("/start command builds and sends the welcome response")
 wizard_states = handlers.build_conversation().states
 assert all(
     state in wizard_states
@@ -1372,7 +1395,14 @@ try:
             denied = await webhook_endpoint(
                 _WebhookRequest({}, {"update_id": 10})
             )
+            denied_non_ascii = await webhook_endpoint(
+                _WebhookRequest(
+                    {"X-Telegram-Bot-Api-Secret-Token": "غير-صالح"},
+                    {"update_id": 10},
+                )
+            )
             assert denied.status_code == 403
+            assert denied_non_ascii.status_code == 403
             accepted = await webhook_endpoint(
                 _WebhookRequest(
                     {"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret"},
@@ -1384,12 +1414,16 @@ try:
             queued_update = update_queue.get_nowait()
             assert isinstance(queued_update, Update)
             assert queued_update.update_id == 11
-            return denied.status_code, accepted.status_code
+            return (
+                denied.status_code,
+                denied_non_ascii.status_code,
+                accepted.status_code,
+            )
         finally:
             _bot_main.app = original_application
 
     webhook_statuses = asyncio.run(_test_webhook())
-    assert webhook_statuses == (403, 200)
+    assert webhook_statuses == (403, 403, 200)
 finally:
     if old_webhook_secret is None:
         _os.environ.pop("TELEGRAM_WEBHOOK_SECRET", None)

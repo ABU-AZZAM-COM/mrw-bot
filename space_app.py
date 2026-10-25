@@ -248,7 +248,8 @@ def build_app() -> FastAPI:
                 status_code=503,
             )
         if not provided_secret or not hmac.compare_digest(
-            provided_secret, expected_secret
+            provided_secret.encode("utf-8"),
+            expected_secret.encode("utf-8"),
         ):
             return JSONResponse(
                 {"ok": False, "error": "unauthorized"}, status_code=403
