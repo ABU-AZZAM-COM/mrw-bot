@@ -1323,11 +1323,38 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         except Exception:
             logger.exception("تعذر قراءة إجمالي البلاغات")
             total = 0
+        bot_alive = False
+        if database_ready:
+            try:
+                heartbeat = await db.get_state("bot_last_heartbeat")
+                if heartbeat:
+                    heartbeat_at = datetime.fromisoformat(
+                        heartbeat.replace("Z", "+00:00")
+                    )
+                    if heartbeat_at.tzinfo is None:
+                        heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+                    age_seconds = (
+                        datetime.now(timezone.utc) - heartbeat_at
+                    ).total_seconds()
+                    bot_alive = 0 <= age_seconds < 180
+            except (TypeError, ValueError):
+                logger.warning("قيمة نبضة حياة البوت غير صالحة")
+            except Exception as exc:
+                logger.error(
+                    "تعذرت قراءة نبضة حياة البوت (%s)", type(exc).__name__
+                )
         import hub_backup  # noqa: PLC0415
+
+        import main as bot_main  # noqa: PLC0415
 
         return JSONResponse({
             "ok": True,
             "bot_ready": await _bot_ready(),
+            "bot_alive": bot_alive,
+            "webhook_ready": bool(
+                getattr(bot_main, "app", None)
+                and bot_main.app.bot_data.get("webhook_ready")
+            ),
             "database_ready": database_ready,
             "backend": db.backend,
             "database_error": database_error,

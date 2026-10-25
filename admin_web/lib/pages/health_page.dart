@@ -150,6 +150,28 @@ class _HealthPageState extends State<HealthPage> {
                 ),
                 const Divider(height: 1),
                 _StateTile(
+                  label: 'نبض البوت (آخر 180 ثانية)',
+                  value: health == null
+                      ? 'غير معروف'
+                      : health['bot_alive'] == true
+                      ? 'حي'
+                      : 'متوقف أو لا توجد نبضة حديثة',
+                  ok: health?['bot_alive'] == true,
+                  unknown: health == null,
+                ),
+                const Divider(height: 1),
+                _StateTile(
+                  label: 'استقبال Telegram',
+                  value: health == null
+                      ? 'غير معروف'
+                      : health['webhook_ready'] == true
+                      ? 'Webhook مسجل'
+                      : 'Polling احتياطي أو غير مسجل',
+                  ok: health?['webhook_ready'] == true,
+                  unknown: health == null,
+                ),
+                const Divider(height: 1),
+                _StateTile(
                   label: 'إعداد النسخ السحابي',
                   value: health == null
                       ? 'غير معروف'
@@ -197,8 +219,7 @@ class _HealthPageState extends State<HealthPage> {
             icon: Icons.info_outline,
             child: Text(
               'تعرض هذه الصفحة ما تؤكده واجهة الإدارة فقط. حالة النسخ السحابي '
-              'والتخزين وتفاصيل Telegram تحتاج نقاط فحص مخصصة من الخادم؛ '
-              'لن تُخمّن اللوحة حالتها.',
+              'تُقرأ من فحص الخادم، ونبض البوت مستقل عن وصول رسائل المستخدمين.',
               style: TextStyle(
                 color: Theme.of(context).colorScheme.onSurface,
                 height: 1.6,
