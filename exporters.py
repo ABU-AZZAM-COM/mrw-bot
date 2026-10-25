@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from pathlib import Path
 
 import config
@@ -37,12 +38,15 @@ _WIDTHS = {
 }
 
 _FORMULA_PREFIXES = ("=", "+", "@", "-", "\t", "\r")
+_ILLEGAL_EXCEL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 def _formula_safe(value):
     """تحييد أي قيمة قد تُفسّر كصيغة داخل Excel."""
-    if isinstance(value, str) and value[:1] in _FORMULA_PREFIXES:
-        return "'" + value
+    if isinstance(value, str):
+        value = _ILLEGAL_EXCEL_CHARACTERS.sub("", value)
+        if value[:1] in _FORMULA_PREFIXES:
+            return "'" + value
     return value
 
 
