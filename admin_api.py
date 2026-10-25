@@ -369,6 +369,18 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
     def bad(msg: str, code: int = 400) -> JSONResponse:
         return JSONResponse({"ok": False, "error": msg}, status_code=code)
 
+    @app.get("/version")
+    async def version() -> JSONResponse:
+        return JSONResponse({
+            "ok": True,
+            "commit": os.getenv("RENDER_GIT_COMMIT", "").strip() or "unknown",
+            "environment": (
+                os.getenv("RENDER_ENVIRONMENT", "").strip()
+                or os.getenv("RENDER_SERVICE_NAME", "").strip()
+                or "unknown"
+            ),
+        })
+
     def db_of() -> Any:  # noqa: ANN202
         import main as bot_main  # noqa: PLC0415
 

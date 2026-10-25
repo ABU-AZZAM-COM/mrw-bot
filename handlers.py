@@ -66,7 +66,8 @@ from keyboards import (
 logger = logging.getLogger(__name__)
 
 # مراحل المحادثة
-ASK_CATEGORY, ASK_PLATFORM, ASK_DESC, ASK_PHOTO, ASK_LINK, ASK_LOCATION, ASK_CONTACT, CONFIRM, ASK_FOLLOWUP = range(9)
+ASK_CATEGORY, ASK_PLATFORM, ASK_DESC, ASK_PHOTO, ASK_LINK, ASK_LOCATION, ASK_CONTACT, CONFIRM, ASK_FOLLOWUP, ASK_SUPPORT = range(10)
+SUPPORT_MAX_LENGTH = 1000
 
 # نصوص الأزرار (أنماط regex) لإلغاء العملية وتأكيد الحفظ
 CANCEL_RE = r"^\s*❌\s*إلغاء\s*$"
@@ -117,21 +118,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await db.record_user(user.id, user.username, user.full_name)
 
-    # ------------------------------------------------------------------
-    # الحماية: الإيقاف الطارئ فقط (المعدّل واليوميّ يُفحصان عند الضغط على "بلاغ جديد")
-    # ------------------------------------------------------------------
-    if await guards.is_emergency(db):
-        await update.effective_message.reply_text(
-            await guards.render_block_message(db, "emergency"),
-            parse_mode=ParseMode.HTML,
-        )
-        return ConversationHandler.END
-
     await db.log_event(user.id, "start")
 
     context.user_data.clear()
+    welcome = texts.WELCOME
+    if await guards.is_emergency(db):
+        welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
     await update.effective_message.reply_text(
-        texts.WELCOME,
+        welcome,
         parse_mode=ParseMode.HTML,
         reply_markup=main_menu_kb(),
     )
@@ -710,6 +704,16 @@ async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================================================================
 async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """حفظ البلاغ نهائيًا وإشعار المشرفين بوجوده."""
+    db = _db(context)
+    if await guards.is_emergency(db):
+        message = update.effective_message
+        if message:
+            await message.reply_text(
+                texts.REPORT_PAUSED_ALERT,
+                parse_mode=ParseMode.HTML,
+            )
+        return CONFIRM
+
     # تلاشي أزرار التأكيد فور الضغط عليها (تبقى الرسالة نصًا فقط)
     if update.callback_query:
         try:
@@ -719,8 +723,6 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
     ud = context.user_data
-    db = _db(context)
-
     try:
         report = await db.add_report(
             user_id=user.id,
@@ -764,6 +766,7 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status=texts.badge(report["status"]),
         ),
         parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_kb(),
     )
 
     await _notify_admins(context, report)
@@ -1216,6 +1219,81 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await message.reply_text("تم حفظ المعلومات، لكن تعذر إيصالها للمشرفين حاليًا.")
 
 
+async def receive_support_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Persist a reporter's support message and notify configured admins."""
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not user or not context.user_data.get("support_pending"):
+        if message:
+            await message.reply_text(texts.WELCOME_HINT, parse_mode=ParseMode.HTML)
+        return ConversationHandler.END
+
+    text = (message.text or "").strip()
+    if not 2 <= len(text) <= SUPPORT_MAX_LENGTH:
+        await message.reply_text(
+            texts.SUPPORT_TOO_LONG
+            if len(text) > SUPPORT_MAX_LENGTH
+            else "اكتب رسالة من حرفين على الأقل، أو اختر إلغاء.",
+            parse_mode=ParseMode.HTML,
+        )
+        return ASK_SUPPORT
+    if not config.ADMIN_IDS:
+        context.user_data.pop("support_pending", None)
+        await message.reply_text(
+            texts.SUPPORT_UNAVAILABLE,
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    db = _db(context)
+    await db.record_user(user.id, user.username, user.full_name)
+    await db.open_user_conversation(user.id)
+    await db.add_user_message(user.id, "in", text)
+    await db.audit(
+        user.id,
+        "user_support_message",
+        str(user.id),
+        f"عدد الأحرف: {len(text)}",
+    )
+    context.user_data.pop("support_pending", None)
+
+    delivered = 0
+    admin_message = (
+        "📩 <b>رسالة جديدة إلى الإدارة</b>\n"
+        "────────────────────\n"
+        f"👤 المرسل: {utils.esc(user.full_name or '-')}\n"
+        f"🆔 المعرف: <code>{user.id}</code>\n"
+        f"🔗 الحساب: @{utils.esc(user.username or 'بدون معرف')}\n\n"
+        f"{utils.esc(text)}\n\n"
+        "يمكن متابعة المحادثة من قسم الرسائل في لوحة الإدارة."
+    )
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=admin_message,
+                parse_mode=ParseMode.HTML,
+            )
+            delivered += 1
+        except Exception:
+            logger.warning(
+                "تعذر تنبيه المشرف %s برسالة المستخدم %s",
+                admin_id,
+                user.id,
+                exc_info=True,
+            )
+
+    await message.reply_text(
+        texts.SUPPORT_RECEIVED if delivered else texts.SUPPORT_SAVED_NO_NOTIFY,
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_kb(),
+    )
+    return ConversationHandler.END
+
+
 async def receive_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     user = update.effective_user
@@ -1313,6 +1391,8 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(texts.CANCELLED, parse_mode=ParseMode.HTML)
     context.user_data.clear()
+    if update.effective_user:
+        _pending_app_users.discard(update.effective_user.id)
     return ConversationHandler.END
 
 
@@ -1337,21 +1417,42 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """يعالج كل ضغطة على زر مخصص للمستخدم في القائمة الرئيسية أو أثناء الإبلاغ."""
     query = update.callback_query
     db = _db(context)
+    data = query.data or ""
+
+    if data == f"{USR_PREFIX}contact" and any(
+        key in context.user_data
+        for key in ("report_category", "app_draft", "followup_report_id")
+    ):
+        try:
+            await query.answer(texts.SUPPORT_DURING_REPORT, show_alert=True)
+        except (BadRequest, Forbidden):
+            logger.debug("Could not alert user while a report draft is active")
+        return
+
+    if data == f"{USR_PREFIX}confirm" and await guards.is_emergency(db):
+        try:
+            await query.answer(texts.REPORT_PAUSED_ALERT, show_alert=True)
+        except (BadRequest, Forbidden):
+            logger.debug("Could not show emergency notice for report confirmation")
+        return CONFIRM
+
     # حارس العتيق: استدعاءات قد تكون أُجيبت سابقًا أو فاتتها لوحات قديمة
     try:
         await query.answer()
     except (BadRequest, Forbidden) as exc:
         logger.debug("استدعاء عتيق أو مجاب مسبقًا (تم تجاهل الإجابة): %s", exc)
 
-    data = query.data or ""
     if not data.startswith(USR_PREFIX):
         return
     parts = data.split(":")
 
     # --- القائمة الرئيسية ---
     if parts[1] == "menu":
+        welcome = texts.WELCOME
+        if await guards.is_emergency(db):
+            welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
         await query.edit_message_text(
-            texts.WELCOME,
+            welcome,
             parse_mode=ParseMode.HTML,
             reply_markup=main_menu_kb(),
         )
@@ -1359,6 +1460,13 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # --- بلاغ جديد ---
     if parts[1] == "report":
+        if await guards.is_emergency(db):
+            await query.edit_message_text(
+                texts.REPORTING_PAUSED,
+                parse_mode=ParseMode.HTML,
+                reply_markup=back_to_menu_kb(),
+            )
+            return ConversationHandler.END
         verdict = await guards.check_rate_limits(db, query.from_user.id)
         if verdict.blocked:
             await query.edit_message_text(
@@ -1422,6 +1530,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 seq=r["seq"],
                 time=utils.fmt_local(r["created_at"]),
                 status=texts.badge(r["status"]),
+                status_detail=texts.status_explanation(r["status"]),
                 desc=utils.esc(utils.trunc(r.get("description") or "-", 200)),
             ),
             parse_mode=ParseMode.HTML,
@@ -1461,11 +1570,12 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # --- تواصل مع الإدارة ---
     if parts[1] == "contact":
         await query.edit_message_text(
-            texts.CONTACT_ADMIN.format(admin_id=config.ADMIN_IDS[0] if config.ADMIN_IDS else "—"),
+            texts.ASK_SUPPORT,
             parse_mode=ParseMode.HTML,
-            reply_markup=back_to_menu_kb(),
+            reply_markup=cancel_inline_kb(),
         )
-        return ConversationHandler.END
+        context.user_data["support_pending"] = True
+        return ASK_SUPPORT
 
     if parts[1] == "category" and len(parts) == 3:
         category = parts[2]
@@ -1620,7 +1730,33 @@ async def welcome_hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if text:
                 await db.record_user(user.id, user.username, user.full_name)
                 await db.add_user_message(user.id, "in", text)
-                await message.reply_text("✅ وصلت رسالتك إلى الإدارة.")
+                delivered = 0
+                admin_message = (
+                    "📩 <b>رسالة جديدة في محادثة مفتوحة</b>\n"
+                    f"👤 {utils.esc(user.full_name or '-')} "
+                    f"(<code>{user.id}</code>)\n\n"
+                    f"{utils.esc(text)}"
+                )
+                for admin_id in config.ADMIN_IDS:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=admin_message,
+                            parse_mode=ParseMode.HTML,
+                        )
+                        delivered += 1
+                    except Exception:
+                        logger.warning(
+                            "تعذر تنبيه المشرف %s برسالة المستخدم %s",
+                            admin_id,
+                            user.id,
+                            exc_info=True,
+                        )
+                await message.reply_text(
+                    "✅ وصلت رسالتك إلى الإدارة."
+                    if delivered
+                    else "✅ حُفظت رسالتك في سجل المحادثة، لكن تعذّر تنبيه الإدارة الآن."
+                )
                 return
     await update.effective_message.reply_text(texts.WELCOME_HINT, parse_mode=ParseMode.HTML)
 
@@ -1734,6 +1870,11 @@ def build_conversation() -> ConversationHandler:
             ],
             ASK_FOLLOWUP: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_followup),
+                MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
+            ],
+            ASK_SUPPORT: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_support_message),
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
             ],
         },

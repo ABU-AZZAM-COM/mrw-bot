@@ -72,8 +72,16 @@ assert all(
         handlers.ASK_LOCATION,
         handlers.ASK_CONTACT,
         handlers.ASK_FOLLOWUP,
+        handlers.ASK_SUPPORT,
         handlers.CONFIRM,
     )
+)
+assert "ستراجعها الجهة المختصة" in texts.MY_REPORT_OPEN.format(
+    seq="TEST",
+    time="TEST",
+    status="TEST",
+    status_detail="ستراجعها الجهة المختصة",
+    desc="TEST",
 )
 prompt_edits = AsyncMock()
 prompt_context = SimpleNamespace(
@@ -425,6 +433,34 @@ _db_test_dir = tempfile.TemporaryDirectory(prefix="mrw-selftest-")
 DB_PATH = Path(_db_test_dir.name) / "test_reports.db"
 DB = database.Database(DB_PATH)
 
+support_user = SimpleNamespace(id=81818181, username="support_test", full_name="مستخدم الدعم")
+support_reply = AsyncMock()
+support_send = AsyncMock()
+support_db_dir = tempfile.TemporaryDirectory(prefix="mrw-support-selftest-")
+support_db = database.Database(Path(support_db_dir.name) / "support.db")
+support_update = SimpleNamespace(
+    effective_user=support_user,
+    effective_message=SimpleNamespace(text="رسالة اختبار", reply_text=support_reply),
+)
+support_context = SimpleNamespace(
+    user_data={"support_pending": True},
+    bot_data={"db": support_db},
+    bot=SimpleNamespace(send_message=support_send),
+)
+support_state = asyncio.run(
+    handlers.receive_support_message(support_update, support_context)
+)
+assert support_state == handlers.ConversationHandler.END
+assert not support_context.user_data
+assert asyncio.run(support_db.user_conversation_open(support_user.id))
+support_messages = asyncio.run(support_db.list_user_messages(support_user.id))
+assert len(support_messages) == 1
+assert support_messages[0]["text"] == "رسالة اختبار"
+support_send.assert_awaited_once()
+support_reply.assert_awaited_once()
+support_db.close()
+support_db_dir.cleanup()
+
 freeze_alerts = []
 freeze_notices = []
 
@@ -715,7 +751,11 @@ print("exporters OK:", xlsx.name, "|", txt.name)
 # فحص الترحيب/العرض (نصوص جاهزة) — الترحيب يؤدي إلى القائمة ذات الأزرار
 w = texts.WELCOME
 v = texts.badge("قيد المراجعة")
-assert "منظومة الاستقبال الرقمي" in w and "يرجى اختيار" in w and v == "🟠 قيد المراجعة"
+assert (
+    "منظومة البلاغات والشكاوى" in w
+    and "اختر الخدمة التي تحتاجها" in w
+    and v == "🟠 قيد المراجعة"
+)
 
 # القائمة الرئيسية: 4 إجراءات بلا زر فتح التطبيق + زر الرجوع يعيد إظهارها
 mm = keyboards.main_menu_kb()
@@ -968,6 +1008,32 @@ reject_report = asyncio.run(pdb.add_report(
 ))
 api_app = FastAPI()
 admin_api.register(api_app)
+version_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/version"
+)
+_old_render_commit = _os.environ.get("RENDER_GIT_COMMIT")
+_old_render_environment = _os.environ.get("RENDER_ENVIRONMENT")
+_old_render_service_name = _os.environ.get("RENDER_SERVICE_NAME")
+try:
+    _os.environ["RENDER_GIT_COMMIT"] = "test-commit-sha"
+    _os.environ["RENDER_ENVIRONMENT"] = "test-environment"
+    version_result = asyncio.run(version_endpoint())
+    assert json.loads(version_result.body) == {
+        "ok": True,
+        "commit": "test-commit-sha",
+        "environment": "test-environment",
+    }
+finally:
+    for _key, _old_value in (
+        ("RENDER_GIT_COMMIT", _old_render_commit),
+        ("RENDER_ENVIRONMENT", _old_render_environment),
+        ("RENDER_SERVICE_NAME", _old_render_service_name),
+    ):
+        if _old_value is None:
+            _os.environ.pop(_key, None)
+        else:
+            _os.environ[_key] = _old_value
 status_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/reports/{rid}/status"
