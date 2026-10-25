@@ -6,6 +6,11 @@ name: Uptime -> Telegram
 on:
   schedule:
     - cron: "*/5 * * * *"
+  # شبكة أمان: يعمل أيضًا بعد كل نبضة keepalive (كل 10 دقائق) فيصل التنبيه
+  # حتى لو تأخّر جدول cron الخاص بهذا الملف.
+  workflow_run:
+    workflows: ["render-keepalive"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       test:
