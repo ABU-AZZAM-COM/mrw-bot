@@ -827,7 +827,21 @@ exports = Path(tempfile.mkdtemp())
 xlsx = exporters.export_excel(asyncio.run(DB.all_reports()), out_dir=exports)
 txt = exporters.export_text(asyncio.run(DB.all_reports()), out_dir=exports)
 assert xlsx.exists() and txt.exists() and xlsx.stat().st_size > 4000 and txt.stat().st_size > 500
+from openpyxl import load_workbook
+
+excel_row = dict(asyncio.run(DB.all_reports())[0])
+excel_row["description"] = "قبل\x00وسط\x1fبعد"
+sanitized_xlsx = exporters.export_excel([excel_row], out_dir=exports)
+workbook = load_workbook(sanitized_xlsx, read_only=True)
+try:
+    description_cell = next(workbook["البلاغات"].iter_rows(
+        min_row=2, max_row=2, min_col=8, max_col=8, values_only=True
+    ))[0]
+    assert description_cell == "قبلوسطبعد"
+finally:
+    workbook.close()
 print("exporters OK:", xlsx.name, "|", txt.name)
+print("exporters: Excel strips XML-illegal control characters from report data")
 
 # فحص الترحيب/العرض (نصوص جاهزة) — الترحيب يؤدي إلى القائمة ذات الأزرار
 w = texts.WELCOME
