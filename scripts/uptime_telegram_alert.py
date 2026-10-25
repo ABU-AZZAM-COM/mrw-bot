@@ -248,17 +248,23 @@ def main() -> int:
             last_alert = None
             alerted = False
 
-        known[monitor_id] = {
+        entry_core = {
             "name": monitor.get("friendly_name") or monitor_id,
             "url": monitor.get("url") or "",
             "status": status,
             "down_since": down_since,
             "last_alert": last_alert,
             "alerted": alerted,
-            "updated_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(
-                timespec="seconds"
-            ),
         }
+        # لا نغيّر updated_at إن لم تتغيّر الحالة فعليًا، حتى لا يُنشأ commit كل تشغيل.
+        previous_core = {key: entry.get(key) for key in entry_core}
+        if previous_core == entry_core and entry.get("updated_at"):
+            updated_at = entry["updated_at"]
+        else:
+            updated_at = datetime.fromtimestamp(now, tz=timezone.utc).isoformat(
+                timespec="seconds"
+            )
+        known[monitor_id] = {**entry_core, "updated_at": updated_at}
 
     for removed in [mid for mid in known if mid not in seen]:
         del known[removed]
