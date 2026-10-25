@@ -13,9 +13,7 @@ abstract interface class AdminApi {
 
   String photoUrl(num reportId, {Object? bust});
 
-  String downloadUrl(String path);
-
-  void download(String path);
+  Future<void> download(String path);
 }
 
 class ApiException implements Exception {

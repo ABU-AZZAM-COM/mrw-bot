@@ -87,7 +87,7 @@ python main.py
 
 | المسار | الحالة | الدليل |
 |---|---|---|
-| **خدمة Render** | `https://mrw-bot.onrender.com`؛ آخر بصمة مؤكدة `81a5ec3`، طابقت `/version` و`git rev-parse HEAD` في 2026-10-25 | فحص Turso الجاري لم يُنشر بعد؛ راجع `PROJECT_HANDOFF.md` |
+| **خدمة Render** | `https://mrw-bot.onrender.com`؛ نشر Turso المؤكد `47db5e11ee35c6646a43db381025f6be89531719` | `/version` مطابق و`/db-health` أعاد 200 بعد الإقلاع |
 | **Hugging Face Space** | عنوان افتراضي اختياري في اللوحة؛ أعاد `/health` و`/api/admin/overview` حالة 404 عند الفحص | ليس عنوان الخدمة الفعلية الحالية |
 | **Hugging Face Dataset** | مخزن النسخ الاحتياطية | `hub_backup.py` |
 
@@ -96,9 +96,8 @@ python main.py
 `TURSO_DATABASE_URL` و`TURSO_AUTH_TOKEN` في مخزن أسرار Render. ينشئ التطبيق
 الجداول والفهارس ويطبق ترحيلات قاعدة البيانات عند بدء التشغيل، ويتيح
 `/db-health` فحص اتصال القاعدة. خارج Render يكون SQLite هو الافتراضي للتطوير؛
-على Render يُرفض بدء التشغيل مع SQLite أو عند غياب إعدادات Turso. لا تُشغّل
-النشر إلى Render قبل إضافة بيانات Turso السرية. راجع `PROJECT_HANDOFF.md`
-لحالة ترحيل الإنتاج ونتائج التحقق.
+على Render يُرفض بدء التشغيل مع SQLite أو عند غياب إعدادات Turso. قاعدة الإنتاج
+`mrw-bot` في `aws-eu-west-1`؛ راجع `PROJECT_HANDOFF.md` لبصمة النشر ونتائج الفحص.
 
 **النسخ الاحتياطي:**
 

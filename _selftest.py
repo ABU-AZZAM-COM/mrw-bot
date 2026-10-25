@@ -456,6 +456,20 @@ with (
     assert connect_turso.call_args.args == ("libsql://unit-test.example",)
     assert connect_turso.call_args.kwargs == {"auth_token": "unit-test-token"}
     assert asyncio.run(turso_db.total()) == 0
+    asyncio.run(turso_db.add_report(
+        user_id=111, username="snapshot_test", full_name="Snapshot test",
+        photo_path="", photo_file_id=None, post_link="https://example.com/report",
+        description="snapshot row",
+    ))
+    turso_snapshot = Path(_db_test_dir.name) / "turso-snapshot.db"
+    turso_db.export_sqlite_snapshot(turso_snapshot)
+    snapshot_conn = sqlite3.connect(turso_snapshot)
+    try:
+        assert snapshot_conn.execute(
+            "SELECT description FROM reports WHERE user_id = 111"
+        ).fetchone() == ("snapshot row",)
+    finally:
+        snapshot_conn.close()
     turso_db.close()
 
 with patch.dict(os.environ, {"RENDER_SERVICE_NAME": "mrw-test", "DB_BACKEND": "sqlite"}):
@@ -884,6 +898,7 @@ print("admin_api: حماية التوكن OK")
 
 _os.environ["ADMIN_API_TOKENS_JSON"] = json.dumps([
     {"token": "reviewer-test-token", "role": "reviewer", "admin_id": 111111111},
+    {"token": "operator-test-token", "role": "operator", "admin_id": 222222222},
 ])
 
 class _RoleRequest:
@@ -895,6 +910,15 @@ class _RoleRequest:
     def __init__(self, path):
         self.url = SimpleNamespace(path=path)
 
+class _FileAuthRequest:
+    method = "GET"
+    state = SimpleNamespace()
+
+    def __init__(self, path, headers, query_params=None):
+        self.url = SimpleNamespace(path=path)
+        self.headers = headers
+        self.query_params = query_params or {}
+
 review_req = _RoleRequest("/api/admin/reports/1/status")
 assert admin_api._auth(review_req) is None
 assert review_req.state.admin_role == "reviewer"
@@ -902,8 +926,28 @@ assert review_req.state.admin_id == 111111111
 denied_req = _RoleRequest("/api/admin/settings")
 denied = admin_api._auth(denied_req)
 assert denied is not None and denied.status_code == 403
+for file_path in (
+    "/api/admin/photo/1",
+    "/api/admin/export/xlsx",
+    "/api/admin/backup/download",
+):
+    query_only = _FileAuthRequest(
+        file_path, {}, {"token": "reviewer-test-token"}
+    )
+    denied = admin_api._auth(query_only)
+    assert denied is not None and denied.status_code == 401
+    legacy_header = _FileAuthRequest(
+        file_path, {"x-admin-token": "reviewer-test-token"}
+    )
+    denied = admin_api._auth(legacy_header)
+    assert denied is not None and denied.status_code == 401
+    bearer_header = _FileAuthRequest(
+        file_path, {"authorization": "Bearer operator-test-token"}
+    )
+    assert admin_api._auth(bearer_header) is None
 _os.environ.pop("ADMIN_API_TOKENS_JSON")
 print("admin_api: server-side role authorization OK")
+print("admin_api: file endpoints require Bearer auth; query tokens rejected")
 
 # أزرار رفض البلاغ من إشعار البوت والتفاصيل تطلب السبب.
 notify_callbacks = [
@@ -1123,6 +1167,18 @@ db_health_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/db-health"
 )
+system_health_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/system/health"
+)
+backup_download_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/backup/download"
+)
+backup_now_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/backup/now"
+)
 original_bot_app = _bot_main.app
 _bot_main.app = SimpleNamespace(bot_data={"db": DB}, bot=None)
 db_health_response = db_health_endpoint()
@@ -1130,6 +1186,96 @@ assert db_health_response.status_code == 200
 assert json.loads(db_health_response.body) == {"ok": True}
 _bot_main.app = original_bot_app
 _os.environ["ADMIN_API_TOKEN"] = "test-token-xyz"
+
+class _TursoHealthDb:
+    backend = "turso"
+
+    def health_check(self):
+        return True
+
+    async def total(self):
+        return 2
+
+    async def get_state(self, key):
+        return None
+
+class _HealthRequest:
+    headers = {"authorization": "Bearer test-token-xyz"}
+    method = "GET"
+    state = SimpleNamespace()
+    url = SimpleNamespace(path="/api/admin/system/health")
+
+_bot_main.app = SimpleNamespace(bot_data={"db": _TursoHealthDb()}, bot=None)
+healthy_turso_response = asyncio.run(system_health_endpoint(_HealthRequest()))
+healthy_turso = json.loads(healthy_turso_response.body)
+assert healthy_turso_response.status_code == 200
+assert healthy_turso["database_ready"] is True
+assert healthy_turso["backend"] == "turso"
+
+class _UnavailableTursoDb(_TursoHealthDb):
+    def health_check(self):
+        raise RuntimeError("simulated database outage")
+
+_bot_main.app = SimpleNamespace(bot_data={"db": _UnavailableTursoDb()}, bot=None)
+unavailable_response = asyncio.run(system_health_endpoint(_HealthRequest()))
+unavailable_health = json.loads(unavailable_response.body)
+assert unavailable_health["database_ready"] is False
+assert unavailable_health["backend"] == "turso"
+
+_bot_main.app = SimpleNamespace(bot_data={"db": DB}, bot=None)
+healthy_sqlite_response = asyncio.run(system_health_endpoint(_HealthRequest()))
+healthy_sqlite = json.loads(healthy_sqlite_response.body)
+assert healthy_sqlite["database_ready"] is True
+assert healthy_sqlite["backend"] == "sqlite"
+assert db_health_endpoint().status_code == 200
+print("admin_api: system health checks SELECT 1 and reports backend")
+
+class _TursoBackupDb:
+    backend = "turso"
+    path = DB.path
+
+    def export_sqlite_snapshot(self, output_path):
+        DB.export_sqlite_snapshot(output_path)
+
+    async def audit(self, *args):
+        return None
+
+backup_request = _HealthRequest()
+backup_request.url = SimpleNamespace(path="/api/admin/backup/download")
+_bot_main.app = SimpleNamespace(bot_data={"db": _TursoBackupDb()}, bot=None)
+backup_response = asyncio.run(backup_download_endpoint(backup_request))
+assert backup_response.status_code == 200
+assert Path(backup_response.path).is_file()
+backup_conn = sqlite3.connect(backup_response.path)
+try:
+    assert backup_conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0] > 0
+finally:
+    backup_conn.close()
+asyncio.run(backup_response.background())
+assert not Path(backup_response.path).exists()
+
+uploaded_snapshot_paths = []
+
+def _fake_upload_backup(snapshot_path):
+    snapshot_path = Path(snapshot_path)
+    assert snapshot_path.is_file()
+    conn = sqlite3.connect(snapshot_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0] > 0
+    finally:
+        conn.close()
+    uploaded_snapshot_paths.append(snapshot_path)
+    return True
+
+with patch("hub_backup.upload_backup", _fake_upload_backup):
+    upload_request = _HealthRequest()
+    upload_request.method = "POST"
+    upload_request.url = SimpleNamespace(path="/api/admin/backup/now")
+    upload_response = asyncio.run(backup_now_endpoint(upload_request))
+assert json.loads(upload_response.body)["uploaded"] is True
+assert len(uploaded_snapshot_paths) == 1
+assert not uploaded_snapshot_paths[0].exists()
+print("admin_api: Turso backup download and upload create and clean temporary snapshots")
 
 photo_db_tmp = tempfile.TemporaryDirectory(prefix="mrw-photo-selftest-")
 photo_db = database.Database(Path(photo_db_tmp.name) / "photo.db")
@@ -1146,7 +1292,7 @@ missing_image = {**legacy_image, "photo_path": "missing-image.png"}
 assert admin_api._safe_report(missing_image)["has_photo"] is False
 
 class _PhotoRequest:
-    headers = {}
+    headers = {"authorization": "Bearer test-token-xyz"}
     query_params = {"token": "test-token-xyz"}
     method = "GET"
     state = SimpleNamespace()

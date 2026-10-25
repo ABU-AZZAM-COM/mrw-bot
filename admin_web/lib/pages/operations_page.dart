@@ -138,6 +138,14 @@ class _OperationsPageState extends State<OperationsPage> {
     }
   }
 
+  Future<void> _download(String path) async {
+    try {
+      await widget.api.download(path);
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
   Future<void> _saveSettings() async {
     final desc = int.tryParse(_maxDesc.text.trim());
     final photo = int.tryParse(_maxPhoto.text.trim());
@@ -663,13 +671,13 @@ class _OperationsPageState extends State<OperationsPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               FilledButton.tonalIcon(
-                onPressed: () => widget.api.download('/api/admin/export/xlsx'),
+                onPressed: () => _download('/api/admin/export/xlsx'),
                 icon: const Icon(Icons.table_chart),
                 label: const Text('تصدير اكسل (xlsx) — كل البلاغات'),
               ),
               const SizedBox(height: 6),
               OutlinedButton.icon(
-                onPressed: () => widget.api.download('/api/admin/export/txt'),
+                onPressed: () => _download('/api/admin/export/txt'),
                 icon: const Icon(Icons.description_outlined),
                 label: const Text('تصدير نصي (txt) — كل البلاغات'),
               ),
@@ -678,11 +686,11 @@ class _OperationsPageState extends State<OperationsPage> {
                 leading: const Icon(Icons.storage_outlined),
                 title: const Text('تنزيل نسخة قاعدة البيانات'),
                 subtitle: const Text(
-                  'ملف SQLite كامل — يُسجَّل في سجل التدقيق',
+                  'لقطة SQLite كاملة — تُسجَّل في سجل التدقيق',
                   style: TextStyle(fontSize: 12),
                 ),
                 trailing: const Icon(Icons.download),
-                onTap: () => widget.api.download('/api/admin/backup/download'),
+                onTap: () => _download('/api/admin/backup/download'),
               ),
               ListTile(
                 leading: const Icon(Icons.backup_outlined),

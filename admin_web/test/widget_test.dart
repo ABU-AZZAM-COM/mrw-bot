@@ -76,10 +76,8 @@ class _FakeApi implements AdminApi {
   String photoUrl(num reportId, {Object? bust}) => '';
 
   @override
-  String downloadUrl(String path) => path;
-
   @override
-  void download(String path) {}
+  Future<void> download(String path) async {}
 }
 
 void main() {
