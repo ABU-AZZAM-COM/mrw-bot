@@ -1189,6 +1189,7 @@ _os.environ["ADMIN_API_TOKEN"] = "test-token-xyz"
 
 class _TursoHealthDb:
     backend = "turso"
+    heartbeat = None
 
     def health_check(self):
         return True
@@ -1197,7 +1198,7 @@ class _TursoHealthDb:
         return 2
 
     async def get_state(self, key):
-        return None
+        return self.heartbeat if key == "bot_last_heartbeat" else None
 
 class _HealthRequest:
     headers = {"authorization": "Bearer test-token-xyz"}
@@ -1211,6 +1212,17 @@ healthy_turso = json.loads(healthy_turso_response.body)
 assert healthy_turso_response.status_code == 200
 assert healthy_turso["database_ready"] is True
 assert healthy_turso["backend"] == "turso"
+assert healthy_turso["bot_alive"] is False
+assert healthy_turso["webhook_ready"] is False
+_bot_main.app.bot_data["db"].heartbeat = datetime.now(timezone.utc).isoformat()
+fresh_heartbeat_response = asyncio.run(system_health_endpoint(_HealthRequest()))
+assert json.loads(fresh_heartbeat_response.body)["bot_alive"] is True
+_bot_main.app.bot_data["db"].heartbeat = (
+    datetime.now(timezone.utc) - timedelta(seconds=181)
+).isoformat()
+stale_heartbeat_response = asyncio.run(system_health_endpoint(_HealthRequest()))
+assert json.loads(stale_heartbeat_response.body)["bot_alive"] is False
+_bot_main.app.bot_data["db"].heartbeat = None
 
 class _UnavailableTursoDb(_TursoHealthDb):
     def health_check(self):
@@ -1229,6 +1241,161 @@ assert healthy_sqlite["database_ready"] is True
 assert healthy_sqlite["backend"] == "sqlite"
 assert db_health_endpoint().status_code == 200
 print("admin_api: system health checks SELECT 1 and reports backend")
+
+heartbeat_values = []
+
+class _HeartbeatDb:
+    async def set_state(self, key, value):
+        heartbeat_values.append((key, value))
+
+asyncio.run(main_mod.write_heartbeat(_HeartbeatDb()))
+assert heartbeat_values[0][0] == "bot_last_heartbeat"
+heartbeat_written_at = datetime.fromisoformat(heartbeat_values[0][1])
+assert abs((datetime.now(timezone.utc) - heartbeat_written_at).total_seconds()) < 5
+print("main: heartbeat writes a UTC timestamp to system_state")
+
+class _WebhookBot:
+    def __init__(self, fail_set=False):
+        self.calls = []
+        self.fail_set = fail_set
+
+    async def delete_webhook(self, **kwargs):
+        self.calls.append(("delete_webhook", kwargs))
+
+    async def set_webhook(self, **kwargs):
+        self.calls.append(("set_webhook", kwargs))
+        if self.fail_set:
+            raise RuntimeError("simulated Telegram failure")
+
+class _WebhookUpdater:
+    def __init__(self):
+        self.running = False
+        self.calls = []
+
+    async def start_polling(self, **kwargs):
+        self.calls.append(("start_polling", kwargs))
+        self.running = True
+
+    async def stop(self):
+        self.running = False
+
+async def _exercise_webhook_startup(fail_set=False):
+    fake_bot = _WebhookBot(fail_set=fail_set)
+    fake_updater = _WebhookUpdater() if fail_set else None
+
+    class _WebhookApplication:
+        post_init = None
+        post_shutdown = None
+
+        def __init__(self):
+            self.bot = fake_bot
+            self.bot_data = {}
+            self.updater = fake_updater
+            self.calls = []
+
+        async def initialize(self):
+            self.calls.append("initialize")
+
+        async def start(self):
+            self.calls.append("start")
+            asyncio.get_running_loop().call_soon(
+                asyncio.current_task().cancel
+            )
+
+        async def stop(self):
+            self.calls.append("stop")
+
+        async def shutdown(self):
+            self.calls.append("shutdown")
+
+    fake_application = _WebhookApplication()
+    try:
+        await main_mod.run_webhook(fake_application, "unit-test-secret")
+    except asyncio.CancelledError:
+        pass
+    return fake_application, fake_bot, fake_updater
+
+webhook_run, webhook_bot, _ = asyncio.run(_exercise_webhook_startup())
+assert webhook_bot.calls[0] == (
+    "delete_webhook", {"drop_pending_updates": False}
+)
+assert webhook_bot.calls[1][0] == "set_webhook"
+assert webhook_bot.calls[1][1]["url"] == main_mod.TELEGRAM_WEBHOOK_URL
+assert webhook_bot.calls[1][1]["secret_token"] == "unit-test-secret"
+assert webhook_bot.calls[1][1]["drop_pending_updates"] is False
+assert webhook_run.bot_data["webhook_ready"] is True
+
+fallback_run, fallback_bot, fallback_updater = asyncio.run(
+    _exercise_webhook_startup(fail_set=True)
+)
+assert fallback_bot.calls[0] == (
+    "delete_webhook", {"drop_pending_updates": False}
+)
+assert fallback_updater.calls == [(
+    "start_polling",
+    {"allowed_updates": main_mod.Update.ALL_TYPES, "drop_pending_updates": False},
+)]
+assert fallback_run.bot_data["webhook_ready"] is False
+print("main: webhook setup preserves updates and falls back to polling")
+
+import space_app as space_app_mod
+from telegram import Update
+
+webhook_app = space_app_mod.build_app()
+webhook_endpoint = next(
+    route.endpoint for route in webhook_app.routes
+    if getattr(route, "path", None) == "/telegram/webhook"
+)
+old_webhook_secret = _os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+try:
+    _os.environ["TELEGRAM_WEBHOOK_SECRET"] = "test-webhook-secret"
+
+    class _WebhookRequest:
+        def __init__(self, headers, payload):
+            self.headers = headers
+            self.payload = payload
+
+        async def json(self):
+            return self.payload
+
+    async def _test_webhook():
+        update_queue = asyncio.Queue()
+        running_loop = asyncio.get_running_loop()
+        fake_application = SimpleNamespace(
+            bot_data={"loop": running_loop},
+            bot=object(),
+            update_queue=update_queue,
+        )
+        original_application = _bot_main.app
+        _bot_main.app = fake_application
+        try:
+            denied = await webhook_endpoint(
+                _WebhookRequest({}, {"update_id": 10})
+            )
+            assert denied.status_code == 403
+            accepted = await webhook_endpoint(
+                _WebhookRequest(
+                    {"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret"},
+                    {"update_id": 11},
+                )
+            )
+            await asyncio.sleep(0)
+            assert accepted.status_code == 200
+            queued_update = update_queue.get_nowait()
+            assert isinstance(queued_update, Update)
+            assert queued_update.update_id == 11
+            return denied.status_code, accepted.status_code
+        finally:
+            _bot_main.app = original_application
+
+    webhook_statuses = asyncio.run(_test_webhook())
+    assert webhook_statuses == (403, 200)
+finally:
+    if old_webhook_secret is None:
+        _os.environ.pop("TELEGRAM_WEBHOOK_SECRET", None)
+    else:
+        _os.environ["TELEGRAM_WEBHOOK_SECRET"] = old_webhook_secret
+print("space_app: webhook validates Telegram secret and queues updates")
 
 class _TursoBackupDb:
     backend = "turso"

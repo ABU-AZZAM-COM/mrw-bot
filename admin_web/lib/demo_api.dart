@@ -206,6 +206,8 @@ class DemoApi implements AdminApi {
       return {
         'ok': true,
         'bot_ready': false,
+        'bot_alive': false,
+        'webhook_ready': false,
         'database_ready': true,
         'database_error': null,
         'reports_total': _reports.length,

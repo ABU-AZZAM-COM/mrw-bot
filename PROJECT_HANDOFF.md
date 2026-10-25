@@ -4,6 +4,26 @@
 **المستودع:** `ABU-AZZAM-COM/mrw-bot`
 **الغرض:** مرجع مختصر لمالك المشروع أو لأي مساعد/نموذج يتابع العمل لاحقًا.
 
+## Telegram Webhook + Heartbeat
+
+- في خدمة Render يبدأ البوت مستقبِل Webhook عبر نقطة FastAPI
+  `POST /telegram/webhook` على المنفذ نفسه؛ لم يُشغّل خادم PTB/Tornado منفصلًا
+  حتى لا يتعارض مع Uvicorn. عند الإقلاع ينفذ التطبيق
+  `deleteWebhook(drop_pending_updates=False)` ثم يضبط
+  `https://mrw-bot.onrender.com/telegram/webhook` مع `TELEGRAM_WEBHOOK_SECRET`.
+- لا يقبل المسار التحديثات إلا عند تطابق
+  `X-Telegram-Bot-Api-Secret-Token`، ثم يمررها إلى طابور PTB على حلقة البوت.
+  إذا تعذر تسجيل Webhook يعود التشغيل إلى polling مع إبقاء التحديثات المعلقة،
+  وتظهر حالة `webhook_ready: false` في فحص صحة النظام.
+- يكتب البوت كل 60 ثانية طابع UTC في `system_state.bot_last_heartbeat`.
+  يعرض `/api/admin/system/health` قيمة `bot_alive: true` فقط إذا كان الطابع
+  أحدث من 180 ثانية؛ هذا الفحص لا يعتمد على وصول رسائل المستخدمين. ويعرض
+  `webhook_ready` لتمييز webhook المسجل عن وضع polling الاحتياطي.
+- الاختبارات المحلية غطت ترتيب ضبط Webhook، عدم إسقاط التحديثات، fallback إلى
+  polling، رفض الترويسة غير الصحيحة، تمرير تحديث صالح إلى PTB، وعمر heartbeat.
+- **حالة النشر والتحقق الحي:** بانتظار دمج التغيير ونشره على Render؛ لا تعتبر
+  `bot_alive` أو استجابة `/start` مؤكدة في الإنتاج حتى تسجيل نتائج الفحص بعد النشر.
+
 ## ترحيل Turso — منشور ومتحقق منه
 
 - فُحص مسار SQLite المحلي `data/reports.db`: الملف غير موجود، ولم تُعثر على

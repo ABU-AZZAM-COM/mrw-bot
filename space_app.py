@@ -81,8 +81,8 @@ def _run_bot() -> None:
     """يشغّل البوت في خيط خلفي (يستقبل الرسائل من تلغرام)."""
     try:
         bot_main.main()
-    except Exception:
-        logger.exception("توقف البوت داخل المساحة السحابية")
+    except Exception as exc:
+        logger.error("توقف البوت داخل المساحة السحابية (%s)", type(exc).__name__)
 
 
 @GPU(duration=5)
@@ -235,6 +235,62 @@ def build_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["x-admin-token", "content-type"],
     )
+
+    @app.post("/telegram/webhook")
+    async def telegram_webhook(request: Request) -> JSONResponse:
+        expected_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+        provided_secret = request.headers.get(
+            "X-Telegram-Bot-Api-Secret-Token", ""
+        )
+        if not expected_secret:
+            return JSONResponse(
+                {"ok": False, "error": "webhook_secret_not_configured"},
+                status_code=503,
+            )
+        if not provided_secret or not hmac.compare_digest(
+            provided_secret, expected_secret
+        ):
+            return JSONResponse(
+                {"ok": False, "error": "unauthorized"}, status_code=403
+            )
+
+        application = getattr(bot_main, "app", None)
+        loop = (
+            application.bot_data.get("loop")
+            if application is not None
+            else None
+        )
+        if (
+            application is None
+            or application.bot is None
+            or loop is None
+            or not loop.is_running()
+        ):
+            return JSONResponse(
+                {"ok": False, "error": "bot_not_ready"}, status_code=503
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse(
+                {"ok": False, "error": "bad_json"}, status_code=400
+            )
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"ok": False, "error": "bad_update"}, status_code=400
+            )
+
+        from telegram import Update
+
+        try:
+            update = Update.de_json(payload, application.bot)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"ok": False, "error": "bad_update"}, status_code=400
+            )
+        loop.call_soon_threadsafe(application.update_queue.put_nowait, update)
+        return JSONResponse({"ok": True})
 
     # 1) فحص سريع للمنصة
     @app.get("/health")

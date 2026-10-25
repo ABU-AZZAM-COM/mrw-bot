@@ -1,17 +1,18 @@
 """
-نقطة التشغيل — يجمع كل الأجزاء ويشغّل البوت (polling).
+نقطة التشغيل — يجمع كل الأجزاء ويشغّل استقبال Telegram.
 
 الترتيب العام:
   1) تهيئة الطرفية والسجل (Logging)
   2) فتح قاعدة البيانات
   3) بناء التطبيق وتسجيل المعالجات
-  4) بدء الاستقبال من تلغرام
+  4) بدء Webhook في الإنتاج أو polling محليًا
 """
 import asyncio
 import logging
 import os
 import sys
 import threading
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
 # ------------------------------------------------------------------
@@ -44,6 +45,9 @@ from telegram.ext import (
 )
 
 logger = logging.getLogger(__name__)
+
+TELEGRAM_WEBHOOK_URL = "https://mrw-bot.onrender.com/telegram/webhook"
+HEARTBEAT_INTERVAL_SECONDS = 60
 
 # عند التشغيل المباشر `python main.py` يكون اسم الوحدة __main__، بينما
 # space_app / admin_api يستوردان `main`. نوحّد الاسمين حتى يقرأ الجميع
@@ -141,6 +145,11 @@ async def post_init(app) -> None:
 
     logger.info("✅ البوت جاهز ويستقبل الرسائل …")
 
+    app.create_task(
+        heartbeat_loop(app.bot_data["db"]),
+        name="bot-heartbeat",
+    )
+
     # ------------------------------------------------------------------
     # التطبيق (Mini App): زر القائمة الدائم + أمر فتح التطبيق
     # الزر يظهر بجانب مربع الكتابة لكل مستخدم → سهولة الوصول (المهم: أن يعرف
@@ -195,6 +204,79 @@ async def post_shutdown(app) -> None:
     if db:
         db.close()
     logger.info("🛑 تم إيقاف البوت وإغلاق قاعدة البيانات.")
+
+
+async def write_heartbeat(db) -> None:
+    await db.set_state(
+        "bot_last_heartbeat",
+        datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+
+
+async def heartbeat_loop(db) -> None:
+    """Persist a database-backed liveness marker independently of user traffic."""
+    while True:
+        try:
+            await write_heartbeat(db)
+        except Exception as exc:
+            logger.error(
+                "تعذرت كتابة نبضة حياة البوت (%s)", type(exc).__name__
+            )
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+
+
+async def run_webhook(application, secret: str) -> None:
+    """Run PTB on its own loop while FastAPI receives Telegram webhook requests."""
+    initialized = False
+    started = False
+    try:
+        await application.initialize()
+        initialized = True
+        if application.post_init:
+            await application.post_init(application)
+
+        webhook_ready = False
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=False)
+            await application.bot.set_webhook(
+                url=TELEGRAM_WEBHOOK_URL,
+                secret_token=secret,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
+            )
+            webhook_ready = True
+        except Exception as exc:
+            logger.error(
+                "فشل إعداد Telegram Webhook (%s)؛ سيُستخدم polling مؤقتًا",
+                type(exc).__name__,
+            )
+
+        application.bot_data["webhook_ready"] = webhook_ready
+        await application.start()
+        started = True
+        if webhook_ready:
+            logger.info("✅ Telegram Webhook مضبوط على %s", TELEGRAM_WEBHOOK_URL)
+        else:
+            if application.updater is None:
+                raise RuntimeError("لا يتوفر Updater للعودة إلى polling")
+            await application.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
+            )
+            logger.critical(
+                "⚠️ يعمل البوت مؤقتًا عبر polling بعد فشل إعداد Webhook"
+            )
+
+        await asyncio.Event().wait()
+    finally:
+        if application.updater and application.updater.running:
+            await application.updater.stop()
+        if started:
+            await application.stop()
+        if initialized:
+            if application.post_shutdown:
+                await application.post_shutdown(application)
+            await application.shutdown()
 
 
 # ==================================================================
@@ -305,9 +387,21 @@ def main() -> None:
     # Hugging Face Space)، ونترك السلوك الافتراضي كما هو في التشغيل العادي.
     in_main_thread = threading.current_thread() is threading.main_thread()
 
-    if in_main_thread:
+    webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    use_webhook = bool(os.getenv("PORT")) and bool(webhook_secret)
+    if os.getenv("PORT") and not webhook_secret:
+        logger.error(
+            "TELEGRAM_WEBHOOK_SECRET غير مضبوط؛ سيُستخدم polling مؤقتًا"
+        )
+    if use_webhook:
+        asyncio.run(run_webhook(app, webhook_secret))
+    elif in_main_thread:
         app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
     else:
+        if os.getenv("PORT"):
+            logger.error(
+                "تعذر تشغيل Webhook؛ سيُستخدم polling مؤقتًا"
+            )
         app.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=False,
