@@ -1521,35 +1521,38 @@ class Database:
         )
 
     def _count_daily(self, since_date: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n"
-            " FROM reports WHERE substr(created_at, 1, 10) >= ?"
-            " GROUP BY day ORDER BY day",
-            (since_date,),
-        ).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n"
+                " FROM reports WHERE substr(created_at, 1, 10) >= ?"
+                " GROUP BY day ORDER BY day",
+                (since_date,),
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows]
 
     async def count_daily(self, since_date: str):
         return await asyncio.to_thread(self._count_daily, since_date)
 
     def _count_by_type(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT violation_type AS vtype, COUNT(*) AS n FROM reports"
-            " WHERE violation_type IS NOT NULL AND violation_type != ''"
-            " GROUP BY vtype ORDER BY n DESC"
-        ).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT violation_type AS vtype, COUNT(*) AS n FROM reports"
+                " WHERE violation_type IS NOT NULL AND violation_type != ''"
+                " GROUP BY vtype ORDER BY n DESC"
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows]
 
     async def count_by_type(self):
         return await asyncio.to_thread(self._count_by_type)
 
     def _top_users(self, limit: int = 7) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT user_id, MAX(full_name) AS full_name, COUNT(*) AS n"
-            " FROM reports GROUP BY user_id ORDER BY n DESC LIMIT ?",
-            (max(1, min(int(limit), 20)),),
-        ).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT user_id, MAX(full_name) AS full_name, COUNT(*) AS n"
+                " FROM reports GROUP BY user_id ORDER BY n DESC LIMIT ?",
+                (max(1, min(int(limit), 20)),),
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows]
 
     async def top_users(self, limit: int = 7):
         return await asyncio.to_thread(self._top_users, limit)

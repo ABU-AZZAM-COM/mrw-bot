@@ -1845,6 +1845,39 @@ by_type = asyncio.run(pdb.count_by_type())
 assert by_type and by_type[0]["vtype"] == "مخالفة زي"
 tops = asyncio.run(pdb.top_users(7))
 assert tops[0]["n"] == 1 and tops[0]["user_id"] == 888
+
+async def _concurrent_analytics_reads():
+    async def read_snapshot():
+        daily_rows, type_rows, user_rows = await asyncio.gather(
+            pdb.count_daily("2000-01-01"),
+            pdb.count_by_type(),
+            pdb.top_users(7),
+        )
+        assert isinstance(daily_rows, list)
+        assert isinstance(type_rows, list)
+        assert isinstance(user_rows, list)
+
+    async def add_analytics_report(index):
+        await pdb.add_report(
+            user_id=9000 + index,
+            username=f"parallel_{index}",
+            full_name=f"مستخدم متزامن {index}",
+            photo_path="",
+            photo_file_id=None,
+            post_link=f"https://example.com/parallel/{index}",
+            description=f"اختبار التزامن {index}",
+            violation_type="اختبار التزامن",
+        )
+
+    await asyncio.gather(
+        *(read_snapshot() for _ in range(12)),
+        *(add_analytics_report(index) for index in range(8)),
+    )
+
+asyncio.run(_concurrent_analytics_reads())
+assert asyncio.run(pdb.count_by_type())[0]["n"] == 8
+print("analytics queries remain safe during concurrent Turso-style access")
+
 ids, overflow = asyncio.run(pdb.all_user_ids(cap=300))
 assert 888 in ids and overflow is False
 ids, overflow = asyncio.run(pdb.all_user_ids(cap=1))
