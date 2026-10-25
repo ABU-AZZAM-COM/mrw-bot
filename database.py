@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -151,6 +152,17 @@ CREATE TABLE IF NOT EXISTS system_state (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    target_admin_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_read_created
+    ON notifications(is_read, id);
+
 -- بصمات المحتوى لكشف التكرار (رابط مطبَّع + تشابه الوصف)
 CREATE TABLE IF NOT EXISTS report_fingerprints (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -196,6 +208,7 @@ class Database:
     def __init__(self, path: Path, backend: str | None = None) -> None:
         self._path = Path(path)
         self._lock = threading.RLock()
+        self._notification_subscribers: set[queue.Queue[dict[str, Any]]] = set()
         is_render = any(
             os.getenv(name, "").strip()
             for name in ("RENDER_SERVICE_ID", "RENDER_SERVICE_NAME", "RENDER_EXTERNAL_URL")
@@ -428,8 +441,20 @@ class Database:
             # توليد الرقم التسلسلي الفريد MRV-YYYY-NNNN اعتمادًا على id الصف
             seq = f"MRV-{datetime.now(timezone.utc).year}-{rid:04d}"
             self._conn.execute("UPDATE reports SET seq = ? WHERE id = ?", (seq, rid))
+            report = self._get_by_id(rid) or {}
+            notification = self._insert_notification_locked(
+                "report_new",
+                {
+                    "report_id": rid,
+                    "seq": seq,
+                    "priority": report.get("priority", "normal"),
+                    "user_id": user_id,
+                    "full_name": full_name or "",
+                },
+            )
             self._conn.commit()
-            return self._get_by_id(rid) or {}
+        self._publish_notification(notification)
+        return report
 
     async def add_report(self, **kwargs) -> dict[str, Any]:
         return await asyncio.to_thread(self._add_report, **kwargs)
@@ -675,7 +700,12 @@ class Database:
     def _save_block(self, user_id: int, strikes: int, frozen_until: Optional[str],
                     reason: str) -> None:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        notification = None
         with self._lock:
+            previous = self._conn.execute(
+                "SELECT frozen_until FROM user_blocks WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
             self._conn.execute(
                 """
                 INSERT INTO user_blocks (user_id, strikes, frozen_until, reason, updated_at)
@@ -688,7 +718,19 @@ class Database:
                 """,
                 (user_id, strikes, frozen_until, reason, now_iso),
             )
+            if frozen_until and (
+                not previous or previous["frozen_until"] != frozen_until
+            ):
+                notification = self._insert_notification_locked(
+                    "user_blocked",
+                    {
+                        "user_id": user_id,
+                        "reason": reason,
+                        "frozen_until": frozen_until,
+                    },
+                )
             self._conn.commit()
+        self._publish_notification(notification)
 
     async def save_block(self, user_id: int, strikes: int, frozen_until: Optional[str],
                          reason: str) -> None:
@@ -756,7 +798,14 @@ class Database:
         return await asyncio.to_thread(self._get_state, key)
 
     def _set_state(self, key: str, value: Optional[str]) -> None:
+        notification = None
         with self._lock:
+            previous = None
+            if key == "emergency":
+                row = self._conn.execute(
+                    "SELECT value FROM system_state WHERE key = ?", (key,)
+                ).fetchone()
+                previous = row["value"] if row else None
             if value is None:
                 self._conn.execute("DELETE FROM system_state WHERE key = ?", (key,))
             else:
@@ -765,10 +814,144 @@ class Database:
                     " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (key, value),
                 )
+            if key == "emergency" and value == "1" and previous != "1":
+                notification = self._insert_notification_locked(
+                    "emergency",
+                    {"on": True, "created_at": datetime.now(timezone.utc).isoformat()},
+                )
             self._conn.commit()
+        self._publish_notification(notification)
 
     async def set_state(self, key: str, value: Optional[str]) -> None:
         await asyncio.to_thread(self._set_state, key, value)
+
+    def _insert_notification_locked(
+        self,
+        notification_type: str,
+        payload: dict[str, Any],
+        target_admin_id: int | None = None,
+    ) -> dict[str, Any]:
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        cursor = self._conn.execute(
+            """
+            INSERT INTO notifications (type, payload, created_at, target_admin_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                notification_type,
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                created_at,
+                target_admin_id,
+            ),
+        )
+        return {
+            "id": int(cursor.lastrowid),
+            "type": notification_type,
+            "payload": payload,
+            "created_at": created_at,
+            "is_read": False,
+            "target_admin_id": target_admin_id,
+        }
+
+    def _publish_notification(self, notification: dict[str, Any] | None) -> None:
+        if notification is None:
+            return
+        with self._lock:
+            subscribers = tuple(self._notification_subscribers)
+        for subscriber in subscribers:
+            subscriber.put(notification)
+
+    def subscribe_notifications(self) -> queue.Queue[dict[str, Any]]:
+        subscriber: queue.Queue[dict[str, Any]] = queue.Queue()
+        with self._lock:
+            self._notification_subscribers.add(subscriber)
+        return subscriber
+
+    def unsubscribe_notifications(
+        self, subscriber: queue.Queue[dict[str, Any]]
+    ) -> None:
+        with self._lock:
+            self._notification_subscribers.discard(subscriber)
+
+    def _create_notification(
+        self,
+        notification_type: str,
+        payload: dict[str, Any],
+        target_admin_id: int | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            notification = self._insert_notification_locked(
+                notification_type, payload, target_admin_id
+            )
+            self._conn.commit()
+        self._publish_notification(notification)
+        return notification
+
+    async def create_notification(
+        self,
+        notification_type: str,
+        payload: dict[str, Any],
+        target_admin_id: int | None = None,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._create_notification,
+            notification_type,
+            payload,
+            target_admin_id,
+        )
+
+    def _list_notifications(
+        self, unread_only: bool = False, limit: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        limit = max(1, min(int(limit), 100))
+        with self._lock:
+            unread_count = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) AS count FROM notifications WHERE is_read = 0"
+                ).fetchone()["count"]
+            )
+            where = "WHERE is_read = 0" if unread_only else ""
+            rows = self._conn.execute(
+                f"SELECT * FROM notifications {where} ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            item = _row_to_dict(row)
+            item["payload"] = json.loads(item["payload"])
+            item["is_read"] = bool(item["is_read"])
+            items.append(item)
+        return items, unread_count
+
+    async def list_notifications(
+        self, unread_only: bool = False, limit: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        return await asyncio.to_thread(self._list_notifications, unread_only, limit)
+
+    def _mark_notification_read(self, notification_id: int) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE notifications SET is_read = 1 WHERE id = ?",
+                (notification_id,),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def mark_notification_read(self, notification_id: int) -> bool:
+        return await asyncio.to_thread(
+            self._mark_notification_read, notification_id
+        )
+
+    def _mark_all_notifications_read(self) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE notifications SET is_read = 1 WHERE is_read = 0"
+            )
+            self._conn.commit()
+            return int(cursor.rowcount)
+
+    async def mark_all_notifications_read(self) -> int:
+        return await asyncio.to_thread(self._mark_all_notifications_read)
 
     def _add_fingerprint(self, report_id: int, link_hash: Optional[str],
                          text_hash: Optional[str], photo_hash: Optional[str]) -> None:
@@ -931,13 +1114,28 @@ class Database:
         self, rid: int, priority: str, assigned_to: Optional[int],
         due_at: Optional[str],
     ) -> bool:
+        notification = None
         with self._lock:
+            previous = self._conn.execute(
+                "SELECT priority, seq FROM reports WHERE id = ?", (rid,)
+            ).fetchone()
             cur = self._conn.execute(
                 "UPDATE reports SET priority = ?, assigned_to = ?, due_at = ? WHERE id = ?",
                 (priority, assigned_to, due_at, rid),
             )
+            if (
+                cur.rowcount > 0
+                and priority == "urgent"
+                and previous
+                and previous["priority"] != "urgent"
+            ):
+                notification = self._insert_notification_locked(
+                    "report_urgent",
+                    {"report_id": rid, "seq": previous["seq"] or ""},
+                )
             self._conn.commit()
-            return cur.rowcount > 0
+        self._publish_notification(notification)
+        return cur.rowcount > 0
 
     async def update_report_workflow(
         self, rid: int, priority: str, assigned_to: Optional[int],
@@ -1228,6 +1426,7 @@ class Database:
         if direction not in {"in", "out"}:
             raise ValueError("invalid message direction")
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        notification = None
         with self._lock:
             cur = self._conn.execute(
                 """
@@ -1240,8 +1439,19 @@ class Database:
                 "UPDATE user_conversations SET updated_at = ? WHERE user_id = ?",
                 (now_iso, user_id),
             )
+            message_id = int(cur.lastrowid)
+            if direction == "in":
+                notification = self._insert_notification_locked(
+                    "user_message",
+                    {
+                        "user_id": user_id,
+                        "message_id": message_id,
+                        "preview": text[:160],
+                    },
+                )
             self._conn.commit()
-            return int(cur.lastrowid)
+        self._publish_notification(notification)
+        return message_id
 
     async def add_user_message(
         self, user_id: int, direction: str, text: str, admin_id: int | None = None

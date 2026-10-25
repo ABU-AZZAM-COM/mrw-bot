@@ -126,6 +126,9 @@ class DemoApi implements AdminApi {
     String path, [
     Map<String, String>? query,
   ]) async {
+    if (path == '/api/admin/notifications') {
+      return {'ok': true, 'items': <Map<String, dynamic>>[], 'unread_count': 0};
+    }
     if (path == '/api/admin/session') {
       return {'ok': true, 'role': 'owner', 'admin_id': 0};
     }
@@ -330,6 +333,10 @@ class DemoApi implements AdminApi {
     String path,
     Map<String, dynamic> body,
   ) async {
+    if (path == '/api/admin/notifications/read-all' ||
+        RegExp(r'^/api/admin/notifications/\d+/read$').hasMatch(path)) {
+      return {'ok': true};
+    }
     if (path == '/api/admin/system/emergency') {
       _emergency = body['on'] == true;
       _record(_emergency ? 'emergency_on' : 'emergency_off', 'النظام');
@@ -537,6 +544,9 @@ class DemoApi implements AdminApi {
     }
     return null;
   }
+
+  @override
+  Stream<Map<String, dynamic>> watchEvents() => const Stream.empty();
 
   @override
   Future<Uint8List> getBytes(String path) async {

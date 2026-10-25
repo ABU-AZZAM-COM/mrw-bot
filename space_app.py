@@ -233,7 +233,7 @@ def build_app() -> FastAPI:
         allow_origins=_origins or ["*"],
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["x-admin-token", "content-type"],
+        allow_headers=["authorization", "x-admin-token", "content-type"],
     )
 
     @app.post("/telegram/webhook")
