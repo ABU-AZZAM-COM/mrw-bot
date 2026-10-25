@@ -432,6 +432,50 @@ print("private complaint image: Sightengine >40% nudity score freezes")
 _db_test_dir = tempfile.TemporaryDirectory(prefix="mrw-selftest-")
 DB_PATH = Path(_db_test_dir.name) / "test_reports.db"
 DB = database.Database(DB_PATH)
+assert DB.backend == "sqlite"
+assert DB.health_check()
+assert DB._conn.execute("SELECT 1 AS value").fetchone()[0] == 1
+
+import turso_serverless
+
+mock_turso_connection = sqlite3.connect(":memory:", check_same_thread=False)
+with (
+    patch.dict(
+        os.environ,
+        {
+            "TURSO_DATABASE_URL": "libsql://unit-test.example",
+            "TURSO_AUTH_TOKEN": "unit-test-token",
+        },
+    ),
+    patch.object(turso_serverless, "connect", return_value=mock_turso_connection) as connect_turso,
+):
+    turso_db = database.Database(Path("unused-turso-local.db"), backend="turso")
+    assert turso_db.backend == "turso"
+    assert turso_db.health_check()
+    assert turso_db._conn.execute("SELECT 1 AS value").fetchone()[0] == 1
+    assert connect_turso.call_args.args == ("libsql://unit-test.example",)
+    assert connect_turso.call_args.kwargs == {"auth_token": "unit-test-token"}
+    assert asyncio.run(turso_db.total()) == 0
+    turso_db.close()
+
+with patch.dict(os.environ, {"RENDER_SERVICE_NAME": "mrw-test", "DB_BACKEND": "sqlite"}):
+    try:
+        database.Database(Path("must-not-open-sqlite.db"), backend="sqlite")
+    except RuntimeError as error:
+        assert "Render production requires DB_BACKEND=turso" in str(error)
+    else:
+        raise AssertionError("Render must reject SQLite")
+
+with patch.dict(os.environ, {"TURSO_DATABASE_URL": "", "TURSO_AUTH_TOKEN": ""}):
+    missing_turso_path = Path("must-not-create-local-fallback.db")
+    try:
+        database.Database(missing_turso_path, backend="turso")
+    except RuntimeError as error:
+        assert "TURSO_DATABASE_URL" in str(error)
+        assert "TURSO_AUTH_TOKEN" in str(error)
+    else:
+        raise AssertionError("Turso must fail when credentials are missing")
+    assert not missing_turso_path.exists()
 
 support_user = SimpleNamespace(id=81818181, username="support_test", full_name="مستخدم الدعم")
 support_reply = AsyncMock()
@@ -1075,7 +1119,16 @@ photo_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/photo/{rid}"
 )
+db_health_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/db-health"
+)
 original_bot_app = _bot_main.app
+_bot_main.app = SimpleNamespace(bot_data={"db": DB}, bot=None)
+db_health_response = db_health_endpoint()
+assert db_health_response.status_code == 200
+assert json.loads(db_health_response.body) == {"ok": True}
+_bot_main.app = original_bot_app
 _os.environ["ADMIN_API_TOKEN"] = "test-token-xyz"
 
 photo_db_tmp = tempfile.TemporaryDirectory(prefix="mrw-photo-selftest-")

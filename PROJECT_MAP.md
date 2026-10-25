@@ -2,11 +2,23 @@
 
 ## الحالة الحية — 2026-10-25
 
-آخر تحديث لوحة الإدارة وإصلاح صور البلاغات نُشر إلى Render عبر دمج PR #2
-بالالتزام `479f23d120cfdffc5d95fc92f8f01f085d4b3034`. أظهرت لوحة Render
-`Deploy succeeded`، وأعاد `https://mrw-bot.onrender.com/health` HTTP 200
-و`status=ok`. فُتحت لوحة `/admin/` الحية. هذا تحقق للنشر والصحة والصفحة، وليس
-اختبارًا لكل صورة قديمة أو إرسال بلاغ إنتاجي.
+### قاعدة البيانات
+
+أضيف مسار `DB_BACKEND=turso` للإنتاج باستخدام SDK الرسمي `turso_serverless`،
+مع إنشاء المخطط والترحيلات عند بدء التطبيق، ونقطة `/db-health` لتنفيذ `SELECT 1`.
+يبقى `DB_BACKEND=sqlite` للتطوير المحلي فقط؛ يمنع التطبيق SQLite على Render.
+حتى كتابة هذه الخريطة، لم يتوفر `TURSO_DATABASE_URL` أو `TURSO_AUTH_TOKEN` في
+بيئة العمل، ولم تُنفّذ تهيئة مخطط على Turso حي. لم توجد قاعدة SQLite محلية في
+`data/reports.db` أو ملفات SQLite أخرى داخل مساحة العمل؛ ولا يثبت ذلك خلو قاعدة
+Render المنفصلة من بيانات. اسم قاعدة Turso ومنطقتها لم يُحددا بعد. راجع
+`PROJECT_HANDOFF.md` قبل الدمج أو النشر؛ لا تنشر قبل إضافة بيانات الاتصال السرية
+إلى Render وضبط `DB_BACKEND=turso`.
+
+آخر نسخة مؤكدة على Render أعادت `/version` البصمة
+`81a5ec391b99de295b3f8689d6dcb0898ab6bf98`، المطابقة لـ`git rev-parse HEAD`
+في 2026-10-25؛ انظر `PROJECT_HANDOFF.md`. تغيير Turso الجاري غير منشور حتى الآن
+لأن إضافة متغيرات الاتصال الآمنة ومعرفة قاعدة البيانات والمنطقة مطلوبتان قبل
+الدمج. هذا التحقق لا يثبت سلامة كل صورة قديمة أو إرسال بلاغ إنتاجي.
 
 مراقب UptimeRobot الموجود عُدّل ليفحص `/health` كل خمس دقائق، وبقي سير عمل
 `.github/workflows/render_keepalive.yml` يفحص الرابط كل عشر دقائق. كلاهما
@@ -31,7 +43,7 @@ flowchart LR
   Telegram --> main[main.py]
   main --> handlers[handlers.py + admin.py]
   handlers --> screening[image_moderation.py + sightengine_moderation.py]
-  screening --> db[database.py / SQLite]
+  screening --> db[database.py / Turso on Render, SQLite locally]
   screening -->|صورة شكوى خاصة عند ضبط الاعتمادات| sightengine[Sightengine nudity-2.1]
   dashboard[Flutter محلي على localhost:9000] --> contract[api.dart: عقد AdminApi]
   contract --> web[web_api.dart: عميل المتصفح]
@@ -58,7 +70,7 @@ Flutter على `127.0.0.1:9000` فقط؛ لا يشغّل البوت محليًا
 | `image_moderation.py` | فحص NudeNet محلي متعدد الدقة؛ مؤشرات التعري المكشوف فوق 0.40 تقيّد الحساب |
 | `sightengine_moderation.py` | عميل Sightengine لصور الشكاوى الخاصة؛ يرسل multipart إلى `check.json` ويحلل درجات `nudity-2.1` مع تشخيص آمن لأخطاء API |
 | `admin.py` و`keyboards.py` | تفاعلات المشرف داخل تيليغرام، ومنها طلب سبب الرفض قبل اعتماده وأمر `/stats` |
-| `database.py` | تخزين البلاغات وسير العمل والإعدادات التشغيلية والمشتركين والمحادثات والحجب والتدقيق ومهام التعميم |
+| `database.py` | تخزين البيانات؛ Turso على Render وSQLite للتطوير المحلي، مع مخطط وترحيلات وفحص اتصال |
 | `admin_api.py` | API الإدارة، صلاحيات رموز الخدمة، واستدعاء قاعدة البيانات والبوت |
 | `space_app.py` | تطبيق الخدمة، تشغيل البوت وتسجيل الواجهة البرمجية، وتهيئة CORS لمصدر اللوحة المحلي المحدد |
 | `launch_desktop.bat` | بناء Flutter Web وإطلاق خادم ملفات محلي للواجهة فقط |
