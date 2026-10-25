@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import queue
 import sqlite3
@@ -17,6 +18,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
 # حالات البلاغ (تُخزّن بالعربية في القاعدة لسهولة قراءتها في التقارير)
@@ -808,6 +811,10 @@ class Database:
     def _clear_block(self, user_id: int) -> None:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="microseconds")
         with self._lock:
+            evidence = self._conn.execute(
+                "SELECT photo_path FROM blocked_user_evidence WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
             self._conn.execute(
                 """
                 INSERT INTO user_blocks
@@ -831,6 +838,8 @@ class Database:
                 (user_id,),
             )
             self._conn.commit()
+            if evidence:
+                self._remove_local_media_if_unreferenced(evidence["photo_path"])
 
     async def clear_block(self, user_id: int) -> None:
         await asyncio.to_thread(self._clear_block, user_id)
@@ -1415,16 +1424,135 @@ class Database:
     def _delete_report(self, rid: int) -> bool:
         """حذف نهائي لبلاغ واحد مع بصمته، مع إبقاء الأثر في سجل التدقيق."""
         with self._lock:
+            row = self._conn.execute(
+                "SELECT photo_path FROM reports WHERE id = ?", (rid,)
+            ).fetchone()
             cur = self._conn.execute("DELETE FROM reports WHERE id = ?", (rid,))
             if cur.rowcount > 0:
                 self._conn.execute(
                     "DELETE FROM report_fingerprints WHERE report_id = ?", (rid,)
                 )
             self._conn.commit()
+            if cur.rowcount > 0 and row:
+                self._remove_local_media_if_unreferenced(row["photo_path"])
             return cur.rowcount > 0
 
     async def delete_report(self, rid: int) -> bool:
         return await asyncio.to_thread(self._delete_report, rid)
+
+    def _remove_local_media_if_unreferenced(self, raw_path: str | None) -> None:
+        if not raw_path:
+            return
+        import config
+
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = config.BASE_DIR / path
+        media_root = config.MEDIA_DIR.resolve()
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(media_root)
+        except (OSError, ValueError):
+            return
+        referenced = self._conn.execute(
+            """
+            SELECT 1 FROM reports WHERE photo_path = ?
+            UNION ALL
+            SELECT 1 FROM blocked_user_evidence WHERE photo_path = ?
+            LIMIT 1
+            """,
+            (raw_path, raw_path),
+        ).fetchone()
+        if referenced:
+            return
+        try:
+            resolved.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("تعذر حذف ملف وسائط يتيم: %s", resolved, exc_info=True)
+
+    def _cleanup_orphaned_media(self, older_than_days: int = 7) -> int:
+        import config
+
+        cutoff = datetime.now(timezone.utc).timestamp() - max(1, older_than_days) * 86400
+        media_root = config.MEDIA_DIR.resolve()
+        deleted = 0
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT photo_path FROM reports WHERE photo_path != ''
+                UNION
+                SELECT photo_path FROM blocked_user_evidence
+                WHERE photo_path IS NOT NULL AND photo_path != ''
+                """
+            ).fetchall()
+            referenced: set[Path] = set()
+            for row in rows:
+                raw_path = str(row["photo_path"])
+                path = Path(raw_path)
+                if not path.is_absolute():
+                    path = config.BASE_DIR / path
+                try:
+                    resolved = path.resolve()
+                    resolved.relative_to(media_root)
+                    referenced.add(resolved)
+                except (OSError, ValueError):
+                    continue
+            for path in media_root.iterdir():
+                try:
+                    resolved = path.resolve()
+                    resolved.relative_to(media_root)
+                    if (
+                        resolved in referenced
+                        or not resolved.is_file()
+                        or resolved.stat().st_mtime >= cutoff
+                    ):
+                        continue
+                    resolved.unlink()
+                    deleted += 1
+                except OSError:
+                    logger.warning("تعذر تنظيف ملف وسائط يتيم: %s", path, exc_info=True)
+        return deleted
+
+    async def cleanup_orphaned_media(self, older_than_days: int = 7) -> int:
+        return await asyncio.to_thread(self._cleanup_orphaned_media, older_than_days)
+
+    def _cleanup_private_data(
+        self,
+        now: datetime | None = None,
+        audit_retention_days: int = 365,
+        message_retention_days: int = 180,
+    ) -> dict[str, int]:
+        current = now or datetime.now(timezone.utc)
+        audit_cutoff = (
+            current - timedelta(days=audit_retention_days)
+        ).isoformat(timespec="seconds")
+        message_cutoff = (
+            current - timedelta(days=message_retention_days)
+        ).isoformat(timespec="seconds")
+        with self._lock:
+            audit = self._conn.execute(
+                "DELETE FROM audit_log WHERE ts < ?", (audit_cutoff,)
+            )
+            messages = self._conn.execute(
+                "DELETE FROM user_messages WHERE created_at < ?", (message_cutoff,)
+            )
+            self._conn.commit()
+            return {
+                "audit_deleted": int(audit.rowcount),
+                "messages_deleted": int(messages.rowcount),
+            }
+
+    async def cleanup_private_data(
+        self,
+        audit_retention_days: int = 365,
+        message_retention_days: int = 180,
+    ) -> dict[str, int]:
+        return await asyncio.to_thread(
+            self._cleanup_private_data,
+            None,
+            audit_retention_days,
+            message_retention_days,
+        )
 
     def _list_users(
         self, q: Optional[str] = None, page: int = 0, size: int = 20

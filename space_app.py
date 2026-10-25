@@ -75,14 +75,29 @@ WEBAPP_DIR = BASE_DIR / "webapp"
 
 # مهلة قبول بيانات التطبيق (تيليغرام يوقّع initData بتاريخ إصدار)
 INIT_DATA_MAX_AGE = 24 * 60 * 60
+BOT_STARTUP_GRACE_SECONDS = 240
+BOT_HEALTH_CHECK_INTERVAL_SECONDS = 30
+BOT_HEALTH_FAILURE_SECONDS = 180
+BOT_RESTART_INITIAL_DELAY_SECONDS = 5
+BOT_RESTART_MAX_DELAY_SECONDS = 60
+_BOT_STOP_EVENT = threading.Event()
 
 
 def _run_bot() -> None:
-    """يشغّل البوت في خيط خلفي (يستقبل الرسائل من تلغرام)."""
-    try:
-        bot_main.main()
-    except Exception as exc:
-        logger.error("توقف البوت داخل المساحة السحابية (%s)", type(exc).__name__)
+    """Run the bot with bounded restart backoff if its main loop exits."""
+    delay = BOT_RESTART_INITIAL_DELAY_SECONDS
+    while not _BOT_STOP_EVENT.is_set():
+        try:
+            bot_main.main()
+            logger.error("انتهى تشغيل البوت؛ ستتم محاولة إعادة تشغيله")
+        except Exception as exc:
+            logger.error(
+                "توقف البوت داخل المساحة السحابية (%s)؛ ستتم إعادة المحاولة",
+                type(exc).__name__,
+            )
+        if _BOT_STOP_EVENT.wait(delay):
+            break
+        delay = min(delay * 2, BOT_RESTART_MAX_DELAY_SECONDS)
 
 
 @GPU(duration=5)
@@ -217,6 +232,96 @@ def _inject_app_update(user_id: int, payload: dict, tg_user: dict) -> bool:
     return True
 
 
+async def _bot_health_snapshot() -> tuple[bool, bool, bool, bool]:
+    application = getattr(bot_main, "app", None)
+    database = (
+        application.bot_data.get("db")
+        if application is not None
+        else None
+    )
+    bot_ready = bool(application is not None and application.bot is not None)
+    if database is None:
+        return False, bot_ready, False, False
+    try:
+        database_ready = bool(database.health_check())
+    except Exception:
+        logger.warning("فشل فحص قاعدة البيانات في نقطة الصحة", exc_info=True)
+        return False, bot_ready, False, False
+    if not database_ready:
+        return False, bot_ready, False, False
+
+    heartbeat = await database.get_state("bot_last_heartbeat")
+    bot_alive = False
+    if heartbeat:
+        try:
+            heartbeat_at = datetime.fromisoformat(
+                heartbeat.replace("Z", "+00:00")
+            )
+            if heartbeat_at.tzinfo is None:
+                heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - heartbeat_at).total_seconds()
+            bot_alive = 0 <= age < BOT_HEALTH_FAILURE_SECONDS
+        except (AttributeError, TypeError, ValueError):
+            logger.warning("قيمة نبضة الحياة في قاعدة البيانات غير صالحة")
+    starting = (
+        not heartbeat
+        and time.time() - START_TIME < BOT_STARTUP_GRACE_SECONDS
+    )
+    return database_ready, bot_ready, bot_alive, starting
+
+
+async def _monitor_bot_health() -> None:
+    """Detect heartbeat loss independently of admin dashboard requests."""
+    while True:
+        await asyncio.sleep(BOT_HEALTH_CHECK_INTERVAL_SECONDS)
+        application = getattr(bot_main, "app", None)
+        database = (
+            application.bot_data.get("db")
+            if application is not None
+            else None
+        )
+        if database is None:
+            continue
+        try:
+            if not database.health_check():
+                continue
+            heartbeat = await database.get_state("bot_last_heartbeat")
+            stale = False
+            if heartbeat:
+                try:
+                    heartbeat_at = datetime.fromisoformat(
+                        heartbeat.replace("Z", "+00:00")
+                    )
+                    if heartbeat_at.tzinfo is None:
+                        heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+                    age = (datetime.now(timezone.utc) - heartbeat_at).total_seconds()
+                    stale = age >= BOT_HEALTH_FAILURE_SECONDS
+                except (AttributeError, TypeError, ValueError):
+                    stale = True
+            else:
+                stale = time.time() - START_TIME >= BOT_STARTUP_GRACE_SECONDS
+
+            failure_notified = await database.get_state(
+                "bot_heartbeat_failure_notified"
+            )
+            if stale and not failure_notified:
+                await database.create_notification(
+                    "heartbeat_fail",
+                    {"message": "لم تصل نبضة حياة البوت خلال 180 ثانية"},
+                )
+                await database.set_state("bot_heartbeat_failure_notified", "1")
+            elif not stale and failure_notified:
+                await database.create_notification(
+                    "heartbeat_fail",
+                    {"message": "عاد البوت لإرسال نبضات الحياة"},
+                )
+                await database.set_state(
+                    "bot_heartbeat_failure_notified", None
+                )
+        except Exception:
+            logger.exception("تعذر فحص نبضة حياة البوت في المراقب المستقل")
+
+
 def build_app() -> FastAPI:
     """يبني تطبيق الويب: فحص + صفحة حالة + ملفات التطبيق."""
     app = FastAPI(title="نظام بلاغات المخالفات العسكرية", docs_url=None, redoc_url=None)
@@ -233,8 +338,30 @@ def build_app() -> FastAPI:
         allow_origins=_origins or ["*"],
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["authorization", "x-admin-token", "content-type"],
+        allow_headers=[
+            "authorization",
+            "x-admin-token",
+            "x-setup-token",
+            "content-type",
+        ],
     )
+
+    @app.on_event("startup")
+    async def start_bot_health_monitor() -> None:
+        app.state.bot_health_monitor = asyncio.create_task(
+            _monitor_bot_health(), name="bot-health-monitor"
+        )
+
+    @app.on_event("shutdown")
+    async def stop_background_tasks() -> None:
+        _BOT_STOP_EVENT.set()
+        monitor = getattr(app.state, "bot_health_monitor", None)
+        if monitor is not None:
+            monitor.cancel()
+            try:
+                await monitor
+            except asyncio.CancelledError:
+                pass
 
     @app.post("/telegram/webhook")
     async def telegram_webhook(request: Request) -> JSONResponse:
@@ -296,11 +423,20 @@ def build_app() -> FastAPI:
     # 1) فحص سريع للمنصة
     @app.get("/health")
     async def health() -> JSONResponse:
-        return JSONResponse({
-            "status": "ok",
-            "uptime_seconds": int(time.time() - START_TIME),
-            "bot": BOT_USERNAME,
-        })
+        database_ready, bot_ready, bot_alive, starting = await _bot_health_snapshot()
+        healthy = database_ready and bot_ready and (bot_alive or starting)
+        return JSONResponse(
+            {
+                "status": "ok" if healthy else "degraded",
+                "uptime_seconds": int(time.time() - START_TIME),
+                "bot": BOT_USERNAME,
+                "bot_ready": bot_ready,
+                "bot_alive": bot_alive,
+                "database_ready": database_ready,
+                "starting": starting,
+            },
+            status_code=200 if healthy else 503,
+        )
 
     # 2) مسار استقبال بيانات التطبيق (يعمل من أي طريقة فتح: زر القائمة، زر لوحة الرد، رابط مباشر)
     @app.post("/api/app-data")
@@ -358,14 +494,14 @@ def build_app() -> FastAPI:
     #    • محمي بمفتاح SETUP_TOKEN من أسرار السبيس — إن غاب فالمسار مغلق.
     #    • النصان يُقرآن من الكود المعتمد (texts.py)؛ المسار لا يقبل أي نص خارجي.
     #    • آمن للتكرار، ويعيد قراءة النتيجة من تلغرام نفسها للتأكد.
-    @app.get("/api/set-bio")
+    @app.post("/api/set-bio")
     async def api_set_bio(request: Request) -> JSONResponse:
         expected = os.getenv("SETUP_TOKEN", "").strip()
         if not expected:
             return JSONResponse(
                 {"ok": False, "error": "setup_token_not_configured"}, status_code=503
             )
-        got = (request.query_params.get("key") or "").strip()
+        got = (request.headers.get("X-Setup-Token") or "").strip()
         if not hmac.compare_digest(got, expected):
             return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
 
@@ -388,7 +524,7 @@ def build_app() -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             logger.exception("فشل تطبيق البايو من السبيس")
             return JSONResponse(
-                {"ok": False, "error": "telegram_error", "detail": str(exc)},
+                {"ok": False, "error": "telegram_error"},
                 status_code=502,
             )
 
@@ -476,6 +612,7 @@ def main() -> None:
     import uvicorn
 
     # تشغيل البوت في الخلفية عند إقلاع المساحة
+    _BOT_STOP_EVENT.clear()
     threading.Thread(target=_run_bot, daemon=True, name="bot-thread").start()
     if _wait_for_bot():
         logger.info("✅ البوت وقاعدة البيانات جاهزان — فتح لوحة الإدارة الآن")
