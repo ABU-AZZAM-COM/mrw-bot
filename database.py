@@ -479,7 +479,16 @@ class Database:
     # --------------------------------------------------------------
     def _get_by_id(self, rid: int) -> Optional[dict[str, Any]]:
         with self._lock:
-            row = self._conn.execute("SELECT * FROM reports WHERE id = ?", (rid,)).fetchone()
+            row = self._conn.execute(
+                """
+                SELECT reports.*,
+                       (SELECT last_seen_at FROM bot_users
+                        WHERE bot_users.user_id = reports.user_id) AS user_last_at
+                FROM reports
+                WHERE reports.id = ?
+                """,
+                (rid,),
+            ).fetchone()
             return _row_to_dict(row) if row else None
 
     async def get_by_id(self, rid: int) -> Optional[dict[str, Any]]:
@@ -1088,6 +1097,25 @@ class Database:
     async def cleanup_notifications(self) -> int:
         return await asyncio.to_thread(self._cleanup_notifications)
 
+    def _clear_notifications(self) -> int:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=90)
+        ).isoformat(timespec="seconds")
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                DELETE FROM notifications
+                WHERE type NOT IN ('emergency', 'heartbeat_fail')
+                   OR created_at < ?
+                """,
+                (cutoff,),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount)
+
+    async def clear_notifications(self) -> int:
+        return await asyncio.to_thread(self._clear_notifications)
+
     def _mark_notification_read(self, notification_id: int) -> bool:
         with self._lock:
             cursor = self._conn.execute(
@@ -1235,7 +1263,10 @@ class Database:
                 f"SELECT COUNT(*) FROM reports{where}", params
             ).fetchone()[0]
             rows = self._conn.execute(
-                f"SELECT * FROM reports{where}"
+                "SELECT reports.*,"
+                " (SELECT last_seen_at FROM bot_users"
+                " WHERE bot_users.user_id = reports.user_id) AS user_last_at"
+                f" FROM reports{where}"
                 " ORDER BY CASE priority WHEN 'urgent' THEN 0 "
                 "WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, "
                 "CASE WHEN due_at IS NULL THEN 1 ELSE 0 END, due_at ASC, "
@@ -1466,6 +1497,7 @@ class Database:
                    b.strikes AS strikes,
                    COALESCE(c.enabled, 1) AS contact_enabled,
                    b.updated_at AS updated_at,
+                   u.last_seen_at AS last_at,
                    CASE WHEN e.user_id IS NOT NULL THEN 1 ELSE 0 END
                        AS has_evidence_photo
             FROM user_blocks b

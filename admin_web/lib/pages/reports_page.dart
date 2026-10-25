@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api.dart';
 import '../widgets.dart';
 import 'overview_page.dart' show fmt, kStatusOrder, kStatusStyles;
+import 'messaging_page.dart' show openUserConversation;
 import 'shared_dialogs.dart';
 
 String priorityLabel(String value) => switch (value) {
@@ -131,6 +132,23 @@ class _ReportsPageState extends State<ReportsPage> {
         _err = errMsg(e);
       });
     }
+  }
+
+  Future<void> _downloadPhoto(int reportId) async {
+    try {
+      await widget.api.download('/api/admin/photo/$reportId?download=true');
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  void _openConversation(Map<String, dynamic> report) {
+    final userId = int.tryParse('${report['user_id'] ?? ''}');
+    if (userId == null) {
+      toast(context, 'معرّف المستخدم غير متاح', error: true);
+      return;
+    }
+    openUserConversation(context, widget.api, userId);
   }
 
   void _shiftPage(int d) {
@@ -347,7 +365,9 @@ class _ReportsPageState extends State<ReportsPage> {
             DataColumn(label: Text('المعرف')),
             DataColumn(label: Text('التصنيف')),
             DataColumn(label: Text('الأولوية')),
+            DataColumn(label: Text('نشاط المستخدم')),
             DataColumn(label: Text('التاريخ')),
+            DataColumn(label: Text('إجراءات')),
           ],
           rows: [for (final r in _items) _row(context, r)],
         ),
@@ -358,6 +378,8 @@ class _ReportsPageState extends State<ReportsPage> {
   DataRow _row(BuildContext context, Map<String, dynamic> r) {
     final String status = (r['status'] ?? '-') as String;
     final style = kStatusStyles[status];
+    final reportId = int.tryParse('${r['id'] ?? ''}');
+    final userId = int.tryParse('${r['user_id'] ?? ''}');
     return DataRow(
       color: WidgetStatePropertyAll(
         status == 'جديد'
@@ -394,11 +416,33 @@ class _ReportsPageState extends State<ReportsPage> {
         ),
         DataCell(Text('${r['violation_type'] ?? '—'}')),
         DataCell(Text(priorityLabel('${r['priority'] ?? 'normal'}'))),
+        DataCell(UserActivityIndicator(lastSeen: r['user_last_at'] as String?)),
         DataCell(
           Text(
             fmt((r['created_at'] ?? '') as String),
             textDirection: TextDirection.ltr,
             style: const TextStyle(fontSize: 12),
+          ),
+        ),
+        DataCell(
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (r['has_photo'] == true ||
+                  (r['photo_file_id'] ?? '').toString().isNotEmpty)
+                IconButton(
+                  tooltip: 'تنزيل صورة البلاغ',
+                  onPressed: reportId == null
+                      ? null
+                      : () => _downloadPhoto(reportId),
+                  icon: const Icon(Icons.download, size: 19),
+                ),
+              IconButton(
+                tooltip: 'فتح محادثة مباشرة مع المستخدم',
+                onPressed: userId == null ? null : () => _openConversation(r),
+                icon: const Icon(Icons.chat_outlined, size: 19),
+              ),
+            ],
           ),
         ),
       ],
@@ -549,6 +593,17 @@ class _ReportDetailState extends State<_ReportDetail> {
               ),
               const Spacer(),
               IconButton(
+                tooltip: 'فتح محادثة مباشرة مع المستخدم',
+                onPressed: int.tryParse('${r['user_id'] ?? ''}') == null
+                    ? null
+                    : () => openUserConversation(
+                        context,
+                        widget.api,
+                        int.parse('${r['user_id']}'),
+                      ),
+                icon: const Icon(Icons.chat_outlined, size: 20),
+              ),
+              IconButton(
                 tooltip: 'تحديث',
                 onPressed: () {
                   _bust = DateTime.now().millisecondsSinceEpoch;
@@ -607,33 +662,54 @@ class _ReportDetailState extends State<_ReportDetail> {
       constraints: const BoxConstraints(maxWidth: 350),
       child: Card(
         color: Theme.of(context).cardColor,
-        child: FutureBuilder<Uint8List>(
-          future: _photoFuture,
-          builder: (context, snapshot) {
-            if (snapshot.hasData) {
-              return Image.memory(
-                snapshot.data!,
-                fit: BoxFit.contain,
-                width: 340,
-                errorBuilder: (context, error, stackTrace) =>
-                    _photoError(context, 'استجابة الخادم ليست صورة صالحة.'),
-              );
-            }
-            if (snapshot.hasError) {
-              final error = snapshot.error;
-              final message = error is ApiException
-                  ? _photoErrorMessage(error)
-                  : 'تعذّر الاتصال بخدمة الصور.';
-              return _photoError(context, message);
-            }
-            return const SizedBox(
-              height: 210,
-              child: Center(child: CircularProgressIndicator()),
-            );
-          },
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FutureBuilder<Uint8List>(
+              future: _photoFuture,
+              builder: (context, snapshot) {
+                if (snapshot.hasData) {
+                  return Image.memory(
+                    snapshot.data!,
+                    fit: BoxFit.contain,
+                    width: 340,
+                    errorBuilder: (context, error, stackTrace) =>
+                        _photoError(context, 'استجابة الخادم ليست صورة صالحة.'),
+                  );
+                }
+                if (snapshot.hasError) {
+                  final error = snapshot.error;
+                  final message = error is ApiException
+                      ? _photoErrorMessage(error)
+                      : 'تعذّر الاتصال بخدمة الصور.';
+                  return _photoError(context, message);
+                }
+                return const SizedBox(
+                  height: 210,
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              },
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: OutlinedButton.icon(
+                onPressed: () => _downloadPhoto(),
+                icon: const Icon(Icons.download),
+                label: const Text('تنزيل الصورة'),
+              ),
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  Future<void> _downloadPhoto() async {
+    try {
+      await widget.api.download('/api/admin/photo/${widget.rid}?download=true');
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
   }
 
   String _photoErrorMessage(ApiException error) => switch (error.code) {
@@ -698,7 +774,13 @@ class _ReportDetailState extends State<_ReportDetail> {
           ],
         ),
         const SizedBox(height: 10),
-        _kv('المتبلّغ', (r['full_name'] ?? '—') as String),
+        Row(
+          children: [
+            UserActivityIndicator(lastSeen: r['user_last_at'] as String?),
+            const SizedBox(width: 8),
+            Expanded(child: _kv('المتبلّغ', (r['full_name'] ?? '—') as String)),
+          ],
+        ),
         _kv('معرّف المستخدم', '${r['user_id'] ?? '—'}'),
         _kv('حساب تلغرام', '@${r['username'] ?? '—'}'),
         _kv('الاسناد الذاتي', (r['suggested_type'] ?? '—') as String),

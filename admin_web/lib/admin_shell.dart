@@ -214,6 +214,30 @@ class _MainShellState extends State<MainShell> {
     }
   }
 
+  Future<void> _clearNotifications(BuildContext dialogContext) async {
+    final confirmed = await confirmDialog(
+      context,
+      'مسح سجل الإشعارات',
+      'سيُمسح السجل فوراً. ستبقى إشعارات الطوارئ وفشل نبض البوت '
+          'التي لم يمضِ عليها 90 يوماً للمراجعة.',
+      okLabel: 'مسح السجل',
+      danger: true,
+    );
+    if (!confirmed || !mounted) return;
+    try {
+      final result = await widget.api.post(
+        '/api/admin/notifications/clear',
+        {},
+      );
+      if (!mounted) return;
+      toast(context, 'اكتمل المسح؛ حُذف ${result['deleted'] ?? 0} إشعار');
+      await _refreshNotifications();
+      if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
   Future<void> _openBubbleNotification(
     Map<String, dynamic> notification,
   ) async {
@@ -261,6 +285,12 @@ class _MainShellState extends State<MainShell> {
                     tooltip: 'تنظيف الإشعارات القديمة',
                     onPressed: _cleanupNotifications,
                     icon: const Icon(Icons.cleaning_services_outlined),
+                  ),
+                if (_role == 'owner')
+                  IconButton(
+                    tooltip: 'مسح سجل الإشعارات الآن',
+                    onPressed: () => _clearNotifications(dialogContext),
+                    icon: const Icon(Icons.delete_sweep_outlined),
                   ),
                 PopupMenuButton<int>(
                   tooltip: _heartbeatMuted

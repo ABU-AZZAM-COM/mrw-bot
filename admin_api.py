@@ -503,6 +503,24 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         )
         return JSONResponse({"ok": True, "deleted": deleted})
 
+    @app.post("/api/admin/notifications/clear")
+    async def clear_notifications(request: Request):
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        deleted = await db.clear_notifications()
+        await db.audit(
+            _admin_actor(request),
+            "notifications_clear",
+            "notifications",
+            f"deleted={deleted}",
+        )
+        return JSONResponse({"ok": True, "deleted": deleted})
+
     @app.post("/api/admin/notifications/{notification_id}/read")
     async def read_notification(notification_id: int, request: Request):
         refuse = _auth(request)
