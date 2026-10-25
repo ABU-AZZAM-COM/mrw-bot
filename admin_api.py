@@ -725,6 +725,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("not_found", 404)
         if report.get("status") in (STATUS_APPROVED, STATUS_REJECTED):
             return bad("report_closed", 409)
+        if not await db.user_contact_enabled(int(report["user_id"])):
+            return bad("direct_contact_disabled", 403)
         sent = await _send_direct_message(
             int(report["user_id"]),
             f"نحتاج إلى معلومات إضافية بخصوص البلاغ {report.get('seq') or rid}:\n\n"
@@ -1731,21 +1733,6 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 logger.error(
                     "تعذرت قراءة نبضة حياة البوت (%s)", type(exc).__name__
                 )
-            try:
-                failure_notified = await db.get_state(
-                    "bot_heartbeat_failure_notified"
-                )
-                if bot_alive:
-                    if failure_notified:
-                        await db.set_state("bot_heartbeat_failure_notified", None)
-                elif not failure_notified:
-                    await db.create_notification(
-                        "heartbeat_fail",
-                        {"message": "لم تصل نبضة حياة البوت خلال 180 ثانية"},
-                    )
-                    await db.set_state("bot_heartbeat_failure_notified", "1")
-            except Exception:
-                logger.exception("تعذر تسجيل إشعار فشل نبضة حياة البوت")
         import hub_backup  # noqa: PLC0415
 
         import main as bot_main  # noqa: PLC0415
@@ -1763,6 +1750,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "database_error": database_error,
             "reports_total": total,
             "backup_configured": hub_backup.is_configured(),
+            "backup_last_attempt_at": await db.get_state("backup_last_attempt_at"),
+            "backup_last_success_at": await db.get_state("backup_last_success_at"),
+            "backup_last_status": await db.get_state("backup_last_status"),
             "emergency": await db.get_state("emergency") == "1",
         })
 
@@ -1833,26 +1823,13 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         refuse = _auth(request)
         if refuse:
             return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
         db = db_of()
         import hub_backup  # noqa: PLC0415
 
-        if db.backend == "turso":
-            import tempfile  # noqa: PLC0415
-            from pathlib import Path  # noqa: PLC0415
-
-            fd, snapshot_path = tempfile.mkstemp(prefix="mrw-backup-upload-", suffix=".db")
-            os.close(fd)
-            snapshot = Path(snapshot_path)
-            try:
-                await asyncio.to_thread(db.export_sqlite_snapshot, snapshot)
-                ok = await asyncio.to_thread(hub_backup.upload_backup, snapshot)
-            except Exception:
-                logger.exception("تعذر تجهيز نسخة Turso للرفع")
-                ok = False
-            finally:
-                snapshot.unlink(missing_ok=True)
-        else:
-            ok = await asyncio.to_thread(hub_backup.upload_backup, db.path)
+        ok = await hub_backup.upload_database_backup(db)
         await db.audit(_admin_actor(request), "panel_backup_upload", "dataset",
                        "نجاح" if ok else "غير مُهيأ/فشل")
         return JSONResponse({"ok": True, "uploaded": bool(ok)})

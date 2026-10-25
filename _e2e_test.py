@@ -1,9 +1,4 @@
-"""
-اختبار حي من طرف إلى طرف: يرسل أوامر حقيقية إلى البوت من حساب المستخدم
-ويطبع ردود البوت (تأكد من عمل الأوامر الجديدة فعليًا).
-
-ملاحظة: لا يُنهي الجلسة — يتصل بها فقط (قاعدة المشروع).
-"""
+"""Opt-in Telegram smoke test for a dedicated, non-production test bot."""
 
 import asyncio
 import os
@@ -12,53 +7,72 @@ from pathlib import Path
 
 from telethon import TelegramClient, events
 
-BASE = Path(__file__).resolve().parent
-SESS = BASE / "data" / "user_session.session"
-API_ID = os.getenv("API_ID", "36082659")
-API_HASH = os.getenv("API_HASH", "4d1de251c4f1fbfc093c10d168f2c42c")
-BOT = os.getenv("BOT_USERNAME", "@blgh_bot")
-
-COMMANDS = ["/start", "/app", "/panic", "/audit", "/resume"]
-
 
 async def main() -> int:
-    client = TelegramClient(str(SESS), int(API_ID), API_HASH)
-    await client.connect()
-    if not await client.is_user_authorized():
-        print("❌ الجلسة غير مصرّح بها")
-        return 1
+    if os.getenv("E2E_ALLOW_TELEGRAM") != "1":
+        print("Set E2E_ALLOW_TELEGRAM=1 to explicitly enable the Telegram smoke test.")
+        return 2
 
-    me = await client.get_me()
-    print(f"👤 الحساب: {me.first_name} (ID {me.id})")
-    target = await client.get_entity(BOT)
-    print(f"🎯 البوت: {target.username}\n" + "=" * 55)
+    api_id = os.getenv("API_ID", "").strip()
+    api_hash = os.getenv("API_HASH", "").strip()
+    bot_username = os.getenv("E2E_BOT_USERNAME", "").strip()
+    session_path = os.getenv("E2E_SESSION_PATH", "").strip()
+    missing = [
+        name
+        for name, value in (
+            ("API_ID", api_id),
+            ("API_HASH", api_hash),
+            ("E2E_BOT_USERNAME", bot_username),
+            ("E2E_SESSION_PATH", session_path),
+        )
+        if not value
+    ]
+    if missing:
+        print("Missing required environment variables: " + ", ".join(missing))
+        return 2
+    if bot_username.lower() in {"@blgh_bot", "blgh_bot"}:
+        print("Refusing the known production bot; configure a dedicated test bot.")
+        return 2
 
-    for command in COMMANDS:
-        # تنظيف الرسائل القديمة لهذا الأمر
+    try:
+        numeric_api_id = int(api_id)
+    except ValueError:
+        print("API_ID must be an integer.")
+        return 2
+
+    session = Path(session_path).expanduser().resolve()
+    session.parent.mkdir(parents=True, exist_ok=True)
+    client = TelegramClient(str(session), numeric_api_id, api_hash)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            print("The configured test session is not authorized.")
+            return 1
+
+        target = await client.get_entity(bot_username)
+        loop = asyncio.get_running_loop()
+        response: asyncio.Future[str] = loop.create_future()
+
+        async def capture_reply(event) -> None:
+            if not response.done() and event.message.message:
+                response.set_result(event.message.message)
+
+        client.add_event_handler(
+            capture_reply,
+            events.NewMessage(from_users=target),
+        )
+        await client.send_message(target, "/start")
         try:
-            async for message in client.iter_messages(target, limit=0):
-                await message.delete()
-        except Exception:
-            pass
+            reply = await asyncio.wait_for(response, timeout=20)
+        except TimeoutError:
+            print("The test bot did not reply to /start within 20 seconds.")
+            return 1
 
-        await client.send_message(target, command)
-        await asyncio.sleep(2.5)
-
-        reply_text = ""
-        try:
-            async for message in client.iter_messages(target, limit=3):
-                if message.text and message.text.strip() != command:
-                    reply_text = message.text
-                    break
-        except Exception as exc:
-            reply_text = f"(تعذّر القراءة: {exc})"
-
-        print(f"\n▶ أرسلت: {command}")
-        print(f"◀ رد البوت: {reply_text[:700]}")
-
-    await client.disconnect()
-    print("\n=== انتهى الاختبار الحي ===")
-    return 0
+        print("The dedicated test bot replied to /start:")
+        print(reply[:500])
+        return 0
+    finally:
+        await client.disconnect()
 
 
 if __name__ == "__main__":

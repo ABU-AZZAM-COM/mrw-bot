@@ -258,3 +258,56 @@ async def backup_loop(db_path: Path, interval_minutes: int) -> None:
             await asyncio.to_thread(upload_backup, db_path)
         except Exception:
             logger.warning("فشل النسخ الدوري إلى المستودع", exc_info=True)
+
+
+async def upload_database_backup(db) -> bool:
+    """Upload a consistent snapshot from the configured SQLite or Turso backend."""
+    if not is_configured():
+        return False
+
+    attempted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        await db.set_state("backup_last_attempt_at", attempted_at)
+        if db.backend == "sqlite":
+            uploaded = await asyncio.to_thread(upload_backup, db.path)
+        else:
+            with tempfile.TemporaryDirectory(prefix="mrw-turso-backup-") as directory:
+                snapshot = Path(directory) / "reports.db"
+                await asyncio.to_thread(db.export_sqlite_snapshot, snapshot)
+                uploaded = await asyncio.to_thread(upload_backup, snapshot)
+        await db.set_state(
+            "backup_last_status",
+            "success" if uploaded else "failed",
+        )
+        if uploaded:
+            await db.set_state(
+                "backup_last_success_at",
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+            await db.set_state("backup_last_error_at", None)
+        else:
+            await db.set_state("backup_last_error_at", attempted_at)
+        return uploaded
+    except Exception:
+        logger.exception("تعذر رفع نسخة احتياطية من قاعدة البيانات")
+        try:
+            await db.set_state("backup_last_status", "failed")
+            await db.set_state("backup_last_error_at", attempted_at)
+        except Exception:
+            logger.exception("تعذر حفظ حالة فشل النسخ الاحتياطي")
+        return False
+
+
+async def database_backup_loop(db, interval_minutes: int) -> None:
+    """Back up the active database backend on a bounded recurring interval."""
+    if not is_configured() or interval_minutes <= 0:
+        return
+    logger.info(
+        "بدأ النسخ الاحتياطي الدوري إلى مستودع النسخ كل %d دقيقة",
+        interval_minutes,
+    )
+    first = True
+    while True:
+        await asyncio.sleep(20 if first else interval_minutes * 60)
+        first = False
+        await upload_database_backup(db)

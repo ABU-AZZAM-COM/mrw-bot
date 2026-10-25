@@ -1165,6 +1165,87 @@ assert [message["direction"] for message in conversation] == ["out", "in"]
 assert conversation[-1]["text"] == "رد المستخدم"
 conversation_db.close()
 
+retention_now = datetime.now(timezone.utc)
+old_timestamp = (retention_now - timedelta(days=400)).isoformat(timespec="seconds")
+recent_timestamp = (retention_now - timedelta(days=20)).isoformat(timespec="seconds")
+with pdb._lock:
+    pdb._conn.execute(
+        "INSERT INTO audit_log (ts, actor_id, action, target, details) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (old_timestamp, 111, "retention_old", "test", ""),
+    )
+    pdb._conn.execute(
+        "INSERT INTO audit_log (ts, actor_id, action, target, details) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (recent_timestamp, 111, "retention_recent", "test", ""),
+    )
+    pdb._conn.execute(
+        "INSERT INTO user_messages "
+        "(user_id, direction, text, admin_id, created_at) VALUES (?, ?, ?, ?, ?)",
+        (777, "in", "رسالة قديمة", None, retention_now.isoformat()),
+    )
+    old_message_id = pdb._conn.execute(
+        "SELECT MAX(id) FROM user_messages"
+    ).fetchone()[0]
+    pdb._conn.execute(
+        "UPDATE user_messages SET created_at = ? WHERE id = ?",
+        (retention_now.replace(year=retention_now.year - 1).isoformat(), old_message_id),
+    )
+    pdb._conn.commit()
+retention_counts = asyncio.run(pdb.cleanup_private_data())
+assert retention_counts["audit_deleted"] == 1, retention_counts
+assert retention_counts["messages_deleted"] == 1, retention_counts
+assert any(
+    item["action"] == "retention_recent"
+    for item in asyncio.run(pdb.recent_audit(100))
+)
+
+media_tmp = tempfile.TemporaryDirectory(prefix="mrw-media-retention-test-")
+original_media_dir, original_base_dir = config.MEDIA_DIR, config.BASE_DIR
+try:
+    config.BASE_DIR = Path(media_tmp.name)
+    config.MEDIA_DIR = Path(media_tmp.name) / "media"
+    config.MEDIA_DIR.mkdir()
+    shared_photo = config.MEDIA_DIR / "shared.jpg"
+    shared_photo.write_bytes(b"test-image")
+    first_shared_report = asyncio.run(pdb.add_report(
+        user_id=887, username="shared_user_1", full_name="مستخدم الصورة الأول",
+        photo_path="media/shared.jpg", photo_file_id=None,
+        post_link="https://example.test/shared-1",
+        description="بلاغ يشارك ملف صورة مع بلاغ آخر",
+    ))
+    second_report = asyncio.run(pdb.add_report(
+        user_id=888, username="shared_user", full_name="مستخدم الصورة",
+        photo_path="media/shared.jpg", photo_file_id=None,
+        post_link="https://example.test/shared",
+        description="بلاغ إضافي يشير إلى ملف صورة مشترك",
+    ))
+    assert shared_photo.exists()
+    assert asyncio.run(pdb.delete_report(first_shared_report["id"])) is True
+    assert shared_photo.exists(), "shared media must remain while another report references it"
+    assert asyncio.run(pdb.delete_report(second_report["id"])) is True
+    assert not shared_photo.exists(), "unreferenced report media should be removed"
+
+    evidence_photo = config.MEDIA_DIR / "evidence.jpg"
+    evidence_photo.write_bytes(b"evidence")
+    asyncio.run(pdb.save_block(
+        888, 1, "9999-12-31T00:00:00", "اختبار دليل",
+        evidence_photo_path=str(evidence_photo),
+    ))
+    asyncio.run(pdb.clear_block(888))
+    assert not evidence_photo.exists(), "unblocked evidence media should be removed"
+
+    orphan_photo = config.MEDIA_DIR / "orphan.jpg"
+    orphan_photo.write_bytes(b"orphan")
+    old_mtime = time.time() - 8 * 86400
+    os.utime(orphan_photo, (old_mtime, old_mtime))
+    assert asyncio.run(pdb.cleanup_orphaned_media()) == 1
+    assert not orphan_photo.exists()
+finally:
+    config.MEDIA_DIR, config.BASE_DIR = original_media_dir, original_base_dir
+    media_tmp.cleanup()
+print("database: 365/180-day retention and safe orphaned-media cleanup")
+
 # تقدم التعميم محفوظ، وأي مهمة كانت جارية عند إعادة التشغيل تُعلّم كمقاطعة.
 jobs_tmp = tempfile.TemporaryDirectory(prefix="mrw-broadcast-selftest-")
 jobs_path = Path(jobs_tmp.name) / "jobs.db"
@@ -1370,8 +1451,8 @@ _bot_main.app.bot_data["db"].heartbeat = (
 ).isoformat()
 stale_heartbeat_response = asyncio.run(system_health_endpoint(_HealthRequest()))
 assert json.loads(stale_heartbeat_response.body)["bot_alive"] is False
-assert _bot_main.app.bot_data["db"].failure_notified is True
-assert _bot_main.app.bot_data["db"].notifications[-1][0] == "heartbeat_fail"
+assert _bot_main.app.bot_data["db"].failure_notified is False
+assert not _bot_main.app.bot_data["db"].notifications
 _bot_main.app.bot_data["db"].heartbeat = None
 
 class _UnavailableTursoDb(_TursoHealthDb):
@@ -1558,12 +1639,38 @@ finally:
         _os.environ["TELEGRAM_WEBHOOK_SECRET"] = old_webhook_secret
 print("space_app: webhook validates Telegram secret and queues updates")
 
+bio_routes = [
+    route for route in webhook_app.routes
+    if getattr(route, "path", None) == "/api/set-bio"
+]
+assert len(bio_routes) == 1 and bio_routes[0].methods == {"POST"}
+bio_endpoint = bio_routes[0].endpoint
+old_setup_token = _os.environ.get("SETUP_TOKEN")
+try:
+    _os.environ["SETUP_TOKEN"] = "test-setup-token"
+
+    class _BioRequest:
+        headers = {"X-Setup-Token": "wrong-token"}
+        query_params = {"key": "test-setup-token"}
+
+    bio_response = asyncio.run(bio_endpoint(_BioRequest()))
+    assert bio_response.status_code == 401
+finally:
+    if old_setup_token is None:
+        _os.environ.pop("SETUP_TOKEN", None)
+    else:
+        _os.environ["SETUP_TOKEN"] = old_setup_token
+print("space_app: set-bio is POST-only and rejects query-string credentials")
+
 class _TursoBackupDb:
     backend = "turso"
     path = DB.path
 
     def export_sqlite_snapshot(self, output_path):
         DB.export_sqlite_snapshot(output_path)
+
+    async def set_state(self, key, value):
+        await DB.set_state(key, value)
 
     async def audit(self, *args):
         return None
@@ -1595,11 +1702,19 @@ def _fake_upload_backup(snapshot_path):
     uploaded_snapshot_paths.append(snapshot_path)
     return True
 
-with patch("hub_backup.upload_backup", _fake_upload_backup):
-    upload_request = _HealthRequest()
-    upload_request.method = "POST"
-    upload_request.url = SimpleNamespace(path="/api/admin/backup/now")
-    upload_response = asyncio.run(backup_now_endpoint(upload_request))
+_old_backup_token, _old_backup_repo = config.HF_BACKUP_TOKEN, config.HF_BACKUP_REPO
+try:
+    config.HF_BACKUP_TOKEN, config.HF_BACKUP_REPO = "test-token", "test/repo"
+    with patch("hub_backup.upload_backup", _fake_upload_backup):
+        upload_request = _HealthRequest()
+        upload_request.method = "POST"
+        upload_request.url = SimpleNamespace(path="/api/admin/backup/now")
+        upload_response = asyncio.run(backup_now_endpoint(upload_request))
+finally:
+    config.HF_BACKUP_TOKEN, config.HF_BACKUP_REPO = (
+        _old_backup_token,
+        _old_backup_repo,
+    )
 assert json.loads(upload_response.body)["uploaded"] is True
 assert len(uploaded_snapshot_paths) == 1
 assert not uploaded_snapshot_paths[0].exists()
@@ -2006,6 +2121,18 @@ assert send_calls[-1][0] == 777 and "إيقاف" in send_calls[-1][1]
 disabled_message = _Request({"text": "رسالة يجب منعها"})
 disabled_message.url = SimpleNamespace(path="/api/admin/users/777/message")
 assert asyncio.run(message_endpoint(777, disabled_message)).status_code == 403
+followup_contact_report = asyncio.run(pdb.add_report(
+    user_id=909, username="followup_user", full_name="مستخدم المتابعة",
+    photo_path="", photo_file_id=None, post_link="https://example.test/followup",
+    description="بلاغ مفتوح لاختبار إعداد التواصل المباشر",
+))
+asyncio.run(pdb.set_user_contact_enabled(909, False))
+send_count_before_blocked_followup = len(send_calls)
+blocked_followup = asyncio.run(followup_endpoint(
+    followup_contact_report["id"], _Request({"note": "متابعة يجب منعها"})
+))
+assert blocked_followup.status_code == 403
+assert len(send_calls) == send_count_before_blocked_followup
 contact_request = _Request({"enabled": True})
 contact_request.method = "PUT"
 contact_request.url = SimpleNamespace(path="/api/admin/users/777/contact")
@@ -2056,7 +2183,7 @@ assert tpl == ["تم قبول بلاغك.", "بلاغك مرفوض لأسباب 
 
 # إحصاءات: بلاغان فاعلان ثم يوميات/أنواع/أعلى المتبلّغين/شرائح المستخدمين
 await_none = asyncio.run(pdb.add_report(
-    user_id=888, username="st8", full_name="مستخدم إحصاء",
+    user_id=1888888001, username="st8", full_name="مستخدم إحصاء",
     photo_path="m/x.jpg", photo_file_id="f8",
     post_link="https://t.me/x/22", description="وصف إحصائي",
     violation_type="مخالفة زي",
@@ -2066,7 +2193,8 @@ assert daily and daily[-1]["n"] >= 1 and len(daily[-1]["day"]) == 10
 by_type = asyncio.run(pdb.count_by_type())
 assert by_type and by_type[0]["vtype"] == "مخالفة زي"
 tops = asyncio.run(pdb.top_users(7))
-assert tops[0]["n"] == 1 and tops[0]["user_id"] == 888
+stats_user = next(row for row in tops if row["user_id"] == 1888888001)
+assert stats_user["n"] == 1
 
 async def _concurrent_analytics_reads():
     async def read_snapshot():

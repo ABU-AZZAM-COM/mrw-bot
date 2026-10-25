@@ -85,6 +85,9 @@ class _HealthPageState extends State<HealthPage> {
     final connected =
         _checks['واجهة الإدارة والاتصال بقاعدة البيانات']?.ok == true;
     final health = _health;
+    final backupLastSuccess = DateTime.tryParse(
+      health?['backup_last_success_at']?.toString() ?? '',
+    )?.toLocal();
 
     return RefreshIndicator(
       onRefresh: _runChecks,
@@ -179,6 +182,19 @@ class _HealthPageState extends State<HealthPage> {
                       ? 'مهيأ'
                       : 'غير مهيأ',
                   ok: health?['backup_configured'] == true,
+                  unknown: health == null,
+                ),
+                const Divider(height: 1),
+                _StateTile(
+                  label: 'آخر نسخة احتياطية ناجحة',
+                  value: backupLastSuccess == null
+                      ? 'لا توجد'
+                      : '${backupLastSuccess.year}-'
+                            '${backupLastSuccess.month.toString().padLeft(2, '0')}-'
+                            '${backupLastSuccess.day.toString().padLeft(2, '0')} '
+                            '${backupLastSuccess.hour.toString().padLeft(2, '0')}:'
+                            '${backupLastSuccess.minute.toString().padLeft(2, '0')}',
+                  ok: backupLastSuccess != null,
                   unknown: health == null,
                 ),
                 const Divider(height: 1),

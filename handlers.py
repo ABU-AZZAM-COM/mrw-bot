@@ -786,13 +786,11 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ------------------------------------------------------------------
     if config.AUTO_PUBLISH_TO_ARCHIVE:
         await archive.post_report(context.bot, report)
-    await archive.backup_database(context.bot, config.DB_PATH)
+    if config.DB_BACKEND == "sqlite":
+        await archive.backup_database(context.bot, config.DB_PATH)
 
-    # النسخ إلى مستودع Hugging Face الاحتياطي (الطبقة الأساسية):
-    # رفع في خيط خلفي ولا يحجب رد البوت. فشلُه مُسجّل في السجلات ويُعاد
-    # تلقائياً مع الرفعة الدورية القادمة.
     if hub_backup.is_configured():
-        asyncio.create_task(asyncio.to_thread(hub_backup.upload_backup, config.DB_PATH))
+        asyncio.create_task(hub_backup.upload_database_backup(db))
 
     ud.clear()
     ud["last_saved"] = utils.utc_now_iso()
@@ -1064,13 +1062,11 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if config.AUTO_PUBLISH_TO_ARCHIVE:
         await archive.post_report(context.bot, report)
-    await archive.backup_database(context.bot, config.DB_PATH)
+    if config.DB_BACKEND == "sqlite":
+        await archive.backup_database(context.bot, config.DB_PATH)
 
-    # النسخ إلى مستودع Hugging Face الاحتياطي (الطبقة الأساسية):
-    # رفع في خيط خلفي ولا يحجب رد البوت. فشلُه مُسجّل في السجلات ويُعاد
-    # تلقائياً مع الرفعة الدورية القادمة.
     if hub_backup.is_configured():
-        asyncio.create_task(asyncio.to_thread(hub_backup.upload_backup, config.DB_PATH))
+        asyncio.create_task(hub_backup.upload_database_backup(db))
 
     ud.clear()
     ud["last_saved"] = utils.utc_now_iso()

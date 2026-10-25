@@ -192,12 +192,12 @@ async def post_init(app) -> None:
         app.create_task(
             archive.backup_loop(app.bot, config.DB_PATH, config.BACKUP_INTERVAL_MIN)
         )
-    if (
-        config.DB_BACKEND == "sqlite"
-        and hub_backup.is_configured()
-        and config.BACKUP_INTERVAL_MIN > 0
-    ):
-        app.create_task(hub_backup.backup_loop(config.DB_PATH, config.BACKUP_INTERVAL_MIN))
+    if hub_backup.is_configured() and config.BACKUP_INTERVAL_MIN > 0:
+        app.create_task(
+            hub_backup.database_backup_loop(
+                app.bot_data["db"], config.BACKUP_INTERVAL_MIN
+            )
+        )
 
 
 # ==================================================================
@@ -247,8 +247,17 @@ async def notifications_cleanup_loop(db) -> None:
             deleted = await db.cleanup_notifications()
             if deleted:
                 logger.info("تم تنظيف %s إشعار قديم", deleted)
+            private_deleted = await db.cleanup_private_data()
+            media_deleted = await db.cleanup_orphaned_media()
+            if any(private_deleted.values()) or media_deleted:
+                logger.info(
+                    "تنظيف البيانات: تدقيق=%s، رسائل=%s، وسائط يتيمة=%s",
+                    private_deleted["audit_deleted"],
+                    private_deleted["messages_deleted"],
+                    media_deleted,
+                )
         except Exception:
-            logger.exception("تعذر تنظيف الإشعارات القديمة")
+            logger.exception("تعذر تنظيف البيانات القديمة")
 
 
 async def run_webhook(application, secret: str) -> None:
