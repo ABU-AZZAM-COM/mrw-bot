@@ -6,6 +6,15 @@ import '../api.dart';
 import '../widgets.dart';
 import 'shared_dialogs.dart';
 
+Future<void> openUserConversation(
+  BuildContext context,
+  AdminApi api,
+  int userId,
+) => showDialog<void>(
+  context: context,
+  builder: (_) => _ConversationDialog(api: api, userId: userId),
+);
+
 class MessagingPage extends StatefulWidget {
   const MessagingPage({super.key, required this.api});
 

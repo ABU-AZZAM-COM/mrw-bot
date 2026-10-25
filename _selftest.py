@@ -1306,6 +1306,10 @@ notifications_cleanup_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/notifications/cleanup"
 )
+notifications_clear_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/notifications/clear"
+)
 events_stream_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/events/stream"
@@ -1801,12 +1805,66 @@ try:
         notifications_cleanup_endpoint(viewer_cleanup_request)
     )
     assert viewer_cleanup.status_code == 403
+    viewer_clear_request = _Request({})
+    viewer_clear_request.headers = viewer_cleanup_request.headers
+    viewer_clear_request.method = "POST"
+    viewer_clear_request.url = SimpleNamespace(
+        path="/api/admin/notifications/clear"
+    )
+    viewer_clear = asyncio.run(
+        notifications_clear_endpoint(viewer_clear_request)
+    )
+    assert viewer_clear.status_code == 403, (
+        viewer_clear.status_code,
+        viewer_clear.body,
+    )
 finally:
     if old_admin_tokens_json is None:
         _os.environ.pop("ADMIN_API_TOKENS_JSON", None)
     else:
         _os.environ["ADMIN_API_TOKENS_JSON"] = old_admin_tokens_json
-print("admin_api: notification stats and age/type-aware cleanup endpoint")
+
+clear_db = database.Database(Path(pbase_tmp.name) / "clear-notifications.db")
+for notification_type in ("report_new", "emergency", "heartbeat_fail"):
+    asyncio.run(clear_db.create_notification(notification_type, {}))
+clear_now = datetime.now(timezone.utc)
+with clear_db._lock:
+    clear_rows = clear_db._conn.execute(
+        "SELECT id, type FROM notifications ORDER BY id"
+    ).fetchall()
+    for row in clear_rows:
+        age_days = 30 if row["type"] == "emergency" else (
+            91 if row["type"] == "heartbeat_fail" else 0
+        )
+        created_at = (clear_now - timedelta(days=age_days)).isoformat(
+            timespec="seconds"
+        )
+        clear_db._conn.execute(
+            "UPDATE notifications SET created_at = ? WHERE id = ?",
+            (created_at, row["id"]),
+        )
+    clear_db._conn.commit()
+old_clear_app = _bot_main.app
+_bot_main.app = SimpleNamespace(bot_data={"db": clear_db}, bot=None)
+clear_request = _Request({})
+clear_request.method = "POST"
+clear_request.url = SimpleNamespace(path="/api/admin/notifications/clear")
+clear_response = asyncio.run(notifications_clear_endpoint(clear_request))
+assert clear_response.status_code == 200
+assert json.loads(clear_response.body) == {"ok": True, "deleted": 2}
+clear_stats = asyncio.run(clear_db.notification_stats())
+assert clear_stats["total"] == 1
+with clear_db._lock:
+    preserved_types = {
+        row["type"]
+        for row in clear_db._conn.execute(
+            "SELECT type FROM notifications"
+        ).fetchall()
+    }
+assert preserved_types == {"emergency"}
+_bot_main.app = old_clear_app
+clear_db.close()
+print("admin_api: notification cleanup, clear, and 90-day emergency retention")
 
 response = asyncio.run(status_endpoint(
     reject_report["id"], _Request({"status": "rejected"})

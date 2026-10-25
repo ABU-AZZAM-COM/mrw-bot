@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:admin_web/api.dart';
 import 'package:admin_web/pages/blocked_page.dart';
 import 'package:admin_web/pages/shared_dialogs.dart';
+import 'package:admin_web/widgets.dart';
 
 class _FakeApi implements AdminApi {
   _FakeApi({this.shrinkOnSecondPage = false});
@@ -84,6 +85,48 @@ class _FakeApi implements AdminApi {
 }
 
 void main() {
+  testWidgets('مؤشر المستخدم يميز النشاط المرصود دون ادعاء الاتصال الحي', (
+    WidgetTester tester,
+  ) async {
+    Future<void> pumpActivity(Duration age) async {
+      final lastSeen = DateTime.now().subtract(age).toIso8601String();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: UserActivityIndicator(lastSeen: lastSeen)),
+        ),
+      );
+      await tester.pump();
+    }
+
+    Color indicatorColor() {
+      final container = tester.widget<Container>(
+        find.descendant(
+          of: find.byType(UserActivityIndicator),
+          matching: find.byType(Container),
+        ),
+      );
+      return (container.decoration! as BoxDecoration).color!;
+    }
+
+    await pumpActivity(const Duration(seconds: 30));
+    expect(indicatorColor(), Colors.green);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Tooltip &&
+            (widget.message?.contains('ليس حالة اتصال Telegram فعلية') ??
+                false),
+      ),
+      findsOneWidget,
+    );
+
+    await pumpActivity(const Duration(minutes: 10));
+    expect(indicatorColor(), Colors.amber);
+
+    await pumpActivity(const Duration(days: 2));
+    expect(indicatorColor(), Colors.red);
+  });
+
   testWidgets('رفض البلاغ يتطلب سببًا غير فارغًا', (WidgetTester tester) async {
     late BuildContext context;
     String? reason;

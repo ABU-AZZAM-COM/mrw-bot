@@ -1,4 +1,6 @@
 // عناصر مشتركة للوحة: بطاقات إحصاء + أقسام + رسائل + ترجمة أخطاء.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -331,6 +333,76 @@ class StateBadge extends StatelessWidget {
       child: Text(
         text,
         style: TextStyle(color: c, fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
+class UserActivityIndicator extends StatefulWidget {
+  const UserActivityIndicator({super.key, this.lastSeen});
+
+  final String? lastSeen;
+
+  @override
+  State<UserActivityIndicator> createState() => _UserActivityIndicatorState();
+}
+
+class _UserActivityIndicatorState extends State<UserActivityIndicator> {
+  Timer? _timer;
+  DateTime _now = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() => _now = DateTime.now());
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final seen = DateTime.tryParse(widget.lastSeen ?? '')?.toLocal();
+    final elapsed = seen == null ? null : _now.difference(seen);
+    final color = elapsed == null || elapsed > const Duration(hours: 24)
+        ? Colors.red
+        : elapsed > const Duration(minutes: 2)
+        ? Colors.amber
+        : Colors.green;
+    final label = elapsed == null
+        ? 'لم يستلم البوت تحديثاً لهذا المستخدم'
+        : elapsed > const Duration(hours: 24)
+        ? 'لم يستلم البوت تحديثاً خلال آخر 24 ساعة'
+        : elapsed > const Duration(minutes: 2)
+        ? 'استلم البوت تحديثاً خلال آخر 24 ساعة'
+        : 'استلم البوت تحديثاً خلال آخر دقيقتين';
+
+    return Tooltip(
+      message:
+          '$label. مؤشر نشاط تقريبي من آخر تحديث استلمه البوت، '
+          'وليس حالة اتصال Telegram فعلية.',
+      child: Semantics(
+        label: '$label؛ لا تمثل حالة اتصال Telegram الفعلية',
+        child: Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: color.withValues(alpha: 0.35),
+                blurRadius: 5,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

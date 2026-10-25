@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../widgets.dart';
+import 'messaging_page.dart' show openUserConversation;
 import 'overview_page.dart' show fmt;
 
 class UsersPage extends StatefulWidget {
@@ -36,9 +37,10 @@ class _UsersPageState extends State<UsersPage> {
     _load().then((_) {
       final userId = widget.initialUserId;
       if (!mounted || userId == null) return;
-      _cardDialog(context, userId).whenComplete(
-        () => widget.onFocusHandled?.call(),
-      );
+      _cardDialog(
+        context,
+        userId,
+      ).whenComplete(() => widget.onFocusHandled?.call());
     });
   }
 
@@ -172,7 +174,9 @@ class _UsersPageState extends State<UsersPage> {
             DataColumn(label: Text('حساب تلغرام')),
             DataColumn(label: Text('البلاغات')),
             DataColumn(label: Text('الحالة')),
+            DataColumn(label: Text('نشاط البوت')),
             DataColumn(label: Text('آخر ظهور')),
+            DataColumn(label: Text('التواصل')),
           ],
           rows: [for (final u in _items) _row(context, u)],
         ),
@@ -181,6 +185,7 @@ class _UsersPageState extends State<UsersPage> {
   }
 
   DataRow _row(BuildContext context, Map<String, dynamic> u) {
+    final userId = int.tryParse('${u['user_id'] ?? ''}');
     final frozen = (u['frozen_until'] as String?) ?? '';
     final freezeDate = DateTime.tryParse(frozen);
     final blocked =
@@ -202,6 +207,7 @@ class _UsersPageState extends State<UsersPage> {
               ? const StateBadge('محجوب', color: Color(0xFFE06C75))
               : const StateBadge('نشط'),
         ),
+        DataCell(UserActivityIndicator(lastSeen: u['last_at'] as String?)),
         DataCell(
           Text(
             fmt((u['last_at'] ?? '') as String),
@@ -209,9 +215,19 @@ class _UsersPageState extends State<UsersPage> {
             style: const TextStyle(fontSize: 12),
           ),
         ),
+        DataCell(
+          IconButton(
+            tooltip: 'فتح محادثة مباشرة',
+            onPressed: userId == null
+                ? null
+                : () => openUserConversation(context, widget.api, userId),
+            icon: const Icon(Icons.chat_outlined),
+          ),
+        ),
       ],
-      onSelectChanged: (_) =>
-          _cardDialog(context, int.tryParse('${u['user_id']}') ?? 0),
+      onSelectChanged: userId == null
+          ? null
+          : (_) => _cardDialog(context, userId),
     );
   }
 
@@ -275,6 +291,19 @@ class _UserCardState extends State<_UserCard> {
     }
   }
 
+  Future<void> _downloadPhoto(Map<String, dynamic> report) async {
+    final reportId = int.tryParse('${report['id'] ?? ''}');
+    if (reportId == null) {
+      toast(context, 'معرّف البلاغ غير متاح', error: true);
+      return;
+    }
+    try {
+      await widget.api.download('/api/admin/photo/$reportId?download=true');
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = _p;
@@ -295,6 +324,8 @@ class _UserCardState extends State<_UserCard> {
           ),
           child: Row(
             children: [
+              UserActivityIndicator(lastSeen: p['last_at'] as String?),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   'بطاقة المتبلّغ — ${p['full_name'] ?? '-'}',
@@ -303,6 +334,12 @@ class _UserCardState extends State<_UserCard> {
                     fontSize: 15,
                   ),
                 ),
+              ),
+              IconButton(
+                tooltip: 'فتح محادثة مباشرة مع المستخدم',
+                onPressed: () =>
+                    openUserConversation(context, widget.api, widget.uid),
+                icon: const Icon(Icons.chat_outlined),
               ),
               IconButton(
                 tooltip: 'إغلاق',
@@ -339,6 +376,13 @@ class _UserCardState extends State<_UserCard> {
                 _kv('المرفوضة', '${p['rejected_n'] ?? 0}'),
                 _kv('أول ظهور', fmt(p['first_at'] as String?, chars: 19)),
                 _kv('آخر ظهور', fmt(p['last_at'] as String?, chars: 19)),
+                Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Text(
+                    'المؤشر يوضح آخر تحديث استلمه البوت، وليس حالة اتصال Telegram الفعلية.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
                 _kv(
                   'الحالة الإجمالية',
                   frozen.isEmpty
@@ -366,22 +410,39 @@ class _UserCardState extends State<_UserCard> {
                   for (final r in _reports.take(40))
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Row(
+                      child: Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: 8,
                         children: [
                           SelectableText(
                             '${r['seq'] ?? '-'}',
                             textDirection: TextDirection.ltr,
                             style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
-                          const SizedBox(width: 10),
                           Text('${r['status'] ?? '-'}'),
-                          const Spacer(),
                           Text('${r['violation_type'] ?? '—'}'),
-                          const SizedBox(width: 10),
                           Text(
                             fmt((r['created_at'] ?? '') as String),
                             textDirection: TextDirection.ltr,
                             style: const TextStyle(fontSize: 11),
+                          ),
+                          if (r['has_photo'] == true ||
+                              (r['photo_file_id'] ?? '').toString().isNotEmpty)
+                            IconButton(
+                              tooltip: 'تنزيل صورة البلاغ',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () => _downloadPhoto(r),
+                              icon: const Icon(Icons.download, size: 18),
+                            ),
+                          IconButton(
+                            tooltip: 'فتح محادثة مباشرة مع المستخدم',
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => openUserConversation(
+                              context,
+                              widget.api,
+                              widget.uid,
+                            ),
+                            icon: const Icon(Icons.chat_outlined, size: 18),
                           ),
                         ],
                       ),
