@@ -48,6 +48,9 @@ class _FakeApi implements AdminApi {
   }
 
   @override
+  Stream<Map<String, dynamic>> watchEvents() => const Stream.empty();
+
+  @override
   Future<Uint8List> getBytes(String path) async =>
       throw ApiException(404, 'photo_unavailable');
 

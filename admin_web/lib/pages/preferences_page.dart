@@ -10,6 +10,9 @@ class PreferencesPage extends StatelessWidget {
     required this.fontFamily,
     required this.compact,
     required this.seed,
+    required this.soundEnabled,
+    required this.soundUnlocked,
+    required this.soundSounds,
     required this.onChanged,
   });
 
@@ -18,6 +21,9 @@ class PreferencesPage extends StatelessWidget {
   final String fontFamily;
   final bool compact;
   final Color seed;
+  final bool soundEnabled;
+  final bool soundUnlocked;
+  final Map<String, String> soundSounds;
   final ValueChanged<Map<String, dynamic>> onChanged;
 
   void _update(String key, Object value) {
@@ -27,6 +33,23 @@ class PreferencesPage extends StatelessWidget {
       'font': fontFamily,
       'compact': compact,
       'seed': seed.toARGB32(),
+      'soundEnabled': soundEnabled,
+      'soundUnlocked': soundUnlocked,
+      for (final type in const [
+        'report_new',
+        'report_urgent',
+        'user_blocked',
+        'user_message',
+        'emergency',
+        'heartbeat_fail',
+      ])
+        'sound_$type':
+            soundSounds[type] ??
+            (type == 'report_new'
+                ? 'report'
+                : type == 'user_message'
+                ? 'message'
+                : 'alert'),
       key: value,
     });
   }
@@ -133,6 +156,45 @@ class PreferencesPage extends StatelessWidget {
                   ),
               ],
             ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 14),
+      SectionCard(
+        'الإشعارات الصوتية',
+        icon: Icons.notifications_active_outlined,
+        child: Column(
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('تشغيل أصوات الإشعارات'),
+              subtitle: const Text('تُحفظ هذه الخيارات على هذا المتصفح فقط'),
+              value: soundEnabled,
+              onChanged: (value) => _update('soundEnabled', value),
+            ),
+            const SizedBox(height: 8),
+            for (final item in const [
+              ('report_new', 'بلاغ جديد'),
+              ('report_urgent', 'بلاغ عاجل'),
+              ('user_blocked', 'حظر مستخدم'),
+              ('user_message', 'رسالة مستخدم'),
+              ('emergency', 'الإيقاف الطارئ'),
+              ('heartbeat_fail', 'فشل نبضة البوت'),
+            ])
+              DropdownButtonFormField<String>(
+                initialValue: soundSounds[item.$1] ?? 'report',
+                decoration: InputDecoration(labelText: item.$2),
+                items: const [
+                  DropdownMenuItem(value: 'report', child: Text('بلاغ')),
+                  DropdownMenuItem(value: 'alert', child: Text('تنبيه')),
+                  DropdownMenuItem(value: 'message', child: Text('رسالة')),
+                ],
+                onChanged: soundEnabled
+                    ? (value) {
+                        if (value != null) _update('sound_${item.$1}', value);
+                      }
+                    : null,
+              ),
           ],
         ),
       ),

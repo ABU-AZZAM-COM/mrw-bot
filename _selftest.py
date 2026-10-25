@@ -459,6 +459,44 @@ assert DB.backend == "sqlite"
 assert DB.health_check()
 assert DB._conn.execute("SELECT 1 AS value").fetchone()[0] == 1
 
+notifications_db = database.Database(
+    Path(_db_test_dir.name) / "notifications.db"
+)
+notification_subscriber = notifications_db.subscribe_notifications()
+notification_report = asyncio.run(notifications_db.add_report(
+    user_id=7001, username="notify_test", full_name="مستخدم إشعار",
+    photo_path="", photo_file_id=None, post_link="https://example.com/notify",
+    description="بلاغ لاختبار الإشعار",
+))
+report_event = notification_subscriber.get_nowait()
+assert report_event["type"] == "report_new"
+assert report_event["payload"]["report_id"] == notification_report["id"]
+asyncio.run(notifications_db.add_user_message(7001, "in", "رسالة واردة"))
+message_event = notification_subscriber.get_nowait()
+assert message_event["type"] == "user_message"
+asyncio.run(notifications_db.save_block(
+    7001, 1, "9999-12-31T00:00:00", "اختبار إشعار الحظر"
+))
+block_event = notification_subscriber.get_nowait()
+assert block_event["type"] == "user_blocked"
+asyncio.run(notifications_db.update_report_workflow(
+    notification_report["id"], "urgent", None, None
+))
+urgent_event = notification_subscriber.get_nowait()
+assert urgent_event["type"] == "report_urgent"
+asyncio.run(notifications_db.set_state("emergency", "1"))
+emergency_event = notification_subscriber.get_nowait()
+assert emergency_event["type"] == "emergency"
+items, unread_count = asyncio.run(notifications_db.list_notifications(limit=20))
+assert unread_count == 5 and len(items) == 5
+assert asyncio.run(
+    notifications_db.mark_notification_read(items[0]["id"])
+)
+assert asyncio.run(notifications_db.mark_all_notifications_read()) == 4
+notifications_db.unsubscribe_notifications(notification_subscriber)
+notifications_db.close()
+print("notifications: persisted events, cross-thread subscription, and read state")
+
 import turso_serverless
 
 mock_turso_connection = sqlite3.connect(":memory:", check_same_thread=False)
@@ -1216,6 +1254,22 @@ backup_now_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/backup/now"
 )
+notifications_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/notifications"
+)
+notification_read_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/notifications/{notification_id}/read"
+)
+notifications_read_all_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/notifications/read-all"
+)
+events_stream_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/events/stream"
+)
 original_bot_app = _bot_main.app
 _bot_main.app = SimpleNamespace(bot_data={"db": DB}, bot=None)
 db_health_response = db_health_endpoint()
@@ -1227,6 +1281,8 @@ _os.environ["ADMIN_API_TOKEN"] = "test-token-xyz"
 class _TursoHealthDb:
     backend = "turso"
     heartbeat = None
+    failure_notified = False
+    notifications = []
 
     def health_check(self):
         return True
@@ -1235,7 +1291,18 @@ class _TursoHealthDb:
         return 2
 
     async def get_state(self, key):
-        return self.heartbeat if key == "bot_last_heartbeat" else None
+        if key == "bot_last_heartbeat":
+            return self.heartbeat
+        if key == "bot_heartbeat_failure_notified" and self.failure_notified:
+            return "1"
+        return None
+
+    async def set_state(self, key, value):
+        if key == "bot_heartbeat_failure_notified":
+            self.failure_notified = value is not None
+
+    async def create_notification(self, notification_type, payload):
+        self.notifications.append((notification_type, payload))
 
 class _HealthRequest:
     headers = {"authorization": "Bearer test-token-xyz"}
@@ -1259,6 +1326,8 @@ _bot_main.app.bot_data["db"].heartbeat = (
 ).isoformat()
 stale_heartbeat_response = asyncio.run(system_health_endpoint(_HealthRequest()))
 assert json.loads(stale_heartbeat_response.body)["bot_alive"] is False
+assert _bot_main.app.bot_data["db"].failure_notified is True
+assert _bot_main.app.bot_data["db"].notifications[-1][0] == "heartbeat_fail"
 _bot_main.app.bot_data["db"].heartbeat = None
 
 class _UnavailableTursoDb(_TursoHealthDb):
@@ -1550,12 +1619,49 @@ print("admin_api: Telegram PNG is served with signature-detected MIME")
 class _Request:
     headers = {"x-admin-token": "test-token-xyz"}
     query_params = {}
+    method = "GET"
 
     def __init__(self, body):
         self._body = body
+        self.url = SimpleNamespace(path="/api/admin/notifications")
+        self.state = SimpleNamespace()
 
     async def json(self):
         return self._body
+
+    async def is_disconnected(self):
+        return False
+
+notifications_api_response = asyncio.run(
+    notifications_endpoint(_Request({}), unread=False, limit=20)
+)
+notifications_api_payload = json.loads(notifications_api_response.body)
+assert notifications_api_response.status_code == 200
+assert notifications_api_payload["unread_count"] >= 1
+assert notifications_api_payload["items"]
+async def _first_sse_event():
+    response = await events_stream_endpoint(_Request({}))
+    iterator = response.body_iterator
+    first = await iterator.__anext__()
+    pending_event = asyncio.create_task(iterator.__anext__())
+    await asyncio.sleep(0.01)
+    await pdb.create_notification("report_new", {"seq": "SSE-TEST"})
+    second = await pending_event
+    await iterator.aclose()
+    return first, second
+
+sse_connected, sse_event = asyncio.run(_first_sse_event())
+assert sse_connected == ": connected\n\n"
+assert "event: notification" in sse_event
+assert '"seq": "SSE-TEST"' in sse_event
+api_notification_id = notifications_api_payload["items"][0]["id"]
+read_api_response = asyncio.run(
+    notification_read_endpoint(api_notification_id, _Request({}))
+)
+assert read_api_response.status_code == 200
+read_all_api_response = asyncio.run(notifications_read_all_endpoint(_Request({})))
+assert json.loads(read_all_api_response.body)["ok"] is True
+print("admin_api: authenticated notification listing, SSE, and read endpoints")
 
 response = asyncio.run(status_endpoint(
     reject_report["id"], _Request({"status": "rejected"})

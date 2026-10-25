@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 
@@ -122,20 +124,26 @@ abstract final class AdminTheme {
 
 abstract final class AdminPreferences {
   static const _key = 'mrw_admin_visual_preferences';
+  static const _soundKey = 'mrw_admin_sound_preferences';
 
   static Map<String, dynamic> load() {
     try {
       final raw = web.window.localStorage.getItem(_key);
-      if (raw == null || raw.isEmpty) return _defaults;
-      final parts = raw.split('|');
-      if (parts.length != 5) return _defaults;
-      return {
-        'mode': parts[0],
-        'scale': double.tryParse(parts[1]) ?? 1.0,
-        'font': parts[2],
-        'compact': parts[3] == '1',
-        'seed': int.tryParse(parts[4]) ?? AdminTheme.accent.toARGB32(),
-      };
+      final parts = raw?.split('|') ?? const <String>[];
+      final visual = parts.length == 5
+          ? {
+              'mode': parts[0],
+              'scale': double.tryParse(parts[1]) ?? 1.0,
+              'font': parts[2],
+              'compact': parts[3] == '1',
+              'seed': int.tryParse(parts[4]) ?? AdminTheme.accent.toARGB32(),
+            }
+          : <String, dynamic>{};
+      final soundRaw = web.window.localStorage.getItem(_soundKey);
+      final sound = soundRaw == null
+          ? <String, dynamic>{}
+          : jsonDecode(soundRaw) as Map<String, dynamic>;
+      return {..._defaults, ...visual, ...sound};
     } catch (_) {
       return _defaults;
     }
@@ -147,6 +155,14 @@ abstract final class AdminPreferences {
     'font': 'NotoSansArabic',
     'compact': false,
     'seed': AdminTheme.accent.toARGB32(),
+    'soundEnabled': true,
+    'soundUnlocked': false,
+    'sound_report_new': 'report',
+    'sound_report_urgent': 'alert',
+    'sound_user_blocked': 'alert',
+    'sound_user_message': 'message',
+    'sound_emergency': 'alert',
+    'sound_heartbeat_fail': 'alert',
   };
 
   static void save(Map<String, dynamic> values) {
@@ -159,6 +175,28 @@ abstract final class AdminPreferences {
         values['compact'] == true ? '1' : '0',
         values['seed'] ?? AdminTheme.accent.toARGB32(),
       ].join('|'),
+    );
+    web.window.localStorage.setItem(
+      _soundKey,
+      jsonEncode({
+        'soundEnabled': values['soundEnabled'] ?? true,
+        'soundUnlocked': values['soundUnlocked'] == true,
+        for (final type in const [
+          'report_new',
+          'report_urgent',
+          'user_blocked',
+          'user_message',
+          'emergency',
+          'heartbeat_fail',
+        ])
+          'sound_$type':
+              values['sound_$type'] ??
+              (type == 'report_new'
+                  ? 'report'
+                  : type == 'user_message'
+                  ? 'message'
+                  : 'alert'),
+      }),
     );
   }
 }

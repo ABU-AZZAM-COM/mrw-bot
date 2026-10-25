@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:html' as html;
+
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -30,12 +33,207 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
   String _roleLabel = 'لوحة الإدارة';
+  int _unreadCount = 0;
+  int _eventRevision = 0;
+  int _notificationFetchSerial = 0;
+  List<Map<String, dynamic>> _notifications = [];
+  StreamSubscription<Map<String, dynamic>>? _eventsSubscription;
+  Timer? _reconnectTimer;
 
   @override
   void initState() {
     super.initState();
     _loadRole();
+    _connectEvents();
   }
+
+  @override
+  void dispose() {
+    _reconnectTimer?.cancel();
+    _eventsSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refreshNotifications() async {
+    final requestSerial = ++_notificationFetchSerial;
+    try {
+      final unread = await widget.api.get('/api/admin/notifications', {
+        'unread': 'true',
+        'limit': '20',
+      });
+      final latest = await widget.api.get('/api/admin/notifications', {
+        'limit': '20',
+      });
+      if (!mounted || requestSerial != _notificationFetchSerial) return;
+      setState(() {
+        _unreadCount = (unread['unread_count'] as num?)?.toInt() ?? 0;
+        _notifications = (latest['items'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+      });
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  void _connectEvents() {
+    _eventsSubscription = widget.api.watchEvents().listen(
+      _onEvent,
+      onError: (_) => _scheduleReconnect(),
+      onDone: _scheduleReconnect,
+    );
+    unawaited(_refreshNotifications());
+  }
+
+  void _scheduleReconnect() {
+    _eventsSubscription = null;
+    if (!mounted || _reconnectTimer?.isActive == true) return;
+    _reconnectTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) _connectEvents();
+    });
+  }
+
+  void _onEvent(Map<String, dynamic> event) {
+    if (!mounted) return;
+    setState(() => _eventRevision++);
+    final type = event['type']?.toString() ?? '';
+    final prefs = widget.preferences;
+    if (prefs['soundEnabled'] == true && prefs['soundUnlocked'] == true) {
+      final sound = prefs['sound_$type'] as String?;
+      if (sound != null) _playSound(sound);
+    }
+    unawaited(_refreshNotifications());
+  }
+
+  void _playSound(String sound) {
+    if (!const {'report', 'alert', 'message'}.contains(sound)) return;
+    final audio = html.AudioElement()
+      ..src = 'assets/assets/sounds/$sound.mp3'
+      ..preload = 'auto';
+    unawaited(
+      audio.play().catchError((Object error) {
+        debugPrint('تعذر تشغيل صوت الإشعار: $error');
+      }),
+    );
+  }
+
+  void _enableSounds() {
+    widget.onPreferencesChanged({...widget.preferences, 'soundUnlocked': true});
+    _playSound('message');
+  }
+
+  Future<void> _showNotifications() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Row(
+            children: [
+              const Expanded(child: Text('الإشعارات')),
+              TextButton(
+                onPressed: _unreadCount == 0
+                    ? null
+                    : () async {
+                        await widget.api.post(
+                          '/api/admin/notifications/read-all',
+                          {},
+                        );
+                        await _refreshNotifications();
+                        if (mounted) setDialogState(() {});
+                      },
+                child: const Text('تعليم الكل كمقروء'),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 420,
+            height: 420,
+            child: _notifications.isEmpty
+                ? const Center(child: Text('لا توجد إشعارات'))
+                : ListView.separated(
+                    itemCount: _notifications.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final notification = _notifications[index];
+                      final payload =
+                          notification['payload'] as Map<String, dynamic>? ??
+                          const {};
+                      final id = (notification['id'] as num).toInt();
+                      final unread = notification['is_read'] != true;
+                      return ListTile(
+                        leading: Icon(
+                          _notificationIcon(
+                            notification['type']?.toString() ?? '',
+                          ),
+                          color: unread
+                              ? Theme.of(context).colorScheme.primary
+                              : null,
+                        ),
+                        title: Text(
+                          _notificationTitle(
+                            notification['type']?.toString() ?? '',
+                          ),
+                        ),
+                        subtitle: Text(
+                          _notificationDetails(payload),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: unread
+                            ? const Icon(Icons.circle, size: 9)
+                            : null,
+                        onTap: unread
+                            ? () async {
+                                await widget.api.post(
+                                  '/api/admin/notifications/$id/read',
+                                  {},
+                                );
+                                await _refreshNotifications();
+                                if (mounted) setDialogState(() {});
+                              }
+                            : null,
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static IconData _notificationIcon(String type) => switch (type) {
+    'report_new' || 'report_urgent' => Icons.assignment_outlined,
+    'user_blocked' => Icons.block_outlined,
+    'user_message' => Icons.chat_bubble_outline,
+    'emergency' || 'heartbeat_fail' => Icons.warning_amber_outlined,
+    _ => Icons.notifications_outlined,
+  };
+
+  static String _notificationTitle(String type) => switch (type) {
+    'report_new' => 'بلاغ جديد',
+    'report_urgent' => 'بلاغ عاجل',
+    'user_blocked' => 'حظر مستخدم',
+    'user_message' => 'رسالة مستخدم',
+    'emergency' => 'تفعيل الإيقاف الطارئ',
+    'heartbeat_fail' => 'انقطاع نبضة البوت',
+    _ => 'إشعار',
+  };
+
+  static String _notificationDetails(Map<String, dynamic> payload) =>
+      (payload['seq'] ??
+              payload['full_name'] ??
+              payload['preview'] ??
+              payload['reason'] ??
+              payload['message'] ??
+              payload['user_id'] ??
+              '')
+          .toString();
 
   Future<void> _loadRole() async {
     try {
@@ -74,15 +272,15 @@ class _MainShellState extends State<MainShell> {
   ];
 
   List<Widget> get _pages => [
-    OverviewPage(api: widget.api),
-    ReportsPage(api: widget.api),
-    UsersPage(api: widget.api),
+    OverviewPage(key: ValueKey('overview-$_eventRevision'), api: widget.api),
+    ReportsPage(key: ValueKey('reports-$_eventRevision'), api: widget.api),
+    UsersPage(key: ValueKey('users-$_eventRevision'), api: widget.api),
     OperationsPage(api: widget.api),
     MessagingPage(api: widget.api),
     TypesPage(api: widget.api),
     AuditPage(api: widget.api),
     BlockedPage(api: widget.api),
-    AnalyticsPage(api: widget.api),
+    AnalyticsPage(key: ValueKey('analytics-$_eventRevision'), api: widget.api),
     HealthPage(api: widget.api),
     PreferencesPage(
       mode: ThemeMode.values.firstWhere(
@@ -97,6 +295,25 @@ class _MainShellState extends State<MainShell> {
             AdminTheme.accent.toARGB32(),
       ),
       onChanged: widget.onPreferencesChanged,
+      soundEnabled: widget.preferences['soundEnabled'] != false,
+      soundUnlocked: widget.preferences['soundUnlocked'] == true,
+      soundSounds: {
+        for (final type in const [
+          'report_new',
+          'report_urgent',
+          'user_blocked',
+          'user_message',
+          'emergency',
+          'heartbeat_fail',
+        ])
+          type:
+              widget.preferences['sound_$type'] as String? ??
+              (type == 'report_new'
+                  ? 'report'
+                  : type == 'user_message'
+                  ? 'message'
+                  : 'alert'),
+      },
     ),
   ];
 
@@ -183,6 +400,34 @@ class _MainShellState extends State<MainShell> {
           ],
         ),
         actions: [
+          if (widget.preferences['soundUnlocked'] != true) ...[
+            if (compact)
+              IconButton(
+                tooltip: 'تفعيل الأصوات',
+                onPressed: _enableSounds,
+                icon: const Icon(Icons.volume_up_outlined),
+              )
+            else
+              TextButton.icon(
+                onPressed: _enableSounds,
+                icon: const Icon(Icons.volume_up_outlined),
+                label: const Text('تفعيل الأصوات'),
+              ),
+          ],
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Center(
+              child: Badge(
+                isLabelVisible: _unreadCount > 0,
+                label: Text(_unreadCount > 99 ? '99+' : '$_unreadCount'),
+                child: IconButton(
+                  tooltip: 'الإشعارات',
+                  onPressed: _showNotifications,
+                  icon: const Icon(Icons.notifications_outlined),
+                ),
+              ),
+            ),
+          ),
           if (!compact)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),

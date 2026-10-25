@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import Request  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
 
 import utils  # noqa: E402
 import texts  # noqa: E402
@@ -131,7 +131,9 @@ def _auth(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
 
     method = getattr(request, "method", "POST").upper()
-    if path.startswith("/api/admin/export/") or path.startswith("/api/admin/backup/"):
+    if path.startswith("/api/admin/notifications") or path == "/api/admin/events/stream":
+        permission = "read"
+    elif path.startswith("/api/admin/export/") or path.startswith("/api/admin/backup/"):
         permission = "export"
     elif method in ("GET", "HEAD", "OPTIONS"):
         permission = "read"
@@ -392,6 +394,76 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         import main as bot_main  # noqa: PLC0415
 
         return bot_main.app.bot_data["db"]
+
+    @app.get("/api/admin/events/stream")
+    async def events_stream(request: Request):
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        import queue
+
+        db = db_of()
+        subscriber = db.subscribe_notifications()
+
+        async def events():
+            try:
+                yield ": connected\n\n"
+                while not await request.is_disconnected():
+                    try:
+                        event = await asyncio.to_thread(subscriber.get, True, 15)
+                    except queue.Empty:
+                        yield ": keepalive\n\n"
+                        continue
+                    yield (
+                        f"id: {event['id']}\n"
+                        f"event: notification\n"
+                        f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    )
+            finally:
+                db.unsubscribe_notifications(subscriber)
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/admin/notifications")
+    async def list_notifications(request: Request, unread: bool = False, limit: int = 20):
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        if limit < 1 or limit > 100:
+            return bad("bad_limit")
+        items, unread_count = await db_of().list_notifications(
+            unread_only=unread, limit=limit
+        )
+        return JSONResponse({
+            "ok": True,
+            "items": items,
+            "unread_count": unread_count,
+        })
+
+    @app.post("/api/admin/notifications/{notification_id}/read")
+    async def read_notification(notification_id: int, request: Request):
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        changed = await db_of().mark_notification_read(notification_id)
+        if not changed:
+            return bad("notification_not_found", 404)
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/admin/notifications/read-all")
+    async def read_all_notifications(request: Request):
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        count = await db_of().mark_all_notifications_read()
+        return JSONResponse({"ok": True, "updated": count})
 
     @app.get("/db-health")
     def db_health() -> JSONResponse:
@@ -1343,6 +1415,21 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 logger.error(
                     "تعذرت قراءة نبضة حياة البوت (%s)", type(exc).__name__
                 )
+            try:
+                failure_notified = await db.get_state(
+                    "bot_heartbeat_failure_notified"
+                )
+                if bot_alive:
+                    if failure_notified:
+                        await db.set_state("bot_heartbeat_failure_notified", None)
+                elif not failure_notified:
+                    await db.create_notification(
+                        "heartbeat_fail",
+                        {"message": "لم تصل نبضة حياة البوت خلال 180 ثانية"},
+                    )
+                    await db.set_state("bot_heartbeat_failure_notified", "1")
+            except Exception:
+                logger.exception("تعذر تسجيل إشعار فشل نبضة حياة البوت")
         import hub_backup  # noqa: PLC0415
 
         import main as bot_main  # noqa: PLC0415

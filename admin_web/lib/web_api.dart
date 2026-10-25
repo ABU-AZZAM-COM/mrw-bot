@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:html' as html;
 import 'dart:js_interop';
 import 'dart:typed_data';
 
@@ -121,6 +122,71 @@ class Api implements AdminApi {
   @override
   Future<Map<String, dynamic>> get(String path, [Map<String, String>? query]) =>
       _go('GET', path, query: query);
+
+  @override
+  Stream<Map<String, dynamic>> watchEvents() {
+    late final StreamController<Map<String, dynamic>> controller;
+    final request = html.HttpRequest();
+    var offset = 0;
+    var pending = '';
+
+    void consume(String chunk) {
+      pending += chunk.replaceAll('\r\n', '\n');
+      while (true) {
+        final boundary = pending.indexOf('\n\n');
+        if (boundary < 0) return;
+        final event = pending.substring(0, boundary);
+        pending = pending.substring(boundary + 2);
+        final data = event
+            .split('\n')
+            .where((line) => line.startsWith('data:'))
+            .map((line) => line.substring(5).trimLeft())
+            .join('\n');
+        if (data.isEmpty) continue;
+        try {
+          final decoded = jsonDecode(data);
+          if (decoded is Map<String, dynamic>) controller.add(decoded);
+        } catch (_) {
+          controller.addError(ApiException(502, 'invalid_event'));
+        }
+      }
+    }
+
+    controller = StreamController<Map<String, dynamic>>(
+      onListen: () {
+        request
+          ..open('GET', _uri('/api/admin/events/stream').toString())
+          ..setRequestHeader('Authorization', 'Bearer $token');
+        request.onProgress.listen((_) {
+          final response = request.responseText ?? '';
+          if (response.length < offset) offset = 0;
+          consume(response.substring(offset));
+          offset = response.length;
+        });
+        request.onLoad.listen((_) {
+          if (request.status == 401) {
+            onUnauthorized?.call();
+            controller.addError(ApiException(401, 'unauthorized'));
+          } else if (request.status != 200) {
+            controller.addError(
+              ApiException(request.status ?? 0, 'event_stream_failed'),
+            );
+          }
+          controller.close();
+        });
+        request.onError.listen((_) {
+          controller.addError(ApiException(0, 'event_stream_disconnected'));
+          controller.close();
+        });
+        request.onAbort.listen((_) => controller.close());
+        request.send();
+      },
+      onCancel: () {
+        request.abort();
+      },
+    );
+    return controller.stream;
+  }
 
   @override
   Future<Uint8List> getBytes(String path) async {

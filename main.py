@@ -215,10 +215,20 @@ async def write_heartbeat(db) -> None:
 
 async def heartbeat_loop(db) -> None:
     """Persist a database-backed liveness marker independently of user traffic."""
+    write_failed = False
     while True:
         try:
             await write_heartbeat(db)
+            if write_failed:
+                if not await db.get_state("bot_heartbeat_failure_notified"):
+                    await db.create_notification(
+                        "heartbeat_fail",
+                        {"message": "تعافى اتصال قاعدة البيانات بعد تعذر نبضة حياة"},
+                    )
+                await db.set_state("bot_heartbeat_failure_notified", None)
+                write_failed = False
         except Exception as exc:
+            write_failed = True
             logger.error(
                 "تعذرت كتابة نبضة حياة البوت (%s)", type(exc).__name__
             )
