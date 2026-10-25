@@ -1,3 +1,22 @@
 {
-  "monitors": {}
+  "monitors": {
+    "804410141": {
+      "alerted": false,
+      "down_since": null,
+      "last_alert": null,
+      "name": "https://mrw-bot.onrender.com/admin",
+      "status": 2,
+      "updated_at": "2026-10-25T12:35:45+00:00",
+      "url": "https://mrw-bot.onrender.com/admin"
+    },
+    "804416401": {
+      "alerted": false,
+      "down_since": null,
+      "last_alert": null,
+      "name": "mrw-bot - Health (Keyword)",
+      "status": 2,
+      "updated_at": "2026-10-25T12:35:45+00:00",
+      "url": "https://mrw-bot.onrender.com/health"
+    }
+  }
 }
