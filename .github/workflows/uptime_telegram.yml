@@ -4,13 +4,8 @@ name: Uptime -> Telegram
 # يعمل من GitHub وليس من Render، لذلك تصل التنبيهات حتى لو كانت الخدمة متوقفة.
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
-  # شبكة أمان: يعمل أيضًا بعد كل نبضة keepalive (كل 10 دقائق) فيصل التنبيه
-  # حتى لو تأخّر جدول cron الخاص بهذا الملف.
-  workflow_run:
-    workflows: ["render-keepalive"]
-    types: [completed]
+  # عُطّل الجدول بعد تشغيل Cloudflare Worker (فحص كل دقيقة).
+  # يبقى التشغيل اليدوي فقط كنسخة احتياطية.
   workflow_dispatch:
     inputs:
       test:
