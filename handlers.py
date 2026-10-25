@@ -449,8 +449,10 @@ async def _freeze_for_sensitive_image(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     screening: image_moderation.ScreeningResult,
+    photo_path: str = "",
+    photo_file_id: str | None = None,
 ) -> None:
-    """Persist an indefinite block and alert admins without forwarding the image."""
+    """Persist the block and its evidence without forwarding media in Telegram."""
     user = update.effective_user
     db = _db(context)
     reason = (
@@ -465,6 +467,8 @@ async def _freeze_for_sensitive_image(
         int(previous_block.get("strikes") or 0),
         frozen_until,
         reason,
+        evidence_photo_path=photo_path,
+        evidence_photo_file_id=photo_file_id,
     )
     try:
         await db.audit(
@@ -532,7 +536,9 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_PHOTO
     if screening.flagged:
         await progress.edit_text("⛔ أوقف النظام هذا البلاغ وفق نتيجة فحص الصورة.")
-        await _freeze_for_sensitive_image(update, context, screening)
+        await _freeze_for_sensitive_image(
+            update, context, screening, photo_path, photo_file_id
+        )
         return ConversationHandler.END
 
     await progress.edit_text(
@@ -997,7 +1003,9 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return None
     if screening.flagged:
         await progress.edit_text("⛔ أوقف النظام هذا البلاغ وفق نتيجة فحص الصورة.")
-        await _freeze_for_sensitive_image(update, context, screening)
+        await _freeze_for_sensitive_image(
+            update, context, screening, photo_path, photo_file_id
+        )
         return None
     await progress.edit_text(
         "⚠️ تعذر إكمال الفحص الآلي بالكامل؛ سيُحال البلاغ للمراجعة اليدوية."

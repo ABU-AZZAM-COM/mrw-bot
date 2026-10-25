@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import Request  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse  # noqa: E402
 
 import utils  # noqa: E402
 import texts  # noqa: E402
@@ -164,6 +164,30 @@ def _auth(request):
 
 def _admin_actor(request) -> int:
     return int(getattr(getattr(request, "state", None), "admin_id", 0) or 0)
+
+
+def _owner_only(request):
+    if getattr(getattr(request, "state", None), "admin_role", "") != "owner":
+        return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
+    return None
+
+
+def _audit_date_range(start: str, end: str) -> tuple[str, str] | None:
+    try:
+        start_day = datetime.strptime(start, "%Y-%m-%d").date()
+        end_day = datetime.strptime(end, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    if end_day < start_day:
+        return None
+    start_at = datetime.combine(start_day, datetime.min.time(), tzinfo=timezone.utc)
+    end_at = datetime.combine(
+        end_day + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
+    )
+    return (
+        start_at.isoformat(timespec="seconds"),
+        end_at.isoformat(timespec="seconds"),
+    )
 
 
 # ==================================================================
@@ -432,20 +456,52 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         )
 
     @app.get("/api/admin/notifications")
-    async def list_notifications(request: Request, unread: bool = False, limit: int = 20):
+    async def list_notifications(
+        request: Request,
+        unread: bool = False,
+        limit: int = 20,
+        kind: str | None = None,
+    ):
         refuse = _auth(request)
         if refuse:
             return refuse
         if limit < 1 or limit > 100:
             return bad("bad_limit")
+        if kind not in (None, "regular", "heartbeat"):
+            return bad("bad_notification_kind")
         items, unread_count = await db_of().list_notifications(
-            unread_only=unread, limit=limit
+            unread_only=unread, limit=limit, kind=kind
         )
         return JSONResponse({
             "ok": True,
             "items": items,
             "unread_count": unread_count,
         })
+
+    @app.get("/api/admin/notifications/stats")
+    async def notification_stats(request: Request):
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        return JSONResponse({"ok": True, **await db_of().notification_stats()})
+
+    @app.post("/api/admin/notifications/cleanup")
+    async def cleanup_notifications(request: Request):
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        deleted = await db.cleanup_notifications()
+        await db.audit(
+            _admin_actor(request),
+            "notifications_cleanup",
+            "notifications",
+            f"deleted={deleted}",
+        )
+        return JSONResponse({"ok": True, "deleted": deleted})
 
     @app.post("/api/admin/notifications/{notification_id}/read")
     async def read_notification(notification_id: int, request: Request):
@@ -864,14 +920,113 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         try:
             page = max(0, int(qp.get("page", "0") or 0))
             size = min(int(qp.get("size", "50") or 50), MAX_PAGE_SIZE)
+            user_id = int(qp["user_id"]) if qp.get("user_id") else None
             if size < 1:
                 return bad("bad_query")
         except ValueError:
             return bad("bad_query")
-        items, total = await db_of().list_blocked_users(page=page, size=size)
+        items, total = await db_of().list_blocked_users(
+            page=page, size=size, user_id=user_id
+        )
         return JSONResponse({
             "ok": True, "page": page, "size": size, "total": total, "items": items,
         })
+
+    @app.get("/api/admin/blocked-users/{uid}/photo")
+    async def blocked_user_photo(uid: int, request: Request) -> Any:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        blocked, _ = await db.list_blocked_users(page=0, size=1, user_id=uid)
+        if not blocked:
+            return bad("not_found", 404)
+        evidence = await db.get_block_evidence(uid)
+        if not evidence:
+            return bad("no_photo", 404)
+        download = request.query_params.get("download") == "true"
+        local = _local_photo_path(str(evidence.get("photo_path") or "").strip())
+        if local is not None and local.is_file():
+            media_type = (
+                mimetypes.guess_type(local.name)[0] or "application/octet-stream"
+            )
+            if not media_type.startswith("image/"):
+                media_type = "application/octet-stream"
+            return FileResponse(
+                str(local),
+                media_type=media_type,
+                filename=(
+                    f"blocked-{uid}-evidence{local.suffix.lower()}"
+                    if download
+                    else None
+                ),
+                headers={"Cache-Control": "private, no-store"},
+            )
+        file_id = evidence.get("photo_file_id")
+        if not file_id:
+            return bad("photo_unavailable", 503)
+        data = await _photo_bytes(str(file_id))
+        if not data:
+            return bad("photo_unavailable", 503)
+        media_type = _image_media_type(data)
+        headers = {"Cache-Control": "private, no-store"}
+        if download:
+            extension = mimetypes.guess_extension(media_type) or ".jpg"
+            headers["Content-Disposition"] = (
+                f'attachment; filename="blocked-{uid}-evidence{extension}"'
+            )
+        return Response(content=data, media_type=media_type, headers=headers)
+
+    @app.get("/api/admin/blocked-users/{uid}/report")
+    async def blocked_user_report(uid: int, request: Request) -> Any:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        blocked, _ = await db.list_blocked_users(page=0, size=1, user_id=uid)
+        if not blocked:
+            return bad("not_found", 404)
+        item = blocked[0]
+        lines = [
+            "تقرير حجب مستخدم",
+            f"معرّف المستخدم: {uid}",
+            f"الاسم: {item.get('full_name') or '-'}",
+            (
+                f"اسم المستخدم: @{item['username']}"
+                if item.get("username")
+                else "اسم المستخدم: -"
+            ),
+            f"سبب الحجب: {item.get('reason') or 'غير مسجل'}",
+            f"عدد المخالفات: {item.get('strikes', 0)}",
+            f"الحجب حتى: {item.get('frozen_until') or 'غير محدد'}",
+            f"آخر تحديث: {item.get('updated_at') or '-'}",
+            f"صورة دليل مرفقة: {'نعم' if item.get('has_evidence_photo') else 'لا'}",
+        ]
+        report_id = item.get("report_id")
+        if report_id is not None:
+            report = await db.get_by_id(int(report_id))
+            if report:
+                lines.extend([
+                    "",
+                    "آخر بلاغ مسجل للمستخدم (مرجع إضافي)",
+                    f"رقم البلاغ: {report.get('seq') or report_id}",
+                    f"تاريخ البلاغ: {report.get('created_at') or '-'}",
+                    (
+                        "التصنيف: "
+                        f"{report.get('category') or report.get('violation_type') or '-'}"
+                    ),
+                    f"الوصف: {report.get('description') or '-'}",
+                ])
+        return Response(
+            content="\n".join(lines),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="blocked-user-{uid}-report.txt"'
+                ),
+                "Cache-Control": "private, no-store",
+            },
+        )
 
     @app.post("/api/admin/users/{uid}/message")
     async def message_user(uid: int, request: Request) -> JSONResponse:
@@ -885,6 +1040,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         db = db_of()
         if not await db.user_profile(uid):
             return bad("not_found", 404)
+        if not await db.user_contact_enabled(uid):
+            return bad("direct_contact_disabled", 403)
         sent = await _send_direct_message(uid, text)
         if not sent:
             await db.audit(
@@ -918,6 +1075,41 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "items": await db.list_user_messages(uid, after_id, limit),
         })
 
+    @app.put("/api/admin/users/{uid}/contact")
+    async def set_user_contact(uid: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return bad("bad_contact_setting")
+        db = db_of()
+        if not await db.user_profile(uid):
+            return bad("not_found", 404)
+        changed = await db.set_user_contact_enabled(uid, enabled)
+        notified = True
+        if changed:
+            notice = (
+                "تم تفعيل إمكانية التواصل المباشر معك عبر بوت البلاغات."
+                if enabled
+                else "تم إيقاف إمكانية التواصل المباشر معك عبر بوت البلاغات."
+            )
+            notified = await _send_direct_message(uid, notice)
+        await db.audit(
+            _admin_actor(request),
+            "user_contact_enabled" if enabled else "user_contact_disabled",
+            str(uid),
+            f"{'changed' if changed else 'unchanged'}"
+            f"{'; notified' if notified else '; notification_failed'}",
+        )
+        return JSONResponse({
+            "ok": True,
+            "enabled": enabled,
+            "changed": changed,
+            "notified": notified,
+        })
+
     # ------------------------------------------------------------
     # 4) سجل التدقيق + التصدير (لتكميل أروقة الالتزام)
     # ------------------------------------------------------------
@@ -926,8 +1118,77 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         refuse = _auth(request)
         if refuse:
             return refuse
-        limit = min(int(request.query_params.get("limit", "50") or 50), 200)
-        return JSONResponse({"ok": True, "items": await db_of().recent_audit(limit)})
+        qp = request.query_params
+        try:
+            limit = min(int(qp.get("limit", "50") or 50), 5000)
+        except ValueError:
+            return bad("bad_query")
+        start, end = qp.get("start"), qp.get("end")
+        if start is None and end is None:
+            items = await db_of().recent_audit(max(1, min(limit, 200)))
+        elif not start or not end:
+            return bad("bad_date_range")
+        else:
+            bounds = _audit_date_range(start, end)
+            if bounds is None:
+                return bad("bad_date_range")
+            items = await db_of().audit_range(*bounds, limit=max(1, limit))
+        return JSONResponse({"ok": True, "items": items})
+
+    @app.get("/api/admin/audit/export")
+    async def audit_export(request: Request) -> Response:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        qp = request.query_params
+        start, end = qp.get("start", ""), qp.get("end", "")
+        bounds = _audit_date_range(start, end)
+        if bounds is None:
+            return bad("bad_date_range")
+        import csv
+        import io
+
+        output = io.StringIO(newline="")
+        writer = csv.writer(output)
+        writer.writerow(("id", "ts", "actor_id", "action", "target", "details"))
+        for item in await db_of().audit_range(*bounds):
+            writer.writerow(
+                item.get(key)
+                for key in ("id", "ts", "actor_id", "action", "target", "details")
+            )
+        return Response(
+            output.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="audit-{start}-to-{end}.csv"'
+                )
+            },
+        )
+
+    @app.post("/api/admin/audit/cleanup")
+    async def audit_cleanup(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        start = str(body.get("start") or "")
+        end = str(body.get("end") or "")
+        bounds = _audit_date_range(start, end)
+        if bounds is None:
+            return bad("bad_date_range")
+        db = db_of()
+        deleted = await db.delete_audit_range(*bounds)
+        await db.audit(
+            _admin_actor(request),
+            "audit_cleanup",
+            f"{start}..{end}",
+            f"deleted={deleted}",
+        )
+        return JSONResponse({"ok": True, "deleted": deleted})
 
     @app.get("/api/admin/meta")
     async def meta(request: Request) -> JSONResponse:
@@ -957,6 +1218,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 
         local_raw = str(r.get("photo_path") or "").strip()
         local = _local_photo_path(local_raw)
+        download = request.query_params.get("download") == "true"
         if local is not None and local.is_file():
             media_type = mimetypes.guess_type(local.name)[0] or "application/octet-stream"
             if not media_type.startswith("image/"):
@@ -964,6 +1226,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return FileResponse(
                 str(local),
                 media_type=media_type,
+                filename=(
+                    f"report-{rid}-photo{local.suffix.lower()}" if download else None
+                ),
                 headers={"Cache-Control": "private, no-store"},
             )
         file_id = r.get("photo_file_id")
@@ -976,10 +1241,43 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         from fastapi.responses import Response  # noqa: PLC0415
 
         media_type = _image_media_type(data)
+        headers = {"Cache-Control": "private, no-store"}
+        if download:
+            extension = mimetypes.guess_extension(media_type) or ".jpg"
+            headers["Content-Disposition"] = (
+                f'attachment; filename="report-{rid}-photo{extension}"'
+            )
         return Response(
             content=data,
             media_type=media_type,
-            headers={"Cache-Control": "private, no-store"},
+            headers=headers,
+        )
+
+    @app.get("/api/admin/reports/{rid}/download")
+    async def download_report(rid: int, request: Request) -> Response:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        item = await db_of().get_by_id(rid)
+        if not item:
+            return bad("not_found", 404)
+        fields = (
+            ("رقم البلاغ", item.get("seq") or item.get("id")),
+            ("تاريخ الوصول", item.get("created_at")),
+            ("المستخدم", item.get("user_id")),
+            ("الحالة", item.get("status")),
+            ("التصنيف", item.get("violation_type")),
+            ("الوصف", item.get("description")),
+            ("الرابط", item.get("post_link")),
+            ("ملاحظة الإدارة", item.get("admin_note")),
+        )
+        content = "\n".join(f"{label}: {value or '—'}" for label, value in fields)
+        return Response(
+            content,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="report-{rid}.txt"'
+            },
         )
 
     # ------------------------------------------------------------

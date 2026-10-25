@@ -610,11 +610,17 @@ asyncio.run(
             labels=("FEMALE_GENITALIA_EXPOSED",),
             max_score=0.97,
         ),
+        photo_path="media/sensitive-review.jpg",
+        photo_file_id="test-sensitive-file-id",
     )
 )
 automatic_block = asyncio.run(DB.get_block(freeze_user.id))
 assert automatic_block["frozen_until"] == "9999-12-31T00:00:00"
 assert automatic_block["reason"].startswith("كشف آلي")
+assert asyncio.run(DB.get_block_evidence(freeze_user.id)) == {
+    "photo_path": "media/sensitive-review.jpg",
+    "photo_file_id": "test-sensitive-file-id",
+}
 assert not freeze_context.user_data and freeze_user.id not in handlers._pending_app_users
 assert len(freeze_alerts) == len(config.ADMIN_IDS) and len(freeze_notices) == 1
 assert all("photo" not in alert for alert in freeze_alerts)
@@ -628,6 +634,7 @@ assert any(row["user_id"] == freeze_user.id for row in blocked_rows)
 blocked_verdict = asyncio.run(guards.check_rate_limits(DB, freeze_user.id))
 assert blocked_verdict.blocked, blocked_verdict
 asyncio.run(DB.clear_block(freeze_user.id))
+assert asyncio.run(DB.get_block_evidence(freeze_user.id)) is None
 assert asyncio.run(guards.check_rate_limits(DB, freeze_user.id)).allowed
 print("automatic explicit-image freeze persists, audits, alerts without forwarding image, and admin unblock restores access")
 
@@ -1098,7 +1105,14 @@ subscriber_ids, overflow = asyncio.run(pdb.all_user_ids())
 assert not overflow and set(subscriber_ids) == {777, 778}
 
 # الحجب: حفظ ثم ظهور في القائمة ثم الرفع ثم الاختفاء
-asyncio.run(pdb.save_block(777, 0, "9999-12-31T00:00:00", "اختبار لوحة"))
+asyncio.run(pdb.save_block(
+    777,
+    0,
+    "9999-12-31T00:00:00",
+    "اختبار لوحة",
+    evidence_photo_path="media/sensitive-evidence.jpg",
+    evidence_photo_file_id="telegram-evidence-file",
+))
 users_rows, _ = asyncio.run(pdb.list_users())
 blocked_777 = next(row for row in users_rows if row["user_id"] == 777)
 assert blocked_777["frozen_until"] == "9999-12-31T00:00:00"
@@ -1106,6 +1120,11 @@ blocked_rows, blocked_total = asyncio.run(pdb.list_blocked_users())
 assert blocked_total == 1
 assert blocked_rows[0]["user_id"] == 777
 assert blocked_rows[0]["reason"] == "اختبار لوحة"
+assert blocked_rows[0]["has_evidence_photo"] == 1
+assert asyncio.run(pdb.get_block_evidence(777)) == {
+    "photo_path": "media/sensitive-evidence.jpg",
+    "photo_file_id": "telegram-evidence-file",
+}
 asyncio.run(pdb.save_block(42424242, 0, "9999-12-31T00:00:00", "بلا بلاغات"))
 blocked_rows, blocked_total = asyncio.run(pdb.list_blocked_users())
 assert blocked_total == 2
@@ -1127,6 +1146,7 @@ asyncio.run(pdb.clear_block(42424242))
 asyncio.run(pdb.clear_block(777))
 asyncio.run(pdb.clear_block(52525252))
 assert asyncio.run(pdb.get_block(777)).get("frozen_until") in (None, "")
+assert asyncio.run(pdb.get_block_evidence(777)) is None
 assert asyncio.run(
     pdb.count_events(reset_test_since, user_id=777, kind="start")
 ) == 0
@@ -1230,6 +1250,10 @@ user_messages_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/users/{uid}/messages"
 )
+user_contact_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/users/{uid}/contact"
+)
 unblock_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/users/{uid}/unblock"
@@ -1237,6 +1261,14 @@ unblock_endpoint = next(
 photo_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/photo/{rid}"
+)
+blocked_user_photo_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/blocked-users/{uid}/photo"
+)
+blocked_user_report_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/blocked-users/{uid}/report"
 )
 db_health_endpoint = next(
     route.endpoint for route in api_app.routes
@@ -1265,6 +1297,14 @@ notification_read_endpoint = next(
 notifications_read_all_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/notifications/read-all"
+)
+notifications_stats_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/notifications/stats"
+)
+notifications_cleanup_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/notifications/cleanup"
 )
 events_stream_endpoint = next(
     route.endpoint for route in api_app.routes
@@ -1590,6 +1630,23 @@ local_photo_response = asyncio.run(photo_endpoint(
 assert local_photo_response.status_code == 200
 assert local_photo_response.headers["content-type"] == "image/png"
 assert local_photo_response.headers["cache-control"] == "private, no-store"
+asyncio.run(photo_db.save_block(
+    780,
+    0,
+    "9999-12-31T00:00:00",
+    "كشف آلي",
+    evidence_photo_path=str(photo_path),
+))
+blocked_photo_response = asyncio.run(blocked_user_photo_endpoint(
+    780, _PhotoRequest("/api/admin/blocked-users/780/photo")
+))
+assert blocked_photo_response.status_code == 200
+assert blocked_photo_response.headers["content-type"] == "image/png"
+blocked_report_response = asyncio.run(blocked_user_report_endpoint(
+    780, _PhotoRequest("/api/admin/blocked-users/780/report")
+))
+assert blocked_report_response.status_code == 200
+assert "تقرير حجب مستخدم" in blocked_report_response.body.decode("utf-8")
 print("admin_api: local PNG served with correct MIME; legacy reports expose image availability")
 
 remote_image = asyncio.run(photo_db.add_report(
@@ -1609,6 +1666,18 @@ try:
     ))
     assert remote_photo_response.status_code == 200
     assert remote_photo_response.headers["content-type"] == "image/png"
+    asyncio.run(photo_db.save_block(
+        781,
+        0,
+        "9999-12-31T00:00:00",
+        "كشف آلي",
+        evidence_photo_file_id="test-evidence-file-id",
+    ))
+    remote_blocked_photo_response = asyncio.run(blocked_user_photo_endpoint(
+        781, _PhotoRequest("/api/admin/blocked-users/781/photo")
+    ))
+    assert remote_blocked_photo_response.status_code == 200
+    assert remote_blocked_photo_response.headers["content-type"] == "image/png"
 finally:
     admin_api._photo_bytes = _original_photo_bytes
     photo_db.close()
@@ -1661,7 +1730,83 @@ read_api_response = asyncio.run(
 assert read_api_response.status_code == 200
 read_all_api_response = asyncio.run(notifications_read_all_endpoint(_Request({})))
 assert json.loads(read_all_api_response.body)["ok"] is True
-print("admin_api: authenticated notification listing, SSE, and read endpoints")
+
+cleanup_now = datetime.now(timezone.utc)
+cleanup_seed = [
+    ("report_new", 1, 8),
+    ("report_new", 0, 31),
+    ("report_new", 0, 10),
+    ("emergency", 1, 60),
+    ("heartbeat_fail", 0, 89),
+    ("emergency", 0, 91),
+    ("heartbeat_fail", 1, 91),
+]
+seeded_notification_ids = []
+with pdb._lock:
+    for notification_type, is_read, age_days in cleanup_seed:
+        created_at = (cleanup_now - timedelta(days=age_days)).isoformat(
+            timespec="seconds"
+        )
+        cursor = pdb._conn.execute(
+            "INSERT INTO notifications(type, payload, created_at, is_read) "
+            "VALUES (?, '{}', ?, ?)",
+            (notification_type, created_at, is_read),
+        )
+        seeded_notification_ids.append(int(cursor.lastrowid))
+    pdb._conn.commit()
+stats_response = asyncio.run(notifications_stats_endpoint(_Request({})))
+stats_payload = json.loads(stats_response.body)
+assert stats_response.status_code == 200
+assert stats_payload["total"] >= len(seeded_notification_ids)
+assert stats_payload["unread"] >= 1
+assert stats_payload["oldest_created_at"] is not None
+assert stats_payload["oldest_read_created_at"] is not None
+cleanup_request = _Request({})
+cleanup_request.method = "POST"
+cleanup_request.url = SimpleNamespace(path="/api/admin/notifications/cleanup")
+cleanup_response = asyncio.run(notifications_cleanup_endpoint(cleanup_request))
+cleanup_payload = json.loads(cleanup_response.body)
+assert cleanup_response.status_code == 200
+assert cleanup_payload == {"ok": True, "deleted": 4}
+with pdb._lock:
+    retained_ids = {
+        int(row["id"])
+        for row in pdb._conn.execute(
+            "SELECT id FROM notifications WHERE id IN ("
+            + ",".join("?" for _ in seeded_notification_ids)
+            + ")",
+            seeded_notification_ids,
+        ).fetchall()
+    }
+assert retained_ids == set(seeded_notification_ids) - {
+    seeded_notification_ids[0],
+    seeded_notification_ids[1],
+    seeded_notification_ids[5],
+    seeded_notification_ids[6],
+}
+old_admin_tokens_json = _os.environ.get("ADMIN_API_TOKENS_JSON")
+try:
+    _os.environ["ADMIN_API_TOKENS_JSON"] = json.dumps([
+        {"token": "viewer-test-token", "role": "viewer", "admin_id": 22}
+    ])
+    viewer_cleanup_request = _Request({})
+    viewer_cleanup_request.headers = {
+        "authorization": "Bearer viewer-test-token"
+    }
+    viewer_cleanup_request.method = "POST"
+    viewer_cleanup_request.url = SimpleNamespace(
+        path="/api/admin/notifications/cleanup"
+    )
+    viewer_cleanup = asyncio.run(
+        notifications_cleanup_endpoint(viewer_cleanup_request)
+    )
+    assert viewer_cleanup.status_code == 403
+finally:
+    if old_admin_tokens_json is None:
+        _os.environ.pop("ADMIN_API_TOKENS_JSON", None)
+    else:
+        _os.environ["ADMIN_API_TOKENS_JSON"] = old_admin_tokens_json
+print("admin_api: notification stats and age/type-aware cleanup endpoint")
 
 response = asyncio.run(status_endpoint(
     reject_report["id"], _Request({"status": "rejected"})
@@ -1790,6 +1935,25 @@ assert any(
     row["action"] == "user_message" and row["target"] == "777"
     for row in asyncio.run(pdb.recent_audit(20))
 )
+contact_request = _Request({"enabled": False})
+contact_request.method = "PUT"
+contact_request.url = SimpleNamespace(path="/api/admin/users/777/contact")
+contact_response = asyncio.run(user_contact_endpoint(777, contact_request))
+contact_payload = json.loads(contact_response.body)
+assert contact_response.status_code == 200
+assert contact_payload == {
+    "ok": True, "enabled": False, "changed": True, "notified": True
+}
+assert send_calls[-1][0] == 777 and "إيقاف" in send_calls[-1][1]
+disabled_message = _Request({"text": "رسالة يجب منعها"})
+disabled_message.url = SimpleNamespace(path="/api/admin/users/777/message")
+assert asyncio.run(message_endpoint(777, disabled_message)).status_code == 403
+contact_request = _Request({"enabled": True})
+contact_request.method = "PUT"
+contact_request.url = SimpleNamespace(path="/api/admin/users/777/contact")
+assert json.loads(asyncio.run(user_contact_endpoint(777, contact_request)).body)[
+    "enabled"
+] is True
 admin_api._send_direct_message = original_sender
 notices = []
 

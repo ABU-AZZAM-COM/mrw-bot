@@ -149,6 +149,10 @@ async def post_init(app) -> None:
         heartbeat_loop(app.bot_data["db"]),
         name="bot-heartbeat",
     )
+    app.create_task(
+        notifications_cleanup_loop(app.bot_data["db"]),
+        name="notifications-cleanup",
+    )
 
     # ------------------------------------------------------------------
     # التطبيق (Mini App): زر القائمة الدائم + أمر فتح التطبيق
@@ -233,6 +237,18 @@ async def heartbeat_loop(db) -> None:
                 "تعذرت كتابة نبضة حياة البوت (%s)", type(exc).__name__
             )
         await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+
+
+async def notifications_cleanup_loop(db) -> None:
+    """Prune old notifications every six hours without blocking the bot loop."""
+    while True:
+        await asyncio.sleep(6 * 60 * 60)
+        try:
+            deleted = await db.cleanup_notifications()
+            if deleted:
+                logger.info("تم تنظيف %s إشعار قديم", deleted)
+        except Exception:
+            logger.exception("تعذر تنظيف الإشعارات القديمة")
 
 
 async def run_webhook(application, secret: str) -> None:

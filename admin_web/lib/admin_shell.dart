@@ -32,11 +32,17 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
+  String _role = '';
   String _roleLabel = 'لوحة الإدارة';
   int _unreadCount = 0;
   int _eventRevision = 0;
   int _notificationFetchSerial = 0;
   List<Map<String, dynamic>> _notifications = [];
+  List<Map<String, dynamic>> _heartbeatNotifications = [];
+  Map<String, dynamic> _notificationStats = const {};
+  int? _pendingReportId;
+  int? _pendingBlockedUserId;
+  int? _pendingUserId;
   StreamSubscription<Map<String, dynamic>>? _eventsSubscription;
   Timer? _reconnectTimer;
 
@@ -57,19 +63,31 @@ class _MainShellState extends State<MainShell> {
   Future<void> _refreshNotifications() async {
     final requestSerial = ++_notificationFetchSerial;
     try {
-      final unread = await widget.api.get('/api/admin/notifications', {
-        'unread': 'true',
-        'limit': '20',
-      });
-      final latest = await widget.api.get('/api/admin/notifications', {
-        'limit': '20',
-      });
+      final results = await Future.wait([
+        widget.api.get('/api/admin/notifications', {
+          'unread': 'true',
+          'limit': '20',
+        }),
+        widget.api.get('/api/admin/notifications', {
+          'limit': '20',
+          'kind': 'regular',
+        }),
+        widget.api.get('/api/admin/notifications', {
+          'limit': '20',
+          'kind': 'heartbeat',
+        }),
+        widget.api.get('/api/admin/notifications/stats'),
+      ]);
       if (!mounted || requestSerial != _notificationFetchSerial) return;
       setState(() {
-        _unreadCount = (unread['unread_count'] as num?)?.toInt() ?? 0;
-        _notifications = (latest['items'] as List<dynamic>? ?? [])
+        _unreadCount = (results[0]['unread_count'] as num?)?.toInt() ?? 0;
+        _notifications = (results[1]['items'] as List<dynamic>? ?? [])
             .whereType<Map<String, dynamic>>()
             .toList();
+        _heartbeatNotifications = (results[2]['items'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        _notificationStats = results[3];
       });
     } catch (error) {
       if (mounted) toast(context, errMsg(error), error: true);
@@ -98,11 +116,117 @@ class _MainShellState extends State<MainShell> {
     setState(() => _eventRevision++);
     final type = event['type']?.toString() ?? '';
     final prefs = widget.preferences;
-    if (prefs['soundEnabled'] == true && prefs['soundUnlocked'] == true) {
+    final muted = type == 'heartbeat_fail' && _heartbeatMuted;
+    if (!muted &&
+        prefs['soundEnabled'] == true &&
+        prefs['soundUnlocked'] == true) {
       final sound = prefs['sound_$type'] as String?;
       if (sound != null) _playSound(sound);
     }
+    if (!muted) _showNotificationBubble(event);
     unawaited(_refreshNotifications());
+  }
+
+  bool get _heartbeatMuted {
+    final until = (widget.preferences['heartbeatMuteUntil'] as num?)?.toInt();
+    return until == -1 ||
+        (until != null && until > DateTime.now().millisecondsSinceEpoch);
+  }
+
+  void _setHeartbeatMute(int hours) {
+    final until = hours == 0
+        ? 0
+        : hours < 0
+        ? -1
+        : DateTime.now().add(Duration(hours: hours)).millisecondsSinceEpoch;
+    widget.onPreferencesChanged({
+      ...widget.preferences,
+      'heartbeatMuteUntil': until,
+    });
+  }
+
+  void _showNotificationBubble(Map<String, dynamic> event) {
+    final type = event['type']?.toString() ?? '';
+    final payload = event['payload'] as Map<String, dynamic>? ?? const {};
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 6),
+          content: Row(
+            children: [
+              Icon(_notificationIcon(type), color: Colors.white),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _notificationTitle(type),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      _notificationDetails(payload),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      _formatNotificationTime(event['created_at']?.toString()),
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          action: SnackBarAction(
+            label: 'فتح',
+            onPressed: () => unawaited(_openBubbleNotification(event)),
+          ),
+        ),
+      );
+  }
+
+  Future<void> _cleanupNotifications() async {
+    final confirmed = await confirmDialog(
+      context,
+      'تنظيف الإشعارات القديمة',
+      'سيُحذف المقروء الأقدم من 7 أيام، وغير المقروء الأقدم من 30 يومًا. '
+          'تُحفظ تنبيهات الطوارئ وفشل النبض 90 يومًا على الأقل.',
+      okLabel: 'تنظيف',
+      danger: true,
+    );
+    if (!confirmed || !mounted) return;
+    try {
+      final result = await widget.api.post(
+        '/api/admin/notifications/cleanup',
+        {},
+      );
+      if (!mounted) return;
+      toast(context, 'اكتمل التنظيف؛ حُذف ${result['deleted'] ?? 0} إشعار');
+      await _refreshNotifications();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  Future<void> _openBubbleNotification(
+    Map<String, dynamic> notification,
+  ) async {
+    final id = (notification['id'] as num?)?.toInt();
+    try {
+      if (id != null) {
+        await widget.api.post('/api/admin/notifications/$id/read', {});
+      }
+      await _refreshNotifications();
+      if (mounted) _navigateNotification(notification);
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
   }
 
   void _playSound(String sound) {
@@ -125,86 +249,193 @@ class _MainShellState extends State<MainShell> {
   Future<void> _showNotifications() async {
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setDialogState) => AlertDialog(
-          title: Row(
-            children: [
-              const Expanded(child: Text('الإشعارات')),
+      builder: (dialogContext) => DefaultTabController(
+        length: 2,
+        child: StatefulBuilder(
+          builder: (dialogContext, setDialogState) => AlertDialog(
+            title: Row(
+              children: [
+                const Expanded(child: Text('الإشعارات')),
+                if (_role == 'owner')
+                  IconButton(
+                    tooltip: 'تنظيف الإشعارات القديمة',
+                    onPressed: _cleanupNotifications,
+                    icon: const Icon(Icons.cleaning_services_outlined),
+                  ),
+                PopupMenuButton<int>(
+                  tooltip: _heartbeatMuted
+                      ? 'تنبيهات النبض مكتومة'
+                      : 'خيارات كتم النبض',
+                  icon: Icon(
+                    _heartbeatMuted
+                        ? Icons.notifications_off_outlined
+                        : Icons.notifications_active_outlined,
+                  ),
+                  onSelected: (hours) {
+                    _setHeartbeatMute(hours);
+                    setDialogState(() {});
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 0, child: Text('إلغاء الكتم')),
+                    PopupMenuItem(value: 1, child: Text('كتم ساعة')),
+                    PopupMenuItem(value: 8, child: Text('كتم 8 ساعات')),
+                    PopupMenuItem(value: 24, child: Text('كتم 24 ساعة')),
+                    PopupMenuItem(value: -1, child: Text('كتم حتى إلغاءه')),
+                  ],
+                ),
+                TextButton(
+                  onPressed: _unreadCount == 0
+                      ? null
+                      : () async {
+                          await widget.api.post(
+                            '/api/admin/notifications/read-all',
+                            {},
+                          );
+                          await _refreshNotifications();
+                          if (mounted) setDialogState(() {});
+                        },
+                  child: const Text('تعليم الكل كمقروء'),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: 440,
+              height: 460,
+              child: Column(
+                children: [
+                  Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: Text(
+                      'الإجمالي ${_notificationStats['total'] ?? 0} · '
+                      'غير المقروء ${_notificationStats['unread'] ?? 0} · '
+                      'أقدم إشعار ${_formatNotificationTime(_notificationStats['oldest_created_at']?.toString())}',
+                      style: Theme.of(dialogContext).textTheme.bodySmall,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TabBar(
+                    tabs: [
+                      Tab(text: 'العامة (${_notifications.length})'),
+                      Tab(
+                        text: 'نبضات البوت (${_heartbeatNotifications.length})',
+                      ),
+                    ],
+                  ),
+                  Expanded(
+                    child: TabBarView(
+                      children: [
+                        _notificationList(_notifications, dialogContext),
+                        _notificationList(
+                          _heartbeatNotifications,
+                          dialogContext,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
               TextButton(
-                onPressed: _unreadCount == 0
-                    ? null
-                    : () async {
-                        await widget.api.post(
-                          '/api/admin/notifications/read-all',
-                          {},
-                        );
-                        await _refreshNotifications();
-                        if (mounted) setDialogState(() {});
-                      },
-                child: const Text('تعليم الكل كمقروء'),
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('إغلاق'),
               ),
             ],
           ),
-          content: SizedBox(
-            width: 420,
-            height: 420,
-            child: _notifications.isEmpty
-                ? const Center(child: Text('لا توجد إشعارات'))
-                : ListView.separated(
-                    itemCount: _notifications.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final notification = _notifications[index];
-                      final payload =
-                          notification['payload'] as Map<String, dynamic>? ??
-                          const {};
-                      final id = (notification['id'] as num).toInt();
-                      final unread = notification['is_read'] != true;
-                      return ListTile(
-                        leading: Icon(
-                          _notificationIcon(
-                            notification['type']?.toString() ?? '',
-                          ),
-                          color: unread
-                              ? Theme.of(context).colorScheme.primary
-                              : null,
-                        ),
-                        title: Text(
-                          _notificationTitle(
-                            notification['type']?.toString() ?? '',
-                          ),
-                        ),
-                        subtitle: Text(
-                          _notificationDetails(payload),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: unread
-                            ? const Icon(Icons.circle, size: 9)
-                            : null,
-                        onTap: unread
-                            ? () async {
-                                await widget.api.post(
-                                  '/api/admin/notifications/$id/read',
-                                  {},
-                                );
-                                await _refreshNotifications();
-                                if (mounted) setDialogState(() {});
-                              }
-                            : null,
-                      );
-                    },
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('إغلاق'),
-            ),
-          ],
         ),
       ),
     );
+  }
+
+  Widget _notificationList(
+    List<Map<String, dynamic>> items,
+    BuildContext dialogContext,
+  ) {
+    if (items.isEmpty) return const Center(child: Text('لا توجد إشعارات'));
+    return ListView.separated(
+      itemCount: items.length,
+      separatorBuilder: (_, _) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        final notification = items[index];
+        final payload =
+            notification['payload'] as Map<String, dynamic>? ?? const {};
+        final unread = notification['is_read'] != true;
+        final id = (notification['id'] as num).toInt();
+        return ListTile(
+          leading: Icon(
+            _notificationIcon(notification['type']?.toString() ?? ''),
+            color: unread ? Theme.of(context).colorScheme.primary : null,
+          ),
+          title: Text(
+            _notificationTitle(notification['type']?.toString() ?? ''),
+          ),
+          subtitle: Text(
+            '${_notificationDetails(payload)}\n'
+            '${_formatNotificationTime(notification['created_at']?.toString())}',
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+          ),
+          isThreeLine: true,
+          trailing: unread ? const Icon(Icons.circle, size: 9) : null,
+          onTap: () => _openNotification(notification, dialogContext, id),
+        );
+      },
+    );
+  }
+
+  String _formatNotificationTime(String? raw) {
+    final parsed = DateTime.tryParse(raw ?? '')?.toLocal();
+    if (parsed == null) return raw ?? 'وقت غير معروف';
+    final y = parsed.year.toString().padLeft(4, '0');
+    final m = parsed.month.toString().padLeft(2, '0');
+    final d = parsed.day.toString().padLeft(2, '0');
+    final h = parsed.hour.toString().padLeft(2, '0');
+    final min = parsed.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $h:$min';
+  }
+
+  Future<void> _openNotification(
+    Map<String, dynamic> notification,
+    BuildContext dialogContext,
+    int id,
+  ) async {
+    try {
+      if (notification['is_read'] != true) {
+        await widget.api.post('/api/admin/notifications/$id/read', {});
+      }
+      await _refreshNotifications();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+      return;
+    }
+    if (!mounted || !dialogContext.mounted) return;
+    Navigator.of(dialogContext).pop();
+    _navigateNotification(notification);
+  }
+
+  void _navigateNotification(Map<String, dynamic> notification) {
+    final payload =
+        notification['payload'] as Map<String, dynamic>? ?? const {};
+    final type = notification['type']?.toString() ?? '';
+    setState(() {
+      switch (type) {
+        case 'report_new':
+        case 'report_urgent':
+          _pendingReportId = (payload['report_id'] as num?)?.toInt();
+          _selectedIndex = 1;
+        case 'user_blocked':
+          _pendingBlockedUserId = (payload['user_id'] as num?)?.toInt();
+          _selectedIndex = 7;
+        case 'user_message':
+          _pendingUserId = (payload['user_id'] as num?)?.toInt();
+          _selectedIndex = 2;
+        case 'emergency':
+        case 'heartbeat_fail':
+          _selectedIndex = type == 'heartbeat_fail' ? 9 : 3;
+        default:
+          break;
+      }
+    });
   }
 
   static IconData _notificationIcon(String type) => switch (type) {
@@ -245,7 +476,10 @@ class _MainShellState extends State<MainShell> {
         'operator': 'مشغّل',
         'owner': 'مالك',
       };
-      setState(() => _roleLabel = roles[session['role']] ?? 'لوحة الإدارة');
+      setState(() {
+        _role = session['role']?.toString() ?? '';
+        _roleLabel = roles[_role] ?? 'لوحة الإدارة';
+      });
     } on ApiException catch (error) {
       if (error.status == 404 && mounted) {
         setState(() => _roleLabel = 'لوحة الإدارة');
@@ -272,14 +506,39 @@ class _MainShellState extends State<MainShell> {
   ];
 
   List<Widget> get _pages => [
-    OverviewPage(key: ValueKey('overview-$_eventRevision'), api: widget.api),
-    ReportsPage(key: ValueKey('reports-$_eventRevision'), api: widget.api),
-    UsersPage(key: ValueKey('users-$_eventRevision'), api: widget.api),
+    OverviewPage(
+      key: ValueKey('overview-$_eventRevision'),
+      api: widget.api,
+      onNavigate: _select,
+    ),
+    ReportsPage(
+      key: ValueKey('reports-$_eventRevision-${_pendingReportId ?? 0}'),
+      api: widget.api,
+      focusReportId: _pendingReportId,
+      onFocusHandled: () {
+        if (mounted) setState(() => _pendingReportId = null);
+      },
+    ),
+    UsersPage(
+      key: ValueKey('users-$_eventRevision-${_pendingUserId ?? 0}'),
+      api: widget.api,
+      initialUserId: _pendingUserId,
+      onFocusHandled: () {
+        if (mounted) setState(() => _pendingUserId = null);
+      },
+    ),
     OperationsPage(api: widget.api),
     MessagingPage(api: widget.api),
     TypesPage(api: widget.api),
     AuditPage(api: widget.api),
-    BlockedPage(api: widget.api),
+    BlockedPage(
+      key: ValueKey('blocked-$_eventRevision-${_pendingBlockedUserId ?? 0}'),
+      api: widget.api,
+      initialUserId: _pendingBlockedUserId,
+      onFocusHandled: () {
+        if (mounted) setState(() => _pendingBlockedUserId = null);
+      },
+    ),
     AnalyticsPage(key: ValueKey('analytics-$_eventRevision'), api: widget.api),
     HealthPage(api: widget.api),
     PreferencesPage(
@@ -297,6 +556,9 @@ class _MainShellState extends State<MainShell> {
       onChanged: widget.onPreferencesChanged,
       soundEnabled: widget.preferences['soundEnabled'] != false,
       soundUnlocked: widget.preferences['soundUnlocked'] == true,
+      heartbeatMuteUntil: (widget.preferences['heartbeatMuteUntil'] as num?)
+          ?.toInt(),
+      onHeartbeatMuteHours: _setHeartbeatMute,
       soundSounds: {
         for (final type in const [
           'report_new',

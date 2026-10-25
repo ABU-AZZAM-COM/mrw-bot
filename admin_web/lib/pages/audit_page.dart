@@ -20,6 +20,7 @@ class _AuditPageState extends State<AuditPage> {
   bool _loading = true;
   String? _err;
   Timer? _timer;
+  DateTimeRange? _range;
 
   @override
   void initState() {
@@ -48,7 +49,12 @@ class _AuditPageState extends State<AuditPage> {
       });
     }
     try {
-      final d = await widget.api.get('/api/admin/audit', {'limit': '120'});
+      final range = _range;
+      final d = await widget.api.get('/api/admin/audit', {
+        'limit': '5000',
+        if (range != null) 'start': _day(range.start),
+        if (range != null) 'end': _day(range.end),
+      });
       if (!mounted) return;
       setState(() {
         _items = (d['items'] as List)
@@ -98,6 +104,71 @@ class _AuditPageState extends State<AuditPage> {
 
   String _actionName(String a) => _actionNames[a] ?? a;
 
+  String _day(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+
+  Future<void> _chooseRange() async {
+    final now = DateTime.now();
+    final range = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2000),
+      lastDate: now,
+      initialDateRange:
+          _range ??
+          DateTimeRange(start: now.subtract(const Duration(days: 6)), end: now),
+      helpText: 'اختر فترة سجل التدقيق',
+    );
+    if (range == null || !mounted) return;
+    setState(() => _range = range);
+    await _load();
+  }
+
+  Future<void> _exportRange() async {
+    final range = _range;
+    if (range == null) {
+      toast(context, 'اختر فترة زمنية أولاً', error: true);
+      return;
+    }
+    try {
+      await widget.api.download(
+        '/api/admin/audit/export?start=${_day(range.start)}&end=${_day(range.end)}',
+      );
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  Future<void> _cleanupRange() async {
+    final range = _range;
+    if (range == null) {
+      toast(context, 'اختر فترة زمنية أولاً', error: true);
+      return;
+    }
+    final start = _day(range.start);
+    final end = _day(range.end);
+    final confirmed = await confirmDialog(
+      context,
+      'تنظيف سجل التدقيق',
+      'سيتم حذف عمليات الفترة من $start إلى $end نهائيًا.',
+      okLabel: 'حذف السجل',
+      danger: true,
+    );
+    if (!confirmed || !mounted) return;
+    try {
+      final result = await widget.api.post('/api/admin/audit/cleanup', {
+        'start': start,
+        'end': end,
+      });
+      if (!mounted) return;
+      toast(context, 'حُذف ${result['deleted'] ?? 0} سجل');
+      await _load();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -113,13 +184,38 @@ class _AuditPageState extends State<AuditPage> {
               ),
               const SizedBox(width: 8),
               Text(
-                '${_items.length} عملية مسجلة — تحديث تلقائي',
+                '${_items.length} عملية — '
+                '${_range == null ? 'أحدث السجلات' : '${_day(_range!.start)} إلى ${_day(_range!.end)}'}',
                 style: TextStyle(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                   fontSize: 13,
                 ),
               ),
               const Spacer(),
+              IconButton(
+                tooltip: 'تصفية حسب التاريخ',
+                onPressed: _chooseRange,
+                icon: const Icon(Icons.date_range_outlined),
+              ),
+              IconButton(
+                tooltip: 'تصدير الفترة المحددة',
+                onPressed: _range == null ? null : _exportRange,
+                icon: const Icon(Icons.download_outlined),
+              ),
+              IconButton(
+                tooltip: 'تنظيف الفترة المحددة',
+                onPressed: _range == null ? null : _cleanupRange,
+                icon: const Icon(Icons.delete_sweep_outlined),
+              ),
+              if (_range != null)
+                IconButton(
+                  tooltip: 'إلغاء التصفية',
+                  onPressed: () {
+                    setState(() => _range = null);
+                    _load();
+                  },
+                  icon: const Icon(Icons.filter_alt_off_outlined),
+                ),
               IconButton(
                 tooltip: 'تحديث',
                 onPressed: _load,
