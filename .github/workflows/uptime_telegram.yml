@@ -1,0 +1,55 @@
+name: Uptime -> Telegram
+
+# يفحص حالة المراقبات في UptimeRobot ويرسل تنبيهات تلغرام عند التوقف/العودة.
+# يعمل من GitHub وليس من Render، لذلك تصل التنبيهات حتى لو كانت الخدمة متوقفة.
+
+on:
+  # عُطّل الجدول بعد تشغيل Cloudflare Worker (فحص كل دقيقة).
+  # يبقى التشغيل اليدوي فقط كنسخة احتياطية.
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "إرسال رسالة اختبار فقط (دون تعديل الحالة)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: uptime-telegram
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check monitors and notify
+        env:
+          UPTIMEROBOT_API_KEY: ${{ secrets.UPTIMEROBOT_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TEST_MODE: ${{ inputs.test && '1' || '0' }}
+          LOCAL_UTC_OFFSET: "3"
+          REMINDER_MINUTES: "60"
+        run: python3 scripts/uptime_telegram_alert.py
+
+      - name: Persist monitor state
+        if: ${{ inputs.test != true }}
+        run: |
+          if [ -z "$(git status --porcelain .github/uptime-state.json)" ]; then
+            echo "لا تغيير في الحالة"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/uptime-state.json
+          git commit -m "chore(uptime): update alert state [skip render]"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
