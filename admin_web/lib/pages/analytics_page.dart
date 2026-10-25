@@ -50,6 +50,14 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
     }
   }
 
+  Future<void> _downloadExport() async {
+    try {
+      await widget.api.download('/api/admin/export/xlsx');
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
   List<Map<String, dynamic>> _rows(dynamic value) {
     if (value is! List) return [];
     return value
@@ -89,7 +97,7 @@ class _AnalyticsPageState extends State<AnalyticsPage> {
               ),
               IconButton(
                 tooltip: 'تصدير جميع البلاغات',
-                onPressed: () => widget.api.download('/api/admin/export/xlsx'),
+                onPressed: _downloadExport,
                 icon: const Icon(Icons.download_outlined),
               ),
               IconButton(

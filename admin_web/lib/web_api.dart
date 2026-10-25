@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:js_interop';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
@@ -71,7 +73,9 @@ class Api implements AdminApi {
     );
   }
 
-  Map<String, String> get _headers => <String, String>{'x-admin-token': token};
+  Map<String, String> get _headers => <String, String>{
+    'Authorization': 'Bearer $token',
+  };
 
   Future<Map<String, dynamic>> _go(
     String method,
@@ -162,16 +166,73 @@ class Api implements AdminApi {
 
   @override
   String photoUrl(num reportId, {Object? bust}) {
-    final ts = bust == null ? '' : '&ts=$bust';
-    return '$base/api/admin/photo/$reportId?token=${Uri.encodeComponent(token)}$ts';
+    final uri = Uri.parse('$base/api/admin/photo/$reportId');
+    return bust == null
+        ? uri.toString()
+        : uri.replace(queryParameters: {'ts': '$bust'}).toString();
   }
 
   @override
-  String downloadUrl(String path) {
-    final separator = path.contains('?') ? '&' : '?';
-    return '$base$path${separator}token=${Uri.encodeComponent(token)}';
+  Future<void> download(String path) async {
+    http.Response response;
+    try {
+      response = await _client.get(_uri(path), headers: _headers);
+    } catch (_) {
+      throw ApiException(0, 'network_error');
+    }
+    if (response.statusCode == 401) {
+      onUnauthorized?.call();
+      throw ApiException(401, 'unauthorized');
+    }
+    if (response.statusCode >= 400) {
+      var code = 'error';
+      try {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map<String, dynamic>) {
+          code = (decoded['error'] ?? code).toString();
+        }
+      } catch (_) {
+        code = 'error';
+      }
+      throw ApiException(response.statusCode, code);
+    }
+
+    final pathSegments = Uri.parse(path).pathSegments;
+    final filename = _downloadFilename(
+      response.headers['content-disposition'],
+      pathSegments.isEmpty ? 'download' : pathSegments.last,
+    );
+    final blob = web.Blob(
+      <web.BlobPart>[response.bodyBytes.toJS as web.BlobPart].toJS,
+    );
+    final objectUrl = web.URL.createObjectURL(blob);
+    final anchor = web.document.createElement('a') as web.HTMLAnchorElement
+      ..href = objectUrl
+      ..download = filename;
+    web.document.body?.append(anchor);
+    anchor.click();
+    anchor.remove();
+    unawaited(
+      Future<void>.delayed(
+        const Duration(seconds: 1),
+        () => web.URL.revokeObjectURL(objectUrl),
+      ),
+    );
   }
 
-  @override
-  void download(String path) => web.window.open(downloadUrl(path), '_blank');
+  String _downloadFilename(String? contentDisposition, String fallback) {
+    if (contentDisposition == null) return fallback;
+    final extended = RegExp(
+      r"filename\*=UTF-8''([^;]+)",
+      caseSensitive: false,
+    ).firstMatch(contentDisposition);
+    if (extended != null) {
+      return Uri.decodeComponent(extended.group(1)!);
+    }
+    final standard = RegExp(
+      r'filename="?([^";]+)"?',
+      caseSensitive: false,
+    ).firstMatch(contentDisposition);
+    return standard?.group(1) ?? fallback;
+  }
 }

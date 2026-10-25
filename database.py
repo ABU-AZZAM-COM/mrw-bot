@@ -252,6 +252,67 @@ class Database:
             row = self._conn.execute("SELECT 1 AS ok").fetchone()
             return bool(row and row["ok"] == 1)
 
+    def export_sqlite_snapshot(self, output_path: Path) -> None:
+        """Write a SQLite snapshot of the configured database to a local file."""
+        if self.backend == "sqlite":
+            destination = sqlite3.connect(str(output_path))
+            try:
+                with self._lock:
+                    self._conn.backup(destination)
+            finally:
+                destination.close()
+            return
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        destination = sqlite3.connect(str(output_path))
+        try:
+            destination.executescript(_SCHEMA)
+            destination.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reports_workflow "
+                "ON reports(status, priority, due_at, assigned_to)"
+            )
+            with self._lock:
+                tables = [
+                    row[0]
+                    for row in destination.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                    ).fetchall()
+                ]
+                for table in tables:
+                    rows = self._conn.execute(f'SELECT * FROM "{table}"').fetchall()
+                    if not rows:
+                        continue
+                    columns = list(rows[0].keys())
+                    quoted_columns = ", ".join(f'"{column}"' for column in columns)
+                    placeholders = ", ".join("?" for _ in columns)
+                    destination.executemany(
+                        f'INSERT INTO "{table}" ({quoted_columns}) '
+                        f"VALUES ({placeholders})",
+                        [tuple(row[column] for column in columns) for row in rows],
+                    )
+                sequences = self._conn.execute(
+                    "SELECT name, seq FROM sqlite_sequence"
+                ).fetchall()
+                for sequence in sequences:
+                    updated = destination.execute(
+                        "UPDATE sqlite_sequence SET seq = ? WHERE name = ?",
+                        (sequence["seq"], sequence["name"]),
+                    )
+                    if updated.rowcount == 0:
+                        destination.execute(
+                            "INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)",
+                            (sequence["name"], sequence["seq"]),
+                        )
+                destination.commit()
+        except Exception:
+            destination.close()
+            output_path.unlink(missing_ok=True)
+            raise
+        else:
+            destination.close()
+
     # --------------------------------------------------------------
     # الترحيل: إضافة الأعمدة الجديدة إن لم تكن موجودة
     # (مهم لأن القواعد المنشأة سابقًا لا تتغيّر تلقائيًا)

@@ -8,7 +8,8 @@
 
 الحماية:
   1) سرّ ADMIN_API_TOKEN في أسرار المساحة — إن غاب فالمسار كله مغلق (503).
-  2) كل طلب يحمَل الرأس  X-Admin-Token  أو  ?token=  ويقارَن بمقارنة زمنية ثابتة.
+  2) كل طلب يحمَل ترويسة Authorization: Bearer ... أو X-Admin-Token
+     ويقارَن الرمز بمقارنة زمنية ثابتة. مسارات الملفات تقبل Bearer فقط.
   3) لا يجدُد للعلن: كل عملية تُسجَّل في audit_log (من فعل ماذا ومتى).
 
 مبدأ مصمَّم ببساطة: أي عملية تلمس قاعدة البيانات تمر عبر Database (نفس طبقة
@@ -108,15 +109,21 @@ def _auth(request):
         return JSONResponse(
             {"ok": False, "error": "api_token_not_configured"}, status_code=503
         )
-    header_token = request.headers.get("x-admin-token") or ""
     path = getattr(getattr(request, "url", None), "path", "")
-    query_token = request.query_params.get("token") or ""
-    query_token_allowed = (
+    authorization = request.headers.get("authorization") or ""
+    bearer_token = (
+        authorization[7:].strip()
+        if authorization[:7].lower() == "bearer "
+        else ""
+    )
+    file_endpoint = (
         path.startswith("/api/admin/photo/")
         or path.startswith("/api/admin/export/")
         or path == "/api/admin/backup/download"
     )
-    got = header_token or (query_token if query_token_allowed else "")
+    got = bearer_token if file_endpoint else (
+        bearer_token or request.headers.get("x-admin-token") or ""
+    )
     principal = next(
         (item for item in configured if token_ok(got, item["token"])), None
     )
@@ -1306,18 +1313,23 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return refuse
         db = db_of()
         try:
-            total = await db.total()
-            database_ready = db.path.exists()
-            database_error = None
+            database_ready = db.health_check()
+            database_error = None if database_ready else "database_unavailable"
         except Exception:
             logger.exception("تعذر فحص قاعدة البيانات")
-            total, database_ready, database_error = 0, False, "database_unavailable"
+            database_ready, database_error = False, "database_unavailable"
+        try:
+            total = await db.total() if database_ready else 0
+        except Exception:
+            logger.exception("تعذر قراءة إجمالي البلاغات")
+            total = 0
         import hub_backup  # noqa: PLC0415
 
         return JSONResponse({
             "ok": True,
             "bot_ready": await _bot_ready(),
             "database_ready": database_ready,
+            "backend": db.backend,
             "database_error": database_error,
             "reports_total": total,
             "backup_configured": hub_backup.is_configured(),
@@ -1346,21 +1358,44 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 
     @app.get("/api/admin/backup/download")
     async def backup_download(request: Request):
-        """تنزيل نسخة القاعدة مباشرة (SQLite) — مسجل في التدقيق."""
+        """تنزيل لقطة SQLite من قاعدة البيانات الحالية — مسجلة في التدقيق."""
         refuse = _auth(request)
         if refuse:
             return refuse
         db = db_of()
-        p = db.path
-        if not p.exists():
-            return bad("no_backup", 404)
-        await db.audit(_admin_actor(request), "panel_backup_download", p.name,
-                       "تنزيل نسخة قاعدة البيانات")
+        import tempfile  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+        from starlette.background import BackgroundTask  # noqa: PLC0415
+
+        fd, snapshot_path = tempfile.mkstemp(prefix="mrw-backup-", suffix=".db")
+        os.close(fd)
+        p = Path(snapshot_path)
+        try:
+            await asyncio.to_thread(db.export_sqlite_snapshot, p)
+        except Exception:
+            logger.exception("تعذر إنشاء لقطة SQLite للتنزيل")
+            p.unlink(missing_ok=True)
+            return bad("backup_unavailable", 503)
+        cleanup = BackgroundTask(lambda: p.unlink(missing_ok=True))
+        try:
+            await db.audit(
+                _admin_actor(request),
+                "panel_backup_download",
+                db.backend,
+                "تنزيل نسخة قاعدة البيانات",
+            )
+        except Exception:
+            p.unlink(missing_ok=True)
+            raise
         fname = "reports-{ts}.db".format(
             ts=datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
         )
-        return FileResponse(str(p), filename=fname,
-                            media_type="application/x-sqlite3")
+        return FileResponse(
+            str(p),
+            filename=fname,
+            media_type="application/x-sqlite3",
+            background=cleanup,
+        )
 
     @app.post("/api/admin/backup/now")
     async def backup_now(request: Request) -> JSONResponse:
@@ -1371,7 +1406,23 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         db = db_of()
         import hub_backup  # noqa: PLC0415
 
-        ok = await asyncio.to_thread(hub_backup.upload_backup, db.path)
+        if db.backend == "turso":
+            import tempfile  # noqa: PLC0415
+            from pathlib import Path  # noqa: PLC0415
+
+            fd, snapshot_path = tempfile.mkstemp(prefix="mrw-backup-upload-", suffix=".db")
+            os.close(fd)
+            snapshot = Path(snapshot_path)
+            try:
+                await asyncio.to_thread(db.export_sqlite_snapshot, snapshot)
+                ok = await asyncio.to_thread(hub_backup.upload_backup, snapshot)
+            except Exception:
+                logger.exception("تعذر تجهيز نسخة Turso للرفع")
+                ok = False
+            finally:
+                snapshot.unlink(missing_ok=True)
+        else:
+            ok = await asyncio.to_thread(hub_backup.upload_backup, db.path)
         await db.audit(_admin_actor(request), "panel_backup_upload", "dataset",
                        "نجاح" if ok else "غير مُهيأ/فشل")
         return JSONResponse({"ok": True, "uploaded": bool(ok)})
