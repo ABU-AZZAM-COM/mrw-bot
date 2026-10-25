@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -165,27 +166,91 @@ CREATE INDEX IF NOT EXISTS idx_fp_photo ON report_fingerprints(photo_hash);
 """
 
 
-def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+class _DatabaseRow(dict[str, Any]):
+    def __init__(self, values: dict[str, Any], ordered_values: tuple[Any, ...]) -> None:
+        super().__init__(values)
+        self._ordered_values = ordered_values
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, int):
+            return self._ordered_values[key]
+        return super().__getitem__(key)
+
+
+def _mapping_row_factory(cursor: Any, row: Any) -> _DatabaseRow:
+    columns = cursor.description or ()
+    values = tuple(row)
+    return _DatabaseRow(
+        {column[0]: values[index] for index, column in enumerate(columns)},
+        values,
+    )
+
+
+def _row_to_dict(row: Any) -> dict[str, Any]:
     return dict(row)
 
 
 class Database:
-    """غلاف آمن حول قاعدة البيانات SQLite."""
+    """SQLite locally or a remote Turso/libSQL database in production."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, backend: str | None = None) -> None:
         self._path = Path(path)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        # إعدادات تعطي أداءً أفضل وموثوقية أكبر للكتابة على القرص
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.execute("PRAGMA synchronous=NORMAL;")
-        self._conn.execute("PRAGMA foreign_keys=ON;")
+        is_render = any(
+            os.getenv(name, "").strip()
+            for name in ("RENDER_SERVICE_ID", "RENDER_SERVICE_NAME", "RENDER_EXTERNAL_URL")
+        )
+        selected_backend = (
+            (backend or "").strip().lower()
+            or os.getenv("DB_BACKEND", "").strip().lower()
+            or ("turso" if is_render else "sqlite")
+        )
+        if selected_backend not in {"sqlite", "turso"}:
+            raise ValueError("DB_BACKEND must be either 'sqlite' or 'turso'")
+        if is_render and selected_backend != "turso":
+            raise RuntimeError("Render production requires DB_BACKEND=turso")
+        self.backend = selected_backend
+
+        if self.backend == "sqlite":
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL;")
+            self._conn.execute("PRAGMA synchronous=NORMAL;")
+            self._conn.execute("PRAGMA foreign_keys=ON;")
+        else:
+            database_url = os.getenv("TURSO_DATABASE_URL", "").strip()
+            auth_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+            missing = [
+                name for name, value in (
+                    ("TURSO_DATABASE_URL", database_url),
+                    ("TURSO_AUTH_TOKEN", auth_token),
+                ) if not value
+            ]
+            if missing:
+                raise RuntimeError(
+                    "Turso backend requires environment variable(s): " + ", ".join(missing)
+                )
+            try:
+                import turso_serverless
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Turso backend requires turso_serverless; install requirements.txt"
+                ) from exc
+            self._conn = turso_serverless.connect(
+                database_url,
+                auth_token=auth_token,
+            )
+        self._conn.row_factory = _mapping_row_factory
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
             self._migrate()
+
+    def health_check(self) -> bool:
+        """Run a minimal query against the configured database backend."""
+        with self._lock:
+            row = self._conn.execute("SELECT 1 AS ok").fetchone()
+            return bool(row and row["ok"] == 1)
 
     # --------------------------------------------------------------
     # الترحيل: إضافة الأعمدة الجديدة إن لم تكن موجودة

@@ -59,6 +59,19 @@ EXPORTS_DIR: Path = BASE_DIR / "exports"  # ملفات التقارير المص
 LOGS_DIR: Path = BASE_DIR / "logs"        # سجلات التشغيل
 DB_PATH: Path = DATA_DIR / "reports.db"
 
+# Render must use the remote database; SQLite remains the local-development default.
+_IS_RENDER = any(
+    os.getenv(name, "").strip()
+    for name in ("RENDER_SERVICE_ID", "RENDER_SERVICE_NAME", "RENDER_EXTERNAL_URL")
+)
+DB_BACKEND: str = os.getenv(
+    "DB_BACKEND", "turso" if _IS_RENDER else "sqlite"
+).strip().lower()
+if DB_BACKEND not in {"sqlite", "turso"}:
+    raise ValueError("DB_BACKEND must be either 'sqlite' or 'turso'")
+if _IS_RENDER and DB_BACKEND != "turso":
+    raise RuntimeError("Render production requires DB_BACKEND=turso")
+
 for _d in (DATA_DIR, MEDIA_DIR, EXPORTS_DIR, LOGS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 

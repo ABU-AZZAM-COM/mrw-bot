@@ -386,6 +386,19 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 
         return bot_main.app.bot_data["db"]
 
+    @app.get("/db-health")
+    def db_health() -> JSONResponse:
+        try:
+            database = db_of()
+            if database.health_check():
+                return JSONResponse({"ok": True})
+        except Exception:  # noqa: BLE001
+            logger.error("Database health check failed")
+        return JSONResponse(
+            {"ok": False, "error": "database_unavailable"},
+            status_code=503,
+        )
+
     # ------------------------------------------------------------
     # 0) نظرة عامة
     # ------------------------------------------------------------

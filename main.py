@@ -171,11 +171,19 @@ async def post_init(app) -> None:
     # ------------------------------------------------------------------
     if config.KEEPALIVE_URL:
         app.create_task(archive.keepalive_loop(config.KEEPALIVE_URL))
-    if config.ARCHIVE_CHAT_ID and config.BACKUP_INTERVAL_MIN > 0:
+    if (
+        config.DB_BACKEND == "sqlite"
+        and config.ARCHIVE_CHAT_ID
+        and config.BACKUP_INTERVAL_MIN > 0
+    ):
         app.create_task(
             archive.backup_loop(app.bot, config.DB_PATH, config.BACKUP_INTERVAL_MIN)
         )
-    if hub_backup.is_configured() and config.BACKUP_INTERVAL_MIN > 0:
+    if (
+        config.DB_BACKEND == "sqlite"
+        and hub_backup.is_configured()
+        and config.BACKUP_INTERVAL_MIN > 0
+    ):
         app.create_task(hub_backup.backup_loop(config.DB_PATH, config.BACKUP_INTERVAL_MIN))
 
 
@@ -204,13 +212,16 @@ def main() -> None:
     # فنستعيد آخر نسخة من المستودع الخاص — فقط إذا كانت القاعدة المحلية فارغة.
     # (دالة متزامنة وآمنة: داخليًا تفحص وتقرر، وبلا توكن لا تفعل شيئًا.)
     # ------------------------------------------------------------------
-    restored = hub_backup.restore_latest_if_needed(config.DB_PATH)
-    if restored:
-        logger.info("♻️ استعادة القاعدة من مستودع النسخ الاحتياطي: تم")
+    if config.DB_BACKEND == "sqlite":
+        restored = hub_backup.restore_latest_if_needed(config.DB_PATH)
+        if restored:
+            logger.info("♻️ استعادة القاعدة من مستودع النسخ الاحتياطي: تم")
+        else:
+            logger.info("لا حاجة لاستعادة القاعدة (لدينا نسخة محلية أو لا نسخة سحابية)")
     else:
-        logger.info("لا حاجة لاستعادة القاعدة (لدينا نسخة محلية أو لا نسخة سحابية)")
+        logger.info("قاعدة البيانات الأساسية هي Turso؛ تم تجاوز استعادة SQLite المحلية")
 
-    db = Database(config.DB_PATH)
+    db = Database(config.DB_PATH, backend=config.DB_BACKEND)
 
     # ------------------------------------------------------------------
     # خادم الصحة: مطلوب في منصات الاستضافة السحابية (مثل Hugging Face Spaces)
