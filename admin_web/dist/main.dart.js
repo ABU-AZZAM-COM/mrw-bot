@@ -32273,7 +32273,7 @@ return s},
 aVq(a,b,c){var s=null
 return c.a(A.b62(a,b,s,s,s,s))},
 b_W(a){var s=null,r=A.m(a).ax,q=r.rx
-A.beS(B.Oc,"\xa9 2026 \u2014 \u062c\u0645\u064a\u0639 \u0627\u0644\u062d\u0642\u0648\u0642 \u0645\u062d\u0641\u0648\u0638\u0629\nABU-AZZAM-COM / Azzam","\u0645\u0646\u0638\u0648\u0645\u0629 \u0627\u0633\u062a\u0642\u0628\u0627\u0644 \u0627\u0644\u0628\u0644\u0627\u063a\u0627\u062a \u0627\u0644\u0639\u0633\u0643\u0631\u064a\u0629","2.7.20261024",A.b([B.aQ,A.jG("https://github.com/ABU-AZZAM-COM/mrw-bot",A.cA(s,s,q==null?r.k3:q,s,s,s,s,s,s,s,s,12,s,s,s,s,s,!0,s,s,s,s,s,s,s,s),s)],t.p),a)},
+A.beS(B.Oc,"\xa9 2026 \u2014 \u062c\u0645\u064a\u0639 \u0627\u0644\u062d\u0642\u0648\u0642 \u0645\u062d\u0641\u0648\u0638\u0629\nABU-AZZAM-COM / Azzam","\u0645\u0646\u0638\u0648\u0645\u0629 \u0627\u0633\u062a\u0642\u0628\u0627\u0644 \u0627\u0644\u0628\u0644\u0627\u063a\u0627\u062a \u0627\u0644\u0639\u0633\u0643\u0631\u064a\u0629","2.7.20261025",A.b([B.aQ,A.jG("https://github.com/ABU-AZZAM-COM/mrw-bot",A.cA(s,s,q==null?r.k3:q,s,s,s,s,s,s,s,s,12,s,s,s,s,s,!0,s,s,s,s,s,s,s,s),s)],t.p),a)},
 be7(a,b,c,d){var s,r,q,p,o,n=A.w(d,c.i("P<0>"))
 for(s=c.i("D<0>"),r=0;r<1;++r){q=a[r]
 p=b.$1(q)
@@ -50121,7 +50121,7 @@ l.push(A.W("\u064a\u064f\u062d\u0641\u0638 \u0641\u064a \u0647\u0630\u0627 \u062
 o=A.dr(A.jJ(new A.cL(B.Gh,A.vM(new A.av(B.Mc,A.b5(l,B.aq,B.j,B.a9,0,B.p),r),r,r,r,r,r),r),r,B.J,B.qQ,r,r,B.a7),r,r)
 n=A.m(a).ax
 m=n.rx
-return A.FT(r,r,A.eC(B.bc,A.b([q,p,o,A.tO(8,A.W("\xa9 2026 \u2014 \u062c\u0645\u064a\u0639 \u0627\u0644\u062d\u0642\u0648\u0642 \u0645\u062d\u0641\u0648\u0638\u0629 \xb7 ABU-AZZAM-COM / Azzam \xb7 v2.7.20261024",r,r,r,r,A.cA(r,r,m==null?n.k3:m,r,r,r,r,r,r,r,r,11,r,r,r,r,r,!0,r,r,r,r,r,r,r,r),B.bk,r,r),r,r,0,0,r,r)],k),B.u,B.aR,r),r,r)}}
+return A.FT(r,r,A.eC(B.bc,A.b([q,p,o,A.tO(8,A.W("\xa9 2026 \u2014 \u062c\u0645\u064a\u0639 \u0627\u0644\u062d\u0642\u0648\u0642 \u0645\u062d\u0641\u0648\u0638\u0629 \xb7 ABU-AZZAM-COM / Azzam \xb7 v2.7.20261025",r,r,r,r,A.cA(r,r,m==null?n.k3:m,r,r,r,r,r,r,r,r,11,r,r,r,r,r,!0,r,r,r,r,r,r,r,r),B.bk,r,r),r,r,0,0,r,r)],k),B.u,B.aR,r),r,r)}}
 A.aBV.prototype={
 $0(){return this.a.r="\u0623\u062f\u062e\u0644 \u062a\u0648\u0643\u0646 \u0627\u0644\u0625\u062f\u0627\u0631\u0629"},
 $S:0}
