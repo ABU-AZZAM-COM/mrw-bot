@@ -111,20 +111,24 @@ CREATE TABLE IF NOT EXISTS user_limit_resets (
 );
 
 CREATE TABLE IF NOT EXISTS user_conversations (
-    user_id    INTEGER PRIMARY KEY,
-    opened_at  TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    user_id              INTEGER PRIMARY KEY,
+    opened_at            TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    last_read_message_id INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS user_messages (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id    INTEGER NOT NULL,
-    direction  TEXT NOT NULL CHECK(direction IN ('in', 'out')),
-    text       TEXT NOT NULL,
-    admin_id   INTEGER,
-    created_at TEXT NOT NULL
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL,
+    direction       TEXT NOT NULL CHECK(direction IN ('in', 'out')),
+    text            TEXT NOT NULL,
+    admin_id        INTEGER,
+    created_at      TEXT NOT NULL,
+    delivery_status TEXT NOT NULL DEFAULT 'delivered',
+    error_code      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_messages_user_id ON user_messages(user_id, id);
+CREATE INDEX IF NOT EXISTS idx_user_messages_status ON user_messages(delivery_status);
 
 CREATE TABLE IF NOT EXISTS broadcast_jobs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +184,19 @@ CREATE TABLE IF NOT EXISTS blocked_user_evidence (
     photo_file_id TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS osint_sources (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id    INTEGER,
+    url          TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    notes        TEXT NOT NULL DEFAULT '',
+    source_level TEXT NOT NULL,
+    accessed_at  TEXT NOT NULL,
+    admin_id     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_osint_sources_report
+    ON osint_sources(report_id, accessed_at);
 
 -- بصمات المحتوى لكشف التكرار (رابط مطبَّع + تشابه الوصف)
 CREATE TABLE IF NOT EXISTS report_fingerprints (
@@ -376,6 +393,35 @@ class Database:
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE reports ADD COLUMN {column} {ddl}")
                 print(f"🗄️ تمت إضافة العمود الجديد: {column}")
+        message_columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(user_messages)"
+            ).fetchall()
+        }
+        for column, ddl in (
+            ("delivery_status", "TEXT NOT NULL DEFAULT 'delivered'"),
+            ("error_code", "TEXT"),
+        ):
+            if column not in message_columns:
+                self._conn.execute(
+                    f"ALTER TABLE user_messages ADD COLUMN {column} {ddl}"
+                )
+        conversation_columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(user_conversations)"
+            ).fetchall()
+        }
+        if "last_read_message_id" not in conversation_columns:
+            self._conn.execute(
+                "ALTER TABLE user_conversations ADD COLUMN "
+                "last_read_message_id INTEGER NOT NULL DEFAULT 0"
+            )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_messages_status "
+            "ON user_messages(delivery_status)"
+        )
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_reports_workflow "
             "ON reports(status, priority, due_at, assigned_to)"
@@ -399,7 +445,7 @@ class Database:
         )
         self._conn.execute(
             "UPDATE broadcast_jobs SET status = 'interrupted', completed_at = ? "
-            "WHERE status IN ('queued', 'running')",
+            "WHERE status IN ('queued', 'running', 'cancel_requested')",
             (now_iso,),
         )
         self._conn.commit()
@@ -1788,6 +1834,88 @@ class Database:
     async def user_contact_enabled(self, user_id: int) -> bool:
         return await asyncio.to_thread(self._user_contact_enabled, user_id)
 
+    def _list_osint_sources(
+        self, report_id: int | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        with self._lock:
+            if report_id is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM osint_sources "
+                    "ORDER BY accessed_at DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM osint_sources WHERE report_id = ? "
+                    "ORDER BY accessed_at DESC, id DESC LIMIT ?",
+                    (int(report_id), limit),
+                ).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    async def list_osint_sources(
+        self, report_id: int | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._list_osint_sources, report_id, limit)
+
+    def _add_osint_source(
+        self,
+        report_id: int | None,
+        url: str,
+        title: str,
+        notes: str,
+        source_level: str,
+        admin_id: int,
+    ) -> dict[str, Any]:
+        accessed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO osint_sources
+                    (report_id, url, title, notes, source_level, accessed_at, admin_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    report_id, url, title, notes, source_level, accessed_at, admin_id,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM osint_sources WHERE id = ?",
+                (int(cursor.lastrowid),),
+            ).fetchone()
+            self._conn.commit()
+            return _row_to_dict(row)
+
+    async def add_osint_source(
+        self,
+        report_id: int | None,
+        url: str,
+        title: str,
+        notes: str,
+        source_level: str,
+        admin_id: int,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._add_osint_source,
+            report_id,
+            url,
+            title,
+            notes,
+            source_level,
+            admin_id,
+        )
+
+    def _delete_osint_source(self, source_id: int) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM osint_sources WHERE id = ?", (source_id,)
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def delete_osint_source(self, source_id: int) -> bool:
+        return await asyncio.to_thread(self._delete_osint_source, source_id)
+
     def _open_user_conversation(self, user_id: int) -> None:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
@@ -1813,20 +1941,134 @@ class Database:
     async def user_conversation_open(self, user_id: int) -> bool:
         return await asyncio.to_thread(self._user_conversation_open, user_id)
 
+    def _list_user_conversations(
+        self, q: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        query = (q or "").strip()
+        where = ""
+        params: list[Any] = []
+        if query:
+            needle = f"%{query}%"
+            where = (
+                "WHERE CAST(c.user_id AS TEXT) LIKE ? "
+                "OR COALESCE(u.username, '') LIKE ? "
+                "OR COALESCE(u.full_name, '') LIKE ?"
+            )
+            params.extend((needle, needle, needle))
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT c.user_id,
+                       COALESCE(u.full_name, r.full_name) AS full_name,
+                       COALESCE(u.username, r.username) AS username,
+                       c.updated_at,
+                       (SELECT m.id FROM user_messages m
+                        WHERE m.user_id = c.user_id ORDER BY m.id DESC LIMIT 1)
+                           AS last_message_id,
+                       (SELECT m.text FROM user_messages m
+                        WHERE m.user_id = c.user_id ORDER BY m.id DESC LIMIT 1)
+                           AS last_message,
+                       (SELECT m.direction FROM user_messages m
+                        WHERE m.user_id = c.user_id ORDER BY m.id DESC LIMIT 1)
+                           AS last_direction,
+                       (SELECT m.created_at FROM user_messages m
+                        WHERE m.user_id = c.user_id ORDER BY m.id DESC LIMIT 1)
+                           AS last_message_at,
+                       (SELECT COUNT(*) FROM user_messages m
+                        WHERE m.user_id = c.user_id AND m.direction = 'in'
+                          AND m.id > c.last_read_message_id)
+                           AS unread_count,
+                       COALESCE(s.enabled, 1) AS contact_enabled
+                FROM user_conversations c
+                LEFT JOIN bot_users u ON u.user_id = c.user_id
+                LEFT JOIN reports r ON r.id = (
+                    SELECT MAX(r2.id) FROM reports r2
+                    WHERE r2.user_id = c.user_id
+                )
+                LEFT JOIN user_contact_settings s ON s.user_id = c.user_id
+                {where}
+                ORDER BY COALESCE(last_message_at, c.updated_at) DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    async def list_user_conversations(
+        self, q: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._list_user_conversations, q, limit)
+
+    def _mark_user_conversation_read(
+        self, user_id: int, through_message_id: int | None = None
+    ) -> int:
+        with self._lock:
+            query = (
+                "SELECT COALESCE(MAX(id), 0) AS last_id FROM user_messages "
+                "WHERE user_id = ? AND direction = 'in'"
+            )
+            params: tuple[int, ...] = (user_id,)
+            if through_message_id is not None:
+                query += " AND id <= ?"
+                params = (user_id, through_message_id)
+            row = self._conn.execute(
+                query,
+                params,
+            ).fetchone()
+            latest_visible_inbound = int(row["last_id"] or 0)
+            current = self._conn.execute(
+                "SELECT COALESCE(last_read_message_id, 0) AS last_id "
+                "FROM user_conversations WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            last_id = max(
+                int(current["last_id"] or 0) if current else 0,
+                latest_visible_inbound,
+            )
+            self._conn.execute(
+                "UPDATE user_conversations SET last_read_message_id = ? "
+                "WHERE user_id = ?",
+                (last_id, user_id),
+            )
+            self._conn.commit()
+            return last_id
+
+    async def mark_user_conversation_read(
+        self, user_id: int, through_message_id: int | None = None
+    ) -> int:
+        return await asyncio.to_thread(
+            self._mark_user_conversation_read, user_id, through_message_id
+        )
+
     def _add_user_message(
-        self, user_id: int, direction: str, text: str, admin_id: int | None = None
+        self,
+        user_id: int,
+        direction: str,
+        text: str,
+        admin_id: int | None = None,
+        delivery_status: str = "delivered",
+        error_code: str | None = None,
     ) -> int:
         if direction not in {"in", "out"}:
             raise ValueError("invalid message direction")
+        if delivery_status not in {"delivered", "failed", "received"}:
+            raise ValueError("invalid delivery status")
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         notification = None
         with self._lock:
             cur = self._conn.execute(
                 """
-                INSERT INTO user_messages (user_id, direction, text, admin_id, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO user_messages
+                    (user_id, direction, text, admin_id, created_at,
+                     delivery_status, error_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, direction, text, admin_id, now_iso),
+                (
+                    user_id, direction, text, admin_id, now_iso,
+                    delivery_status, error_code,
+                ),
             )
             self._conn.execute(
                 "UPDATE user_conversations SET updated_at = ? WHERE user_id = ?",
@@ -1847,10 +2089,43 @@ class Database:
         return message_id
 
     async def add_user_message(
-        self, user_id: int, direction: str, text: str, admin_id: int | None = None
+        self,
+        user_id: int,
+        direction: str,
+        text: str,
+        admin_id: int | None = None,
+        delivery_status: str = "delivered",
+        error_code: str | None = None,
     ) -> int:
         return await asyncio.to_thread(
-            self._add_user_message, user_id, direction, text, admin_id
+            self._add_user_message,
+            user_id,
+            direction,
+            text,
+            admin_id,
+            delivery_status,
+            error_code,
+        )
+
+    def _update_user_message_delivery(
+        self, message_id: int, status: str, error_code: str | None = None
+    ) -> bool:
+        if status not in {"delivered", "failed"}:
+            raise ValueError("invalid delivery status")
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE user_messages SET delivery_status = ?, error_code = ? "
+                "WHERE id = ? AND direction = 'out'",
+                (status, error_code, message_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def update_user_message_delivery(
+        self, message_id: int, status: str, error_code: str | None = None
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._update_user_message_delivery, message_id, status, error_code
         )
 
     def _list_user_messages(
@@ -1860,7 +2135,8 @@ class Database:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT id, user_id, direction, text, admin_id, created_at
+                SELECT id, user_id, direction, text, admin_id, created_at,
+                       delivery_status, error_code
                 FROM user_messages
                 WHERE user_id = ? AND id > ?
                 ORDER BY id ASC LIMIT ?
@@ -1975,7 +2251,7 @@ class Database:
         with self._lock:
             active = self._conn.execute(
                 "SELECT 1 FROM broadcast_jobs "
-                "WHERE status IN ('queued', 'running') LIMIT 1"
+                "WHERE status IN ('queued', 'running', 'cancel_requested') LIMIT 1"
             ).fetchone()
             if active:
                 return None
@@ -2001,7 +2277,7 @@ class Database:
     ) -> None:
         completed_at = (
             datetime.now(timezone.utc).isoformat(timespec="seconds")
-            if status in {"completed", "failed"}
+            if status in {"completed", "failed", "cancelled"}
             else None
         )
         with self._lock:
@@ -2023,6 +2299,52 @@ class Database:
         await asyncio.to_thread(
             self._update_broadcast_job, job_id, sent, failed, status
         )
+
+    def _finish_broadcast_job(
+        self, job_id: int, sent: int, failed: int
+    ) -> str | None:
+        completed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status FROM broadcast_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            status = (
+                "cancelled"
+                if row["status"] == "cancel_requested"
+                else "completed"
+            )
+            self._conn.execute(
+                """
+                UPDATE broadcast_jobs
+                SET sent = ?, failed = ?, status = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (sent, failed, status, completed_at, job_id),
+            )
+            self._conn.commit()
+            return status
+
+    async def finish_broadcast_job(
+        self, job_id: int, sent: int, failed: int
+    ) -> str | None:
+        return await asyncio.to_thread(
+            self._finish_broadcast_job, job_id, sent, failed
+        )
+
+    def _request_broadcast_cancel(self, job_id: int) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE broadcast_jobs SET status = 'cancel_requested' "
+                "WHERE id = ? AND status IN ('queued', 'running')",
+                (job_id,),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def request_broadcast_cancel(self, job_id: int) -> bool:
+        return await asyncio.to_thread(self._request_broadcast_cancel, job_id)
 
     def _get_broadcast_job(self, job_id: int) -> dict[str, Any] | None:
         with self._lock:

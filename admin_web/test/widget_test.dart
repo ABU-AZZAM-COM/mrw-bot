@@ -65,6 +65,14 @@ class _FakeApi implements AdminApi {
   }
 
   @override
+  Future<Map<String, dynamic>> upload(
+    String path, {
+    required Map<String, String> fields,
+    String? filename,
+    Uint8List? bytes,
+  }) async => throw UnimplementedError();
+
+  @override
   Future<Map<String, dynamic>> put(
     String path,
     Map<String, dynamic> body,

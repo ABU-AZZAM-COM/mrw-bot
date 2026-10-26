@@ -1257,6 +1257,15 @@ assert asyncio.run(jobs_db.get_broadcast_job(job_id))["sent"] == 1
 jobs_db.close()
 jobs_db = database.Database(jobs_path)
 assert asyncio.run(jobs_db.get_broadcast_job(job_id))["status"] == "interrupted"
+job_id = asyncio.run(jobs_db.create_broadcast_job("نشر مكتمل", 111, 1))
+assert job_id is not None
+assert asyncio.run(jobs_db.finish_broadcast_job(job_id, 1, 0)) == "completed"
+assert asyncio.run(jobs_db.get_broadcast_job(job_id))["status"] == "completed"
+job_id = asyncio.run(jobs_db.create_broadcast_job("نشر ملغى", 111, 2))
+assert job_id is not None
+assert asyncio.run(jobs_db.request_broadcast_cancel(job_id))
+assert asyncio.run(jobs_db.finish_broadcast_job(job_id, 1, 0)) == "cancelled"
+assert asyncio.run(jobs_db.get_broadcast_job(job_id))["status"] == "cancelled"
 jobs_db.close()
 jobs_tmp.cleanup()
 
@@ -1331,6 +1340,19 @@ user_messages_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/users/{uid}/messages"
 )
+conversations_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/conversations"
+)
+messages_read_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/users/{uid}/messages/read"
+)
+retry_user_message_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None)
+    == "/api/admin/users/{uid}/messages/{message_id}/retry"
+)
 user_contact_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/users/{uid}/contact"
@@ -1358,6 +1380,24 @@ db_health_endpoint = next(
 system_health_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/system/health"
+)
+system_integrations_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/system/integrations"
+)
+osint_sources_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/osint/sources"
+    and "GET" in getattr(route, "methods", set())
+)
+osint_source_add_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/osint/sources"
+    and "POST" in getattr(route, "methods", set())
+)
+osint_source_delete_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/osint/sources/{source_id}"
 )
 backup_download_endpoint = next(
     route.endpoint for route in api_app.routes
@@ -1472,6 +1512,85 @@ assert healthy_sqlite["database_ready"] is True
 assert healthy_sqlite["backend"] == "sqlite"
 assert db_health_endpoint().status_code == 200
 print("admin_api: system health checks SELECT 1 and reports backend")
+
+import integrations_monitor
+
+_old_github_activity = integrations_monitor.github_activity
+integrations_monitor.github_activity = lambda: {
+    "status": "healthy",
+    "repository": "ABU-AZZAM-COM/mrw-bot",
+    "checked_at": datetime.now(timezone.utc).isoformat(),
+    "recent_runs": [{"name": "فحص جودة", "status": "healthy"}],
+    "recent_merges": [{"number": 22, "title": "تحسينات لوحة الإدارة"}],
+    "error": None,
+}
+integration_request = _HealthRequest()
+integration_request.url = SimpleNamespace(path="/api/admin/system/integrations")
+integration_payload = json.loads(
+    asyncio.run(system_integrations_endpoint(integration_request)).body
+)
+assert integration_payload["github"]["status"] == "healthy"
+assert any(item["id"] == "database" for item in integration_payload["services"])
+responses = iter([
+    {
+        "workflow_runs": [{
+            "name": "فحص الجودة",
+            "status": "completed",
+            "conclusion": "failure",
+            "event": "push",
+            "html_url": "https://github.com/example/run/1",
+        }]
+    },
+    [{"number": 23, "title": "تغيير مدمج", "merged_at": "2026-10-25T00:00:00Z"}],
+])
+activity = integrations_monitor._load_activity(lambda _url: next(responses))
+assert activity["status"] == "degraded"
+assert activity["recent_merges"][0]["number"] == 23
+integrations_monitor.github_activity = _old_github_activity
+assert admin_api._sanitize_public_source_url(
+    "https://example.org/story?token=private#section"
+) == "https://example.org/story"
+assert admin_api._sanitize_public_source_url("http://127.0.0.1/private") is None
+
+class _OsintRequest:
+    headers = {"x-admin-token": "test-token-xyz"}
+    query_params = {}
+    state = SimpleNamespace()
+
+    def __init__(self, path, method="GET", body=None):
+        self.url = SimpleNamespace(path=path)
+        self.method = method
+        self.body = body or {}
+
+    async def json(self):
+        return self.body
+
+
+source_request = _OsintRequest("/api/admin/osint/sources", "POST", {
+    "report_id": None,
+    "url": "https://example.org/story?secret=remove",
+    "title": "مصدر عام للتحقق",
+    "notes": "تاريخ النشر وسياق الخبر",
+    "source_level": "primary",
+})
+source_payload = json.loads(
+    asyncio.run(osint_source_add_endpoint(source_request)).body
+)
+assert source_payload["item"]["url"] == "https://example.org/story"
+source_list_request = _OsintRequest("/api/admin/osint/sources")
+source_list = json.loads(
+    asyncio.run(osint_sources_endpoint(source_list_request)).body
+)
+assert len(source_list["items"]) == 1
+source_delete_request = _OsintRequest(
+    f"/api/admin/osint/sources/{source_payload['item']['id']}",
+    "DELETE",
+)
+source_delete = asyncio.run(osint_source_delete_endpoint(
+    source_payload["item"]["id"], source_delete_request
+))
+assert json.loads(source_delete.body)["deleted"] is True
+print("admin_api: read-only integration status and privacy-safe OSINT references")
 
 heartbeat_values = []
 
@@ -2079,13 +2198,20 @@ assert limits_resume_response.status_code == 200
 assert asyncio.run(pdb.get_state("user_limits_paused_until")) is None
 
 send_calls = []
+send_results = [{"sent": True, "message_id": 7001}]
 
 async def _fake_send_direct_message(user_id, text):
     send_calls.append((user_id, text))
     return True
 
+async def _fake_send_direct_message_result(user_id, text):
+    send_calls.append((user_id, text))
+    return send_results.pop(0)
+
 original_sender = admin_api._send_direct_message
+original_detailed_sender = admin_api._send_direct_message_result
 admin_api._send_direct_message = _fake_send_direct_message
+admin_api._send_direct_message_result = _fake_send_direct_message_result
 followup_response = asyncio.run(followup_endpoint(
     reject_report["id"], _Request({"note": "أرسل تفاصيل إضافية"})
 ))
@@ -2104,6 +2230,84 @@ messages_response = asyncio.run(user_messages_endpoint(777, _Request({})))
 messages_payload = json.loads(messages_response.body)
 assert messages_response.status_code == 200
 assert messages_payload["items"][-1]["text"] == "رسالة اختبار"
+assert messages_payload["items"][-1]["delivery_status"] == "delivered"
+conversation_payload = json.loads(
+    asyncio.run(conversations_endpoint(_Request({}))).body
+)
+conversation = next(item for item in conversation_payload["items"] if item["user_id"] == 777)
+assert conversation["last_message"] == "رسالة اختبار"
+assert conversation["unread_count"] >= 1
+asyncio.run(messages_read_endpoint(777, _Request({})))
+conversation_payload = json.loads(
+    asyncio.run(conversations_endpoint(_Request({}))).body
+)
+conversation = next(item for item in conversation_payload["items"] if item["user_id"] == 777)
+assert conversation["unread_count"] == 0
+asyncio.run(pdb.add_user_message(777, "in", "رسالة واردة"))
+conversation_payload = json.loads(
+    asyncio.run(conversations_endpoint(_Request({}))).body
+)
+conversation = next(item for item in conversation_payload["items"] if item["user_id"] == 777)
+assert conversation["unread_count"] == 1
+inbound_messages = json.loads(
+    asyncio.run(user_messages_endpoint(777, _Request({}))).body
+)["items"]
+inbound_message_id = max(
+    item["id"] for item in inbound_messages if item["direction"] == "in"
+)
+stale_read_response = asyncio.run(
+    messages_read_endpoint(777, _Request({"last_message_id": 0}))
+)
+assert stale_read_response.status_code == 200
+conversation_payload = json.loads(
+    asyncio.run(conversations_endpoint(_Request({}))).body
+)
+conversation = next(item for item in conversation_payload["items"] if item["user_id"] == 777)
+assert conversation["unread_count"] == 1
+invalid_read_response = asyncio.run(
+    messages_read_endpoint(777, _Request({"last_message_id": "invalid"}))
+)
+assert invalid_read_response.status_code == 400
+read_payload = json.loads(
+    asyncio.run(
+        messages_read_endpoint(
+            777, _Request({"last_message_id": inbound_message_id})
+        )
+    ).body
+)
+assert read_payload["last_read_message_id"] == inbound_message_id
+conversation_payload = json.loads(
+    asyncio.run(conversations_endpoint(_Request({}))).body
+)
+conversation = next(item for item in conversation_payload["items"] if item["user_id"] == 777)
+assert conversation["unread_count"] == 0
+send_results.append({"sent": False, "error_code": "user_blocked_bot"})
+failed_message_response = asyncio.run(message_endpoint(
+    777, _Request({"text": "محاولة فاشلة للاختبار"})
+))
+assert failed_message_response.status_code == 502
+failed_payload = json.loads(failed_message_response.body)
+assert failed_payload["error"] == "user_blocked_bot"
+failed_message_request = _Request({})
+failed_message_request.query_params = {
+    "after_id": str(failed_payload["message_id"] - 1)
+}
+failed_message = asyncio.run(user_messages_endpoint(777, failed_message_request))
+failed_item = json.loads(failed_message.body)["items"][0]
+assert failed_item["delivery_status"] == "failed"
+assert failed_item["error_code"] == "user_blocked_bot"
+send_results.append({"sent": True, "message_id": 7002})
+retry_response = asyncio.run(retry_user_message_endpoint(
+    777, failed_payload["message_id"], _Request({})
+))
+assert retry_response.status_code == 200
+assert json.loads(retry_response.body)["sent"] is True
+retried_message_request = _Request({})
+retried_message_request.query_params = {
+    "after_id": str(failed_payload["message_id"] - 1)
+}
+retried_items = asyncio.run(user_messages_endpoint(777, retried_message_request))
+assert json.loads(retried_items.body)["items"][0]["delivery_status"] == "delivered"
 assert any(
     row["action"] == "user_message" and row["target"] == "777"
     for row in asyncio.run(pdb.recent_audit(20))
@@ -2140,6 +2344,7 @@ assert json.loads(asyncio.run(user_contact_endpoint(777, contact_request)).body)
     "enabled"
 ] is True
 admin_api._send_direct_message = original_sender
+admin_api._send_direct_message_result = original_detailed_sender
 notices = []
 
 async def _fake_unblock_notice(user_id):

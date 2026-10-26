@@ -16,9 +16,16 @@ Future<void> openUserConversation(
 );
 
 class MessagingPage extends StatefulWidget {
-  const MessagingPage({super.key, required this.api});
+  const MessagingPage({
+    super.key,
+    required this.api,
+    this.initialUserId,
+    this.onFocusHandled,
+  });
 
   final AdminApi api;
+  final int? initialUserId;
+  final VoidCallback? onFocusHandled;
 
   @override
   State<MessagingPage> createState() => _MessagingPageState();
@@ -36,12 +43,16 @@ class _MessagingPageState extends State<MessagingPage> {
   final List<TextEditingController> _tplC = [];
   bool _tplLoading = true;
   bool _tplDirty = false;
+  List<Map<String, dynamic>> _conversations = [];
+  String _conversationQuery = '';
+  Timer? _conversationTimer;
 
   @override
   void dispose() {
     _bc.dispose();
     _recipient.dispose();
     _privateText.dispose();
+    _conversationTimer?.cancel();
     for (final controller in _tplC) {
       controller.dispose();
     }
@@ -52,6 +63,37 @@ class _MessagingPageState extends State<MessagingPage> {
   void initState() {
     super.initState();
     _loadTemplates();
+    _loadConversations();
+    _conversationTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => _loadConversations(),
+    );
+    final userId = widget.initialUserId;
+    if (userId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        widget.onFocusHandled?.call();
+        unawaited(_showConversation(userId));
+      });
+    }
+  }
+
+  Future<void> _loadConversations() async {
+    try {
+      final result = await widget.api.get('/api/admin/conversations', {
+        if (_conversationQuery.trim().isNotEmpty)
+          'q': _conversationQuery.trim(),
+        'limit': '100',
+      });
+      if (!mounted) return;
+      setState(() {
+        _conversations = (result['items'] as List? ?? const [])
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
+      });
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
   }
 
   void _rebuildControllers(List<String> items) {
@@ -227,16 +269,91 @@ class _MessagingPageState extends State<MessagingPage> {
     }
   }
 
-  Future<void> _showConversation(int uid) => showDialog<void>(
-    context: context,
-    builder: (_) => _ConversationDialog(api: widget.api, userId: uid),
-  );
+  Future<void> _showConversation(int uid) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _ConversationDialog(api: widget.api, userId: uid),
+    );
+    if (mounted) await _loadConversations();
+  }
+
+  Widget _conversationTile(Map<String, dynamic> conversation) {
+    final userId = (conversation['user_id'] as num).toInt();
+    final name = conversation['full_name']?.toString().trim() ?? '';
+    final unread = (conversation['unread_count'] as num? ?? 0).toInt();
+    final lastMessage = conversation['last_message']?.toString() ?? '';
+    final incoming = conversation['last_direction'] == 'in';
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+      title: Text(
+        name.isEmpty ? 'مستخدم $userId' : name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        '${incoming ? 'المستخدم: ' : 'الإدارة: '}$lastMessage',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (conversation['contact_enabled'] == false)
+            const Padding(
+              padding: EdgeInsetsDirectional.only(end: 8),
+              child: Icon(
+                Icons.do_not_disturb_on_outlined,
+                size: 18,
+                color: Colors.orange,
+              ),
+            ),
+          if (unread > 0) Badge(label: Text('$unread')),
+          const Icon(Icons.chevron_right),
+        ],
+      ),
+      onTap: () => _showConversation(userId),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        SectionCard(
+          'محادثات المستخدمين',
+          icon: Icons.forum_outlined,
+          trailing: IconButton(
+            tooltip: 'تحديث المحادثات',
+            onPressed: _loadConversations,
+            icon: const Icon(Icons.refresh),
+          ),
+          child: Column(
+            children: [
+              TextField(
+                decoration: const InputDecoration(
+                  labelText: 'بحث بالاسم أو المعرّف',
+                  prefixIcon: Icon(Icons.search),
+                ),
+                onChanged: (value) {
+                  _conversationQuery = value;
+                  _loadConversations();
+                },
+              ),
+              const SizedBox(height: 8),
+              if (_conversations.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text('لا توجد محادثات محفوظة بعد.'),
+                )
+              else
+                for (final conversation in _conversations)
+                  _conversationTile(conversation),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
         SectionCard(
           'محادثة خاصة مع مستخدم',
           icon: Icons.forum_outlined,
@@ -429,6 +546,7 @@ class _ConversationDialogState extends State<_ConversationDialog> {
   String? _error;
   bool _loading = true;
   bool _sending = false;
+  bool _fetching = false;
 
   @override
   void initState() {
@@ -445,17 +563,27 @@ class _ConversationDialogState extends State<_ConversationDialog> {
   }
 
   Future<void> _load() async {
+    if (_fetching) return;
+    _fetching = true;
     try {
       final result = await widget.api.get(
         '/api/admin/users/${widget.userId}/messages',
       );
       if (!mounted) return;
+      final items = (result['items'] as List? ?? const [])
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
       setState(() {
-        _items = (result['items'] as List? ?? const [])
-            .map((item) => Map<String, dynamic>.from(item as Map))
-            .toList();
+        _items = items;
         _error = null;
         _loading = false;
+      });
+      final lastVisibleInboundId = items
+          .where((item) => item['direction'] == 'in')
+          .map((item) => (item['id'] as num?)?.toInt() ?? 0)
+          .fold<int>(0, (latest, id) => id > latest ? id : latest);
+      await widget.api.post('/api/admin/users/${widget.userId}/messages/read', {
+        'last_message_id': lastVisibleInboundId,
       });
     } catch (e) {
       if (!mounted) return;
@@ -463,6 +591,8 @@ class _ConversationDialogState extends State<_ConversationDialog> {
         _error = errMsg(e);
         _loading = false;
       });
+    } finally {
+      _fetching = false;
     }
   }
 
@@ -478,11 +608,44 @@ class _ConversationDialogState extends State<_ConversationDialog> {
       _message.clear();
       await _load();
     } catch (e) {
-      if (mounted) toast(context, errMsg(e), error: true);
+      if (mounted) {
+        if (e is ApiException && e.status == 502) _message.clear();
+        toast(context, _deliveryError(errMsg(e)), error: true);
+        await _load();
+      }
     } finally {
       if (mounted) setState(() => _sending = false);
     }
   }
+
+  Future<void> _retry(int messageId) async {
+    try {
+      await widget.api.post(
+        '/api/admin/users/${widget.userId}/messages/$messageId/retry',
+        {},
+      );
+      if (mounted) toast(context, 'أُعيد إرسال الرسالة بنجاح');
+      await _load();
+    } catch (error) {
+      if (mounted) {
+        toast(context, _deliveryError(errMsg(error)), error: true);
+        await _load();
+      }
+    }
+  }
+
+  String _deliveryError(String code) => switch (code) {
+    'user_blocked_bot' => 'تعذّر الإرسال: المستخدم حظر البوت.',
+    'recipient_unavailable' => 'تعذّر الإرسال: محادثة المستخدم غير متاحة.',
+    'telegram_network_error' =>
+      'تعذّر الاتصال بتيليجرام؛ يمكنك إعادة المحاولة.',
+    'direct_contact_disabled' => 'التواصل المباشر متوقف لهذا المستخدم.',
+    'bot_not_ready' =>
+      'البوت غير جاهز الآن؛ بقيت الرسالة محفوظة لإعادة المحاولة.',
+    'telegram_send_failed' =>
+      'تعذّر الإرسال؛ بقيت الرسالة محفوظة لإعادة المحاولة.',
+    _ => code,
+  };
 
   @override
   Widget build(BuildContext context) => AlertDialog(
@@ -530,6 +693,43 @@ class _ConversationDialogState extends State<_ConversationDialog> {
                                       context,
                                     ).textTheme.labelSmall,
                                   ),
+                                  if (outgoing &&
+                                      item['delivery_status'] == 'failed') ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      _deliveryError(
+                                        item['error_code']?.toString() ??
+                                            'telegram_send_failed',
+                                      ),
+                                      style: TextStyle(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.error,
+                                      ),
+                                    ),
+                                    Align(
+                                      alignment: AlignmentDirectional.centerEnd,
+                                      child: TextButton.icon(
+                                        onPressed: () =>
+                                            _retry((item['id'] as num).toInt()),
+                                        icon: const Icon(
+                                          Icons.refresh,
+                                          size: 16,
+                                        ),
+                                        label: const Text('إعادة الإرسال'),
+                                      ),
+                                    ),
+                                  ] else if (outgoing) ...[
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      item['delivery_status'] == 'delivered'
+                                          ? 'أُرسل عبر تيليجرام'
+                                          : 'حالة الإرسال غير معروفة',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.labelSmall,
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),

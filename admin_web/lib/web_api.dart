@@ -223,6 +223,56 @@ class Api implements AdminApi {
       _go('POST', path, body: body);
 
   @override
+  Future<Map<String, dynamic>> upload(
+    String path, {
+    required Map<String, String> fields,
+    String? filename,
+    Uint8List? bytes,
+  }) async {
+    final request = http.MultipartRequest('POST', _uri(path))
+      ..headers.addAll(_headers)
+      ..fields.addAll(fields);
+    if (bytes != null) {
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'media',
+          bytes,
+          filename: filename ?? 'attachment',
+        ),
+      );
+    }
+    http.Response response;
+    try {
+      response = await http.Response.fromStream(await _client.send(request));
+    } catch (_) {
+      throw ApiException(0, 'network_error');
+    }
+    Map<String, dynamic> json;
+    try {
+      final decoded = jsonDecode(response.body);
+      json = decoded is Map<String, dynamic>
+          ? decoded
+          : <String, dynamic>{'ok': false, 'error': 'bad_response'};
+    } catch (_) {
+      json = <String, dynamic>{'ok': false, 'error': 'bad_response'};
+    }
+    if (response.statusCode == 401) {
+      onUnauthorized?.call();
+      throw ApiException(401, 'unauthorized');
+    }
+    if (response.statusCode == 404) {
+      throw ApiException(404, 'service_not_found');
+    }
+    if (response.statusCode >= 400) {
+      throw ApiException(
+        response.statusCode,
+        (json['error'] ?? 'error').toString(),
+      );
+    }
+    return json;
+  }
+
+  @override
   Future<Map<String, dynamic>> put(String path, Map<String, dynamic> body) =>
       _go('PUT', path, body: body);
 

@@ -9,6 +9,13 @@ abstract interface class AdminApi {
 
   Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body);
 
+  Future<Map<String, dynamic>> upload(
+    String path, {
+    required Map<String, String> fields,
+    String? filename,
+    Uint8List? bytes,
+  });
+
   Future<Map<String, dynamic>> put(String path, Map<String, dynamic> body);
 
   Future<Map<String, dynamic>> del(String path, Map<String, dynamic> body);
