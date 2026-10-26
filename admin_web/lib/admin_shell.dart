@@ -8,6 +8,7 @@ import 'app_credits.dart';
 import 'app_theme.dart';
 import 'pages.dart';
 import 'pages2.dart';
+import 'pages/whats_new_page.dart';
 import 'theme_menu.dart';
 import 'widgets.dart';
 import 'web_api.dart';
@@ -536,6 +537,7 @@ class _MainShellState extends State<MainShell> {
     ('سلامة النظام', Icons.monitor_heart_outlined),
     ('التحقق من المصادر', Icons.manage_search_outlined),
     ('التفضيلات', Icons.palette_outlined),
+    ('ما الجديد', Icons.new_releases_outlined),
   ];
 
   List<Widget> get _pages => [
@@ -620,6 +622,7 @@ class _MainShellState extends State<MainShell> {
                   : 'alert'),
       },
     ),
+    const WhatsNewPage(),
   ];
 
   void _select(int index) {

@@ -16,7 +16,7 @@ class AppCredits {
 
   static const String version = String.fromEnvironment(
     'APP_VERSION',
-    defaultValue: '2.7.20261024',
+    defaultValue: '2.7.20261026.1',
   );
 
   static String get versionLabel => 'v$version';

@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:admin_web/api.dart';
 import 'package:admin_web/pages/blocked_page.dart';
 import 'package:admin_web/pages/shared_dialogs.dart';
+import 'package:admin_web/pages/whats_new_page.dart';
 import 'package:admin_web/widgets.dart';
 
 class _FakeApi implements AdminApi {
@@ -93,6 +94,20 @@ class _FakeApi implements AdminApi {
 }
 
 void main() {
+  testWidgets('سجل ما الجديد يعرض الإصدار الحالي وإصداراته', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(home: Scaffold(body: WhatsNewPage())),
+    );
+
+    expect(find.text('ما الجديد في لوحة الإدارة؟'), findsOneWidget);
+    expect(find.textContaining('2.7.20261026.1'), findsWidgets);
+    expect(find.text('سجل الإصدارات ومعرفة الجديد'), findsOneWidget);
+    expect(find.text('الإصدار المثبت'), findsOneWidget);
+    expect(find.text('ميزات جديدة'), findsOneWidget);
+  });
+
   testWidgets('مؤشر المستخدم يميز النشاط المرصود دون ادعاء الاتصال الحي', (
     WidgetTester tester,
   ) async {

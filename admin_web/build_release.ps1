@@ -10,14 +10,37 @@ $root = $PSScriptRoot
 Set-Location $root
 
 $buildTime = [DateTime]::UtcNow
-$version = '2.7.' + $buildTime.ToString(
+$versionBase = '2.7.' + $buildTime.ToString(
     'yyyyMMdd',
     [Globalization.CultureInfo]::InvariantCulture
 )
+$version = $versionBase
 $releaseDate = $buildTime.ToString(
     'yyyy-MM-dd',
     [Globalization.CultureInfo]::InvariantCulture
 )
+$distDir = Join-Path $root 'dist'
+$versionFile = Join-Path $distDir 'version.json'
+if (Test-Path $versionFile) {
+    try {
+        $previousVersion = (
+            Get-Content -Path $versionFile -Raw | ConvertFrom-Json
+        ).version
+        $sameDayVersion = [regex]::Match(
+            [string]$previousVersion,
+            ('^' + [regex]::Escape($versionBase) + '(?:\.(\d+))?$')
+        )
+        if ($sameDayVersion.Success) {
+            $sequence = 0
+            if ($sameDayVersion.Groups[1].Success) {
+                $sequence = [int]$sameDayVersion.Groups[1].Value
+            }
+            $version = "$versionBase.$($sequence + 1)"
+        }
+    } catch {
+        Write-Warning "تعذر قراءة رقم الإصدار السابق؛ سيُستخدم رقم تاريخ اليوم."
+    }
+}
 $apiBase = if ($env:API_BASE) { $env:API_BASE.TrimEnd('/') } else { '' }
 
 Write-Host "==> الإصدار: $version"
@@ -38,7 +61,6 @@ flutter @buildArgs
 if ($LASTEXITCODE -ne 0) { throw 'flutter build web فشل' }
 
 $buildDir = Join-Path $root 'build\web'
-$distDir = Join-Path $root 'dist'
 if (-not (Test-Path $buildDir)) { throw "لم يُعثر على مخرجات البناء: $buildDir" }
 
 if (Test-Path $distDir) {
