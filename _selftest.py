@@ -783,6 +783,11 @@ with sqlite3.connect(legacy_path) as legacy_conn:
         "platform TEXT, needs_review INTEGER, published INTEGER)"
     )
     legacy_conn.execute(
+        "CREATE TABLE user_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "user_id INTEGER NOT NULL, direction TEXT NOT NULL, text TEXT NOT NULL, "
+        "admin_id INTEGER, created_at TEXT NOT NULL)"
+    )
+    legacy_conn.execute(
         "INSERT INTO reports (id, seq, user_id, photo_path, post_link, description, "
         "status, created_at) VALUES (1, 'LEGACY-1', 123, '', '', 'قديم', 'جديد', ?)",
         (utils.utc_now_iso(),),
@@ -792,6 +797,16 @@ legacy_report = asyncio.run(legacy_db.get_by_id(1))
 assert legacy_report["seq"] == "LEGACY-1"
 assert legacy_report["priority"] == "normal"
 assert legacy_report["assigned_to"] is None
+legacy_message_columns = {
+    row["name"]
+    for row in legacy_db._conn.execute("PRAGMA table_info(user_messages)").fetchall()
+}
+assert {"delivery_status", "error_code"} <= legacy_message_columns
+legacy_message_indexes = {
+    row["name"]
+    for row in legacy_db._conn.execute("PRAGMA index_list(user_messages)").fetchall()
+}
+assert "idx_user_messages_status" in legacy_message_indexes
 legacy_db.close()
 legacy_tmp.cleanup()
 print("legacy database migration preserves existing reports")

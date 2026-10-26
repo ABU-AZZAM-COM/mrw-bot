@@ -128,7 +128,6 @@ CREATE TABLE IF NOT EXISTS user_messages (
     error_code      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_messages_user_id ON user_messages(user_id, id);
-CREATE INDEX IF NOT EXISTS idx_user_messages_status ON user_messages(delivery_status);
 
 CREATE TABLE IF NOT EXISTS broadcast_jobs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
