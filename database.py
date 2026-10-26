@@ -203,6 +203,14 @@ CREATE TABLE IF NOT EXISTS system_state (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS welcome_photo (
+    id           INTEGER PRIMARY KEY CHECK(id = 1),
+    data         BLOB NOT NULL,
+    content_type TEXT NOT NULL,
+    filename     TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type TEXT NOT NULL,
@@ -1060,6 +1068,72 @@ class Database:
 
     async def set_state(self, key: str, value: Optional[str]) -> None:
         await asyncio.to_thread(self._set_state, key, value)
+
+    def _get_welcome_photo(self) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data, content_type, filename, updated_at "
+                "FROM welcome_photo WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "data": bytes(row["data"]),
+                "content_type": str(row["content_type"]),
+                "filename": str(row["filename"]),
+                "updated_at": str(row["updated_at"]),
+            }
+
+    async def get_welcome_photo(self) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._get_welcome_photo)
+
+    def _has_welcome_photo(self) -> bool:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT 1 FROM welcome_photo WHERE id = 1"
+            ).fetchone() is not None
+
+    async def has_welcome_photo(self) -> bool:
+        return await asyncio.to_thread(self._has_welcome_photo)
+
+    def _set_welcome_photo(
+        self, data: bytes, content_type: str, filename: str
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO welcome_photo (id, data, content_type, filename, updated_at)
+                VALUES (1, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    data = excluded.data,
+                    content_type = excluded.content_type,
+                    filename = excluded.filename,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    data,
+                    content_type,
+                    filename,
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                ),
+            )
+            self._conn.commit()
+
+    async def set_welcome_photo(
+        self, data: bytes, content_type: str, filename: str
+    ) -> None:
+        await asyncio.to_thread(
+            self._set_welcome_photo, data, content_type, filename
+        )
+
+    def _delete_welcome_photo(self) -> bool:
+        with self._lock:
+            cursor = self._conn.execute("DELETE FROM welcome_photo WHERE id = 1")
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def delete_welcome_photo(self) -> bool:
+        return await asyncio.to_thread(self._delete_welcome_photo)
 
     def _insert_notification_locked(
         self,

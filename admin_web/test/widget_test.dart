@@ -102,10 +102,11 @@ void main() {
     );
 
     expect(find.text('ما الجديد في لوحة الإدارة؟'), findsOneWidget);
+    expect(find.textContaining('2.7.20261026.2'), findsWidgets);
     expect(find.textContaining('2.7.20261026.1'), findsWidgets);
     expect(find.text('سجل الإصدارات ومعرفة الجديد'), findsOneWidget);
     expect(find.text('الإصدار المثبت'), findsOneWidget);
-    expect(find.text('ميزات جديدة'), findsOneWidget);
+    expect(find.text('ميزات جديدة'), findsWidgets);
   });
 
   testWidgets('مؤشر المستخدم يميز النشاط المرصود دون ادعاء الاتصال الحي', (

@@ -140,6 +140,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
         else:
             welcome = "🛑 استقبال البلاغات الجديدة متوقف مؤقتًا.\n\n" + welcome
+    command = (update.effective_message.text or "").split(maxsplit=1)
+    command = command[0].split("@", 1)[0].lower() if command else ""
+    welcome_photo = context.bot_data.get("welcome_photo")
+    if command == "/start" and isinstance(welcome_photo, dict) and isinstance(
+        welcome_photo.get("data"), bytes
+    ):
+        try:
+            await update.effective_message.reply_photo(photo=welcome_photo["data"])
+        except Exception:
+            logger.exception("تعذر إرسال صورة الترحيب للمستخدم %s", user.id)
     await update.effective_message.reply_text(
         welcome,
         parse_mode=parse_mode,

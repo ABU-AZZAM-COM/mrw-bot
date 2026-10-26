@@ -61,6 +61,7 @@ assert asyncio.run(
     )
 ) is None
 start_reply = AsyncMock()
+start_photo_reply = AsyncMock()
 start_db = SimpleNamespace(
     record_user=AsyncMock(),
     log_event=AsyncMock(),
@@ -71,18 +72,35 @@ start_update = SimpleNamespace(
         id=222222222, username="start_test", full_name="اختبار البدء"
     ),
     effective_chat=SimpleNamespace(type="private"),
-    effective_message=SimpleNamespace(reply_text=start_reply),
+    effective_message=SimpleNamespace(text="/start", reply_text=start_reply),
 )
 start_context = SimpleNamespace(
-    bot_data={"db": start_db}, user_data={"stale": "draft"}
+    bot_data={
+        "db": start_db,
+        "welcome_photo": {
+            "data": b"\xff\xd8\xffwelcome",
+            "content_type": "image/jpeg",
+            "filename": "welcome.jpg",
+        },
+    },
+    user_data={"stale": "draft"},
 )
+start_update.effective_message.reply_photo = start_photo_reply
 assert asyncio.run(handlers.cmd_start(start_update, start_context)) is (
     handlers.ConversationHandler.END
 )
 start_reply.assert_awaited_once()
+start_photo_reply.assert_awaited_once_with(photo=b"\xff\xd8\xffwelcome")
 assert start_reply.await_args.args[0] == texts.WELCOME
 assert start_context.user_data == {}
 print("/start command builds and sends the welcome response")
+
+report_command_photo = AsyncMock()
+start_update.effective_message.text = "/report"
+start_update.effective_message.reply_photo = report_command_photo
+asyncio.run(handlers.cmd_start(start_update, start_context))
+report_command_photo.assert_not_awaited()
+print("/report does not send the Start-only welcome photo")
 wizard_states = handlers.build_conversation().states
 assert all(
     state in wizard_states
@@ -1385,6 +1403,21 @@ bot_profile_put_endpoint = next(
     if getattr(route, "path", None) == "/api/admin/bot-profile"
     and "POST" in getattr(route, "methods", set())
 )
+welcome_photo_get_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/bot-profile/welcome-photo"
+    and "GET" in getattr(route, "methods", set())
+)
+welcome_photo_put_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/bot-profile/welcome-photo"
+    and "POST" in getattr(route, "methods", set())
+)
+welcome_photo_delete_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/bot-profile/welcome-photo"
+    and "DELETE" in getattr(route, "methods", set())
+)
 auto_freeze_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/system/auto-freeze"
@@ -2042,6 +2075,9 @@ class _Request:
     async def json(self):
         return self._body
 
+    async def form(self):
+        return self._body
+
     async def is_disconnected(self):
         return False
 
@@ -2129,6 +2165,68 @@ else:
     asyncio.run(pdb.set_state("bot_profile", old_saved_bot_profile))
 _bot_main.app = original_bot_profile_app
 print("admin_api: bot profile settings are persisted and load without a live bot")
+
+class _WelcomeUpload:
+    filename = "welcome.png"
+
+    async def read(self, size=-1):
+        data = b"\x89PNG\r\n\x1a\nwelcome"
+        return data if size < 0 else data[:size]
+
+
+old_admin_api_token = _os.environ.get("ADMIN_API_TOKEN")
+old_admin_api_tokens = _os.environ.get("ADMIN_API_TOKENS_JSON")
+welcome_db_tmp = tempfile.TemporaryDirectory()
+welcome_db = database.Database(Path(welcome_db_tmp.name) / "welcome-photo.db")
+original_welcome_app = _bot_main.app
+
+class _ImmediateBotLoop:
+    def is_running(self):
+        return True
+
+    def call_soon_threadsafe(self, callback, *args):
+        callback(*args)
+
+
+welcome_bot_data = {"db": welcome_db, "loop": _ImmediateBotLoop()}
+try:
+    _os.environ["ADMIN_API_TOKEN"] = "welcome-photo-owner-token"
+    _os.environ.pop("ADMIN_API_TOKENS_JSON", None)
+    _bot_main.app = SimpleNamespace(bot_data=welcome_bot_data, bot=None)
+    welcome_request = _Request({"media": _WelcomeUpload()})
+    welcome_request.headers = {"x-admin-token": "welcome-photo-owner-token"}
+    welcome_request.method = "POST"
+    welcome_request.url.path = "/api/admin/bot-profile/welcome-photo"
+    welcome_saved = asyncio.run(welcome_photo_put_endpoint(welcome_request))
+    assert welcome_saved.status_code == 200
+    assert asyncio.run(welcome_db.has_welcome_photo()) is True
+    assert welcome_bot_data["welcome_photo"]["data"] == b"\x89PNG\r\n\x1a\nwelcome"
+
+    welcome_request.method = "GET"
+    welcome_response = asyncio.run(welcome_photo_get_endpoint(welcome_request))
+    assert welcome_response.status_code == 200
+    assert welcome_response.headers["content-type"] == "image/png"
+    assert welcome_response.body == b"\x89PNG\r\n\x1a\nwelcome"
+
+    welcome_request.method = "DELETE"
+    welcome_removed = asyncio.run(welcome_photo_delete_endpoint(welcome_request))
+    assert welcome_removed.status_code == 200
+    assert asyncio.run(welcome_db.has_welcome_photo()) is False
+    assert welcome_bot_data["welcome_photo"] is None
+    assert asyncio.run(welcome_photo_get_endpoint(welcome_request)).status_code == 404
+finally:
+    _bot_main.app = original_welcome_app
+    welcome_db.close()
+    welcome_db_tmp.cleanup()
+    if old_admin_api_token is None:
+        _os.environ.pop("ADMIN_API_TOKEN", None)
+    else:
+        _os.environ["ADMIN_API_TOKEN"] = old_admin_api_token
+    if old_admin_api_tokens is None:
+        _os.environ.pop("ADMIN_API_TOKENS_JSON", None)
+    else:
+        _os.environ["ADMIN_API_TOKENS_JSON"] = old_admin_api_tokens
+print("admin_api: welcome photo upload, serving, and removal are persisted")
 old_profile_tokens = _os.environ.get("ADMIN_API_TOKENS_JSON")
 try:
     _os.environ["ADMIN_API_TOKENS_JSON"] = json.dumps([
