@@ -113,6 +113,7 @@ async def post_init(app) -> None:
 
     runtime_settings = await app.bot_data["db"].get_runtime_settings()
     config.apply_runtime_settings(runtime_settings)
+    app.bot_data["welcome_photo"] = await app.bot_data["db"].get_welcome_photo()
 
     base_commands = [BotCommand("start", "فتح الواجهة الرئيسية")]
     await app.bot.set_my_commands(base_commands)

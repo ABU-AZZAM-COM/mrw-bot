@@ -2766,6 +2766,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 saved.get("welcome_text") or texts.BOT_PROFILE_DEFAULT_WELCOME
             ),
             "photo_updated_at": str(saved.get("photo_updated_at") or ""),
+            "has_welcome_photo": await db.has_welcome_photo(),
         }
         bot, _ = _bot_runtime()
         if bot is not None:
@@ -2796,6 +2797,105 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "bot_ready": bot is not None,
             "can_edit": getattr(getattr(request, "state", None), "admin_role", "") == "owner",
         })
+
+    @app.get("/api/admin/bot-profile/welcome-photo")
+    async def welcome_photo_get(request: Request):
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        photo = await db_of().get_welcome_photo()
+        if photo is None:
+            return bad("welcome_photo_not_found", 404)
+        return Response(
+            content=photo["data"],
+            media_type=photo["content_type"],
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.post("/api/admin/bot-profile/welcome-photo")
+    async def welcome_photo_put(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        try:
+            form = await request.form()
+        except Exception:
+            logger.exception("تعذر قراءة صورة الترحيب")
+            return bad("multipart_unavailable", 503)
+        upload = form.get("media")
+        if upload is None or not hasattr(upload, "read"):
+            return bad("welcome_photo_required")
+        photo_bytes = await upload.read(10 * 1024 * 1024 + 1)
+        if len(photo_bytes) > 10 * 1024 * 1024:
+            return bad("welcome_photo_too_large", 413)
+        if photo_bytes.startswith(b"\xff\xd8\xff"):
+            content_type = "image/jpeg"
+            extension = ".jpg"
+        elif photo_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            content_type = "image/png"
+            extension = ".png"
+        else:
+            return bad("welcome_photo_must_be_jpeg_or_png")
+        filename = str(getattr(upload, "filename", "") or "")
+        filename = filename.replace("\\", "/").rsplit("/", 1)[-1][:120]
+        if not filename:
+            filename = f"welcome{extension}"
+
+        db = db_of()
+        await db.set_welcome_photo(photo_bytes, content_type, filename)
+        import main as bot_main  # noqa: PLC0415
+
+        app = getattr(bot_main, "app", None)
+        loop = getattr(app, "bot_data", {}).get("loop") if app else None
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(
+                app.bot_data.__setitem__, "welcome_photo", {
+                    "data": photo_bytes,
+                    "content_type": content_type,
+                    "filename": filename,
+                }
+            )
+        await db.audit(
+            _admin_actor(request),
+            "welcome_photo_changed",
+            "هوية البوت",
+            f"تحديث صورة الترحيب ({content_type})",
+        )
+        return JSONResponse({
+            "ok": True,
+            "has_welcome_photo": True,
+            "filename": filename,
+        })
+
+    @app.delete("/api/admin/bot-profile/welcome-photo")
+    async def welcome_photo_delete(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        deleted = await db.delete_welcome_photo()
+        import main as bot_main  # noqa: PLC0415
+
+        app = getattr(bot_main, "app", None)
+        loop = getattr(app, "bot_data", {}).get("loop") if app else None
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(
+                app.bot_data.__setitem__, "welcome_photo", None
+            )
+        if deleted:
+            await db.audit(
+                _admin_actor(request),
+                "welcome_photo_removed",
+                "هوية البوت",
+                "إزالة صورة الترحيب",
+            )
+        return JSONResponse({"ok": True, "has_welcome_photo": False})
 
     @app.post("/api/admin/bot-profile")
     async def bot_profile_put(request: Request) -> JSONResponse:
