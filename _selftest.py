@@ -1180,6 +1180,23 @@ assert [message["direction"] for message in conversation] == ["out", "in"]
 assert conversation[-1]["text"] == "رد المستخدم"
 conversation_db.close()
 
+# بطاقة الكشف تربط البلاغات المقدمة بمعرف المبلّغ وإجراءاته فقط.
+asyncio.run(pdb.audit(111, "user_blocked", "777", "سبب اختبار"))
+asyncio.run(pdb.audit(111, "report_status", pid["seq"], "تمت المراجعة"))
+asyncio.run(pdb.record_user(779, "unrelated", "مستخدم آخر"))
+unrelated_report = asyncio.run(pdb.add_report(
+    user_id=779, username="unrelated", full_name="مستخدم آخر",
+    photo_path="media/other.jpg", photo_file_id=None,
+    post_link="https://example.com/other", description="بلاغ شخص آخر",
+))
+dossier = asyncio.run(pdb.user_dossier(777))
+assert dossier["profile"]["user_id"] == 777
+assert [item["id"] for item in dossier["reports"]] == [pid["id"]]
+assert any(item["action"] == "user_blocked" for item in dossier["audit"])
+assert any(item["target"] == pid["seq"] for item in dossier["audit"])
+assert all(item["user_id"] != 779 for item in dossier["reports"])
+assert unrelated_report["id"] != pid["id"]
+
 retention_now = datetime.now(timezone.utc)
 old_timestamp = (retention_now - timedelta(days=400)).isoformat(timespec="seconds")
 recent_timestamp = (retention_now - timedelta(days=20)).isoformat(timespec="seconds")
@@ -1259,7 +1276,7 @@ try:
 finally:
     config.MEDIA_DIR, config.BASE_DIR = original_media_dir, original_base_dir
     media_tmp.cleanup()
-print("database: 365/180-day retention and safe orphaned-media cleanup")
+print("database: 365/90-day retention and safe orphaned-media cleanup")
 
 # تقدم التعميم محفوظ، وأي مهمة كانت جارية عند إعادة التشغيل تُعلّم كمقاطعة.
 jobs_tmp = tempfile.TemporaryDirectory(prefix="mrw-broadcast-selftest-")
@@ -1276,6 +1293,29 @@ job_id = asyncio.run(jobs_db.create_broadcast_job("نشر مكتمل", 111, 1))
 assert job_id is not None
 assert asyncio.run(jobs_db.finish_broadcast_job(job_id, 1, 0)) == "completed"
 assert asyncio.run(jobs_db.get_broadcast_job(job_id))["status"] == "completed"
+job_id = asyncio.run(
+    jobs_db.create_broadcast_job("منشور قابل للإدارة", 111, 1, "text")
+)
+assert job_id is not None
+sent_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+asyncio.run(jobs_db.record_broadcast_delivery(job_id, 900, 12345, sent_at))
+assert asyncio.run(jobs_db.finish_broadcast_job(job_id, 1, 0)) == "completed"
+edit = asyncio.run(jobs_db.prepare_broadcast_edit(job_id, 111, "نص معدّل"))
+assert edit["total"] == 1 and edit["deliveries"][0]["message_id"] == 12345
+asyncio.run(jobs_db.update_broadcast_delivery_edit(job_id, 900, "edited"))
+asyncio.run(jobs_db.update_broadcast_edit_job(job_id, 1, 0, 0, "completed"))
+job = asyncio.run(jobs_db.get_broadcast_job(job_id))
+assert job["edit_status"] == "completed"
+with jobs_db._lock:
+    edited_text = jobs_db._conn.execute(
+        "SELECT text FROM broadcast_jobs WHERE id = ?", (job_id,)
+    ).fetchone()["text"]
+assert edited_text == "نص معدّل"
+deletion = asyncio.run(jobs_db.prepare_broadcast_delete(job_id, 111))
+assert deletion["total"] == 1
+asyncio.run(jobs_db.update_broadcast_delivery_delete(job_id, 900, "deleted"))
+asyncio.run(jobs_db.update_broadcast_delete_job(job_id, 1, 0, 0, "completed"))
+assert asyncio.run(jobs_db.get_broadcast_job(job_id))["deletion_status"] == "completed"
 job_id = asyncio.run(jobs_db.create_broadcast_job("نشر ملغى", 111, 2))
 assert job_id is not None
 assert asyncio.run(jobs_db.request_broadcast_cancel(job_id))
@@ -1467,6 +1507,47 @@ assert db_health_response.status_code == 200
 assert json.loads(db_health_response.body) == {"ok": True}
 _bot_main.app = original_bot_app
 _os.environ["ADMIN_API_TOKEN"] = "test-token-xyz"
+
+class _BroadcastEditRequest:
+    headers = {"x-admin-token": "test-token-xyz"}
+    method = "POST"
+    url = SimpleNamespace(path="/api/admin/broadcast/1/edit")
+    state = SimpleNamespace()
+
+    async def json(self):
+        return {"text": "نص إعادة المحاولة"}
+
+
+broadcast_edit_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/broadcast/{job_id}/edit"
+)
+broadcast_tmp = tempfile.TemporaryDirectory(prefix="mrw-broadcast-api-selftest-")
+broadcast_db = database.Database(Path(broadcast_tmp.name) / "broadcast.db")
+broadcast_job_id = asyncio.run(
+    broadcast_db.create_broadcast_job("تعميم مكتمل", 111, 1, "text")
+)
+asyncio.run(broadcast_db.record_broadcast_delivery(
+    broadcast_job_id, 700, 4567, datetime.now(timezone.utc).isoformat()
+))
+asyncio.run(broadcast_db.finish_broadcast_job(broadcast_job_id, 1, 0))
+_saved_bot_app = _bot_main.app
+try:
+    _bot_main.app = SimpleNamespace(
+        bot_data={"db": broadcast_db}, bot=None
+    )
+    unavailable_edit = asyncio.run(
+        broadcast_edit_endpoint(broadcast_job_id, _BroadcastEditRequest())
+    )
+    assert unavailable_edit.status_code == 503
+    assert asyncio.run(
+        broadcast_db.get_broadcast_job(broadcast_job_id)
+    )["edit_status"] == "failed"
+finally:
+    _bot_main.app = _saved_bot_app
+    broadcast_db.close()
+    broadcast_tmp.cleanup()
+print("admin_api: unavailable bot leaves broadcast edit retryable")
 
 class _TursoHealthDb:
     backend = "turso"
@@ -2353,16 +2434,17 @@ assert message_response.status_code == 200
 assert json.loads(message_response.body)["sent"] is True
 assert send_calls[0][0] == 909 and "/reply" in send_calls[0][1]
 assert send_calls[1] == (777, "رسالة اختبار")
+tracked_direct_text = "📨 رسالة من الجهة المختصة:\n\nرسالة اختبار"
 messages_response = asyncio.run(user_messages_endpoint(777, _Request({})))
 messages_payload = json.loads(messages_response.body)
 assert messages_response.status_code == 200
-assert messages_payload["items"][-1]["text"] == "رسالة اختبار"
+assert messages_payload["items"][-1]["text"] == tracked_direct_text
 assert messages_payload["items"][-1]["delivery_status"] == "delivered"
 conversation_payload = json.loads(
     asyncio.run(conversations_endpoint(_Request({}))).body
 )
 conversation = next(item for item in conversation_payload["items"] if item["user_id"] == 777)
-assert conversation["last_message"] == "رسالة اختبار"
+assert conversation["last_message"] == tracked_direct_text
 assert conversation["unread_count"] >= 1
 asyncio.run(messages_read_endpoint(777, _Request({})))
 conversation_payload = json.loads(

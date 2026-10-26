@@ -125,7 +125,13 @@ CREATE TABLE IF NOT EXISTS user_messages (
     admin_id        INTEGER,
     created_at      TEXT NOT NULL,
     delivery_status TEXT NOT NULL DEFAULT 'delivered',
-    error_code      TEXT
+    error_code      TEXT,
+    media_type      TEXT,
+    telegram_file_id TEXT,
+    telegram_message_id INTEGER,
+    filename        TEXT,
+    is_edited       INTEGER NOT NULL DEFAULT 0,
+    is_deleted      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_user_messages_user_id ON user_messages(user_id, id);
 
@@ -137,6 +143,45 @@ CREATE TABLE IF NOT EXISTS broadcast_jobs (
     total        INTEGER NOT NULL,
     sent         INTEGER NOT NULL DEFAULT 0,
     failed       INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    completed_at TEXT,
+    media_type   TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS broadcast_deliveries (
+    job_id       INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    message_id   INTEGER NOT NULL,
+    sent_at      TEXT NOT NULL,
+    delete_status TEXT NOT NULL DEFAULT 'available',
+    delete_error TEXT,
+    deleted_at   TEXT,
+    edit_status  TEXT NOT NULL DEFAULT 'available',
+    edit_error   TEXT,
+    PRIMARY KEY (job_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_job_status
+    ON broadcast_deliveries(job_id, delete_status);
+
+CREATE TABLE IF NOT EXISTS broadcast_delete_jobs (
+    job_id       INTEGER PRIMARY KEY,
+    actor_id     INTEGER NOT NULL,
+    status       TEXT NOT NULL,
+    total        INTEGER NOT NULL,
+    deleted      INTEGER NOT NULL DEFAULT 0,
+    failed       INTEGER NOT NULL DEFAULT 0,
+    expired      INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS broadcast_edit_jobs (
+    job_id       INTEGER PRIMARY KEY,
+    actor_id     INTEGER NOT NULL,
+    status       TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    total        INTEGER NOT NULL,
+    edited       INTEGER NOT NULL DEFAULT 0,
+    failed       INTEGER NOT NULL DEFAULT 0,
+    expired      INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL,
     completed_at TEXT
 );
@@ -401,10 +446,41 @@ class Database:
         for column, ddl in (
             ("delivery_status", "TEXT NOT NULL DEFAULT 'delivered'"),
             ("error_code", "TEXT"),
+            ("media_type", "TEXT"),
+            ("telegram_file_id", "TEXT"),
+            ("telegram_message_id", "INTEGER"),
+            ("filename", "TEXT"),
+            ("is_edited", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_deleted", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in message_columns:
                 self._conn.execute(
                     f"ALTER TABLE user_messages ADD COLUMN {column} {ddl}"
+                )
+        broadcast_columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(broadcast_jobs)"
+            ).fetchall()
+        }
+        if "media_type" not in broadcast_columns:
+            self._conn.execute(
+                "ALTER TABLE broadcast_jobs ADD COLUMN "
+                "media_type TEXT NOT NULL DEFAULT ''"
+            )
+        delivery_columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(broadcast_deliveries)"
+            ).fetchall()
+        }
+        for column, ddl in (
+            ("edit_status", "TEXT NOT NULL DEFAULT 'available'"),
+            ("edit_error", "TEXT"),
+        ):
+            if column not in delivery_columns:
+                self._conn.execute(
+                    f"ALTER TABLE broadcast_deliveries ADD COLUMN {column} {ddl}"
                 )
         conversation_columns = {
             row["name"]
@@ -1565,7 +1641,7 @@ class Database:
         self,
         now: datetime | None = None,
         audit_retention_days: int = 365,
-        message_retention_days: int = 180,
+        message_retention_days: int = 90,
     ) -> dict[str, int]:
         current = now or datetime.now(timezone.utc)
         audit_cutoff = (
@@ -1581,16 +1657,44 @@ class Database:
             messages = self._conn.execute(
                 "DELETE FROM user_messages WHERE created_at < ?", (message_cutoff,)
             )
+            deliveries = self._conn.execute(
+                "DELETE FROM broadcast_deliveries WHERE sent_at < ?",
+                (message_cutoff,),
+            )
+            edits = self._conn.execute(
+                "DELETE FROM broadcast_edit_jobs WHERE created_at < ?",
+                (message_cutoff,),
+            )
+            deletions = self._conn.execute(
+                "DELETE FROM broadcast_delete_jobs WHERE created_at < ?",
+                (message_cutoff,),
+            )
+            broadcasts = self._conn.execute(
+                """
+                DELETE FROM broadcast_jobs
+                WHERE created_at < ?
+                  AND status NOT IN ('queued', 'running', 'cancel_requested')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM broadcast_deliveries d
+                    WHERE d.job_id = broadcast_jobs.id
+                  )
+                """,
+                (message_cutoff,),
+            )
             self._conn.commit()
             return {
                 "audit_deleted": int(audit.rowcount),
                 "messages_deleted": int(messages.rowcount),
+                "broadcast_deliveries_deleted": int(deliveries.rowcount),
+                "broadcast_edit_jobs_deleted": int(edits.rowcount),
+                "broadcast_delete_jobs_deleted": int(deletions.rowcount),
+                "broadcast_jobs_deleted": int(broadcasts.rowcount),
             }
 
     async def cleanup_private_data(
         self,
         audit_retention_days: int = 365,
-        message_retention_days: int = 180,
+        message_retention_days: int = 90,
     ) -> dict[str, int]:
         return await asyncio.to_thread(
             self._cleanup_private_data,
@@ -1795,6 +1899,43 @@ class Database:
 
     async def user_profile(self, user_id: int):
         return await asyncio.to_thread(self._user_profile, user_id)
+
+    def _user_dossier(self, user_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            reports = self._conn.execute(
+                "SELECT * FROM reports WHERE user_id = ? ORDER BY created_at DESC, id DESC",
+                (user_id,),
+            ).fetchall()
+            profile = self._user_profile(user_id)
+            if profile is None:
+                return None
+            report_rows = [_row_to_dict(row) for row in reports]
+            targets = [str(user_id)]
+            targets.extend(
+                str(report.get("seq") or report["id"])
+                for report in report_rows
+            )
+            placeholders = ",".join("?" for _ in targets)
+            audit_rows = self._conn.execute(
+                f"SELECT id, ts, actor_id, action, target, details FROM audit_log "
+                f"WHERE target IN ({placeholders}) ORDER BY id DESC LIMIT 500",
+                targets,
+            ).fetchall()
+            audit_total = self._conn.execute(
+                f"SELECT COUNT(*) FROM audit_log WHERE target IN ({placeholders})",
+                targets,
+            ).fetchone()[0]
+        return {
+            "profile": profile,
+            "reports": report_rows,
+            "reports_total": len(report_rows),
+            "audit": [_row_to_dict(row) for row in audit_rows],
+            "audit_total": int(audit_total or 0),
+            "audit_truncated": int(audit_total or 0) > len(audit_rows),
+        }
+
+    async def user_dossier(self, user_id: int):
+        return await asyncio.to_thread(self._user_dossier, user_id)
 
     def _set_user_contact_enabled(self, user_id: int, enabled: bool) -> bool:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -2049,6 +2190,10 @@ class Database:
         admin_id: int | None = None,
         delivery_status: str = "delivered",
         error_code: str | None = None,
+        media_type: str | None = None,
+        telegram_file_id: str | None = None,
+        telegram_message_id: int | None = None,
+        filename: str | None = None,
     ) -> int:
         if direction not in {"in", "out"}:
             raise ValueError("invalid message direction")
@@ -2061,12 +2206,14 @@ class Database:
                 """
                 INSERT INTO user_messages
                     (user_id, direction, text, admin_id, created_at,
-                     delivery_status, error_code)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     delivery_status, error_code, media_type, telegram_file_id,
+                     telegram_message_id, filename)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id, direction, text, admin_id, now_iso,
-                    delivery_status, error_code,
+                    delivery_status, error_code, media_type, telegram_file_id,
+                    telegram_message_id, filename,
                 ),
             )
             self._conn.execute(
@@ -2095,6 +2242,10 @@ class Database:
         admin_id: int | None = None,
         delivery_status: str = "delivered",
         error_code: str | None = None,
+        media_type: str | None = None,
+        telegram_file_id: str | None = None,
+        telegram_message_id: int | None = None,
+        filename: str | None = None,
     ) -> int:
         return await asyncio.to_thread(
             self._add_user_message,
@@ -2104,27 +2255,97 @@ class Database:
             admin_id,
             delivery_status,
             error_code,
+            media_type,
+            telegram_file_id,
+            telegram_message_id,
+            filename,
         )
 
     def _update_user_message_delivery(
-        self, message_id: int, status: str, error_code: str | None = None
+        self,
+        message_id: int,
+        status: str,
+        error_code: str | None = None,
+        telegram_message_id: int | None = None,
     ) -> bool:
         if status not in {"delivered", "failed"}:
             raise ValueError("invalid delivery status")
         with self._lock:
             cursor = self._conn.execute(
-                "UPDATE user_messages SET delivery_status = ?, error_code = ? "
+                "UPDATE user_messages SET delivery_status = ?, error_code = ?, "
+                "telegram_message_id = COALESCE(?, telegram_message_id) "
                 "WHERE id = ? AND direction = 'out'",
-                (status, error_code, message_id),
+                (status, error_code, telegram_message_id, message_id),
             )
             self._conn.commit()
             return cursor.rowcount > 0
 
     async def update_user_message_delivery(
-        self, message_id: int, status: str, error_code: str | None = None
+        self,
+        message_id: int,
+        status: str,
+        error_code: str | None = None,
+        telegram_message_id: int | None = None,
     ) -> bool:
         return await asyncio.to_thread(
-            self._update_user_message_delivery, message_id, status, error_code
+            self._update_user_message_delivery,
+            message_id,
+            status,
+            error_code,
+            telegram_message_id,
+        )
+
+    def _reconcile_retried_message(
+        self,
+        user_id: int,
+        failed_message_id: int,
+        telegram_message_id: int | None,
+    ) -> bool:
+        with self._lock:
+            tracked = self._conn.execute(
+                "SELECT id, text, media_type, telegram_file_id, filename "
+                "FROM user_messages WHERE user_id = ? AND telegram_message_id = ? "
+                "AND direction = 'out' AND id != ? ORDER BY id DESC LIMIT 1",
+                (user_id, telegram_message_id, failed_message_id),
+            ).fetchone() if telegram_message_id is not None else None
+            if tracked:
+                self._conn.execute(
+                    "UPDATE user_messages SET text = ?, media_type = ?, "
+                    "telegram_file_id = ?, filename = ?, delivery_status = 'delivered', "
+                    "error_code = NULL, telegram_message_id = ? WHERE id = ?",
+                    (
+                        tracked["text"],
+                        tracked["media_type"],
+                        tracked["telegram_file_id"],
+                        tracked["filename"],
+                        telegram_message_id,
+                        failed_message_id,
+                    ),
+                )
+                self._conn.execute(
+                    "DELETE FROM user_messages WHERE id = ?", (tracked["id"],)
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE user_messages SET delivery_status = 'delivered', "
+                    "error_code = NULL, telegram_message_id = COALESCE(?, "
+                    "telegram_message_id) WHERE id = ? AND user_id = ?",
+                    (telegram_message_id, failed_message_id, user_id),
+                )
+            self._conn.commit()
+            return True
+
+    async def reconcile_retried_message(
+        self,
+        user_id: int,
+        failed_message_id: int,
+        telegram_message_id: int | None,
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._reconcile_retried_message,
+            user_id,
+            failed_message_id,
+            telegram_message_id,
         )
 
     def _list_user_messages(
@@ -2135,7 +2356,8 @@ class Database:
             rows = self._conn.execute(
                 """
                 SELECT id, user_id, direction, text, admin_id, created_at,
-                       delivery_status, error_code
+                       delivery_status, error_code, media_type, telegram_file_id,
+                       telegram_message_id, filename, is_edited, is_deleted
                 FROM user_messages
                 WHERE user_id = ? AND id > ?
                 ORDER BY id ASC LIMIT ?
@@ -2149,6 +2371,124 @@ class Database:
     ) -> list[dict[str, Any]]:
         return await asyncio.to_thread(
             self._list_user_messages, user_id, after_id, limit
+        )
+
+    def _get_outgoing_user_message(
+        self, user_id: int, message_id: int
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM user_messages "
+                "WHERE user_id = ? AND id = ? AND direction = 'out'",
+                (user_id, message_id),
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+
+    async def get_outgoing_user_message(
+        self, user_id: int, message_id: int
+    ) -> dict[str, Any] | None:
+        return await asyncio.to_thread(
+            self._get_outgoing_user_message, user_id, message_id
+        )
+
+    def _get_user_message_by_telegram_id(
+        self, user_id: int, telegram_message_id: int
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM user_messages WHERE user_id = ? "
+                "AND telegram_message_id = ? AND direction = 'out' "
+                "ORDER BY id DESC LIMIT 1",
+                (user_id, telegram_message_id),
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+
+    async def get_user_message_by_telegram_id(
+        self, user_id: int, telegram_message_id: int
+    ) -> dict[str, Any] | None:
+        return await asyncio.to_thread(
+            self._get_user_message_by_telegram_id, user_id, telegram_message_id
+        )
+
+    def _mark_user_message_changed(
+        self, user_id: int, message_id: int, *, deleted: bool
+    ) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE user_messages SET is_edited = ?, is_deleted = ? "
+                "WHERE user_id = ? AND id = ? AND direction = 'out'",
+                (int(not deleted), int(deleted), user_id, message_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def mark_user_message_changed(
+        self, user_id: int, message_id: int, *, deleted: bool
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._mark_user_message_changed, user_id, message_id, deleted=deleted
+        )
+
+    def _edit_user_message_content(
+        self, user_id: int, message_id: int, text: str
+    ) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE user_messages SET text = ?, is_edited = 1 "
+                "WHERE user_id = ? AND id = ? AND direction = 'out' "
+                "AND is_deleted = 0",
+                (text, user_id, message_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def edit_user_message_content(
+        self, user_id: int, message_id: int, text: str
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._edit_user_message_content, user_id, message_id, text
+        )
+
+    def _update_message_by_telegram_id(
+        self,
+        user_id: int,
+        telegram_message_id: int,
+        text: str | None,
+        *,
+        deleted: bool,
+    ) -> bool:
+        with self._lock:
+            if deleted:
+                cursor = self._conn.execute(
+                    "UPDATE user_messages SET is_deleted = 1 "
+                    "WHERE user_id = ? AND telegram_message_id = ? "
+                    "AND direction = 'out'",
+                    (user_id, telegram_message_id),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "UPDATE user_messages SET text = ?, is_edited = 1 "
+                    "WHERE user_id = ? AND telegram_message_id = ? "
+                    "AND direction = 'out' AND is_deleted = 0",
+                    (text or "", user_id, telegram_message_id),
+                )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def update_message_by_telegram_id(
+        self,
+        user_id: int,
+        telegram_message_id: int,
+        text: str | None,
+        *,
+        deleted: bool,
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._update_message_by_telegram_id,
+            user_id,
+            telegram_message_id,
+            text,
+            deleted=deleted,
         )
 
     # --------------------------------------------------------------
@@ -2244,7 +2584,7 @@ class Database:
         return await asyncio.to_thread(self._all_user_ids, cap)
 
     def _create_broadcast_job(
-        self, text: str, actor_id: int, total: int
+        self, text: str, actor_id: int, total: int, media_type: str = ""
     ) -> int | None:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
@@ -2256,20 +2596,465 @@ class Database:
                 return None
             cur = self._conn.execute(
                 """
-                INSERT INTO broadcast_jobs (text, actor_id, status, total, created_at)
-                VALUES (?, ?, 'running', ?, ?)
+                INSERT INTO broadcast_jobs
+                    (text, actor_id, status, total, created_at, media_type)
+                VALUES (?, ?, 'running', ?, ?, ?)
                 """,
-                (text, actor_id, total, now_iso),
+                (text, actor_id, total, now_iso, media_type),
             )
             self._conn.commit()
             return int(cur.lastrowid)
 
     async def create_broadcast_job(
-        self, text: str, actor_id: int, total: int
+        self, text: str, actor_id: int, total: int, media_type: str = ""
     ) -> int | None:
         return await asyncio.to_thread(
-            self._create_broadcast_job, text, actor_id, total
+            self._create_broadcast_job, text, actor_id, total, media_type
         )
+
+    def _record_broadcast_delivery(
+        self, job_id: int, user_id: int, message_id: int, sent_at: str
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO broadcast_deliveries
+                    (job_id, user_id, message_id, sent_at, delete_status,
+                     delete_error, deleted_at)
+                VALUES (?, ?, ?, ?, 'available', NULL, NULL)
+                """,
+                (job_id, user_id, message_id, sent_at),
+            )
+            self._conn.commit()
+
+    async def record_broadcast_delivery(
+        self, job_id: int, user_id: int, message_id: int, sent_at: str
+    ) -> None:
+        await asyncio.to_thread(
+            self._record_broadcast_delivery, job_id, user_id, message_id, sent_at
+        )
+
+    def _expire_broadcast_deliveries(self, cutoff: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET delete_status = 'expired', "
+                "delete_error = 'message_expired' "
+                "WHERE delete_status IN ('available', 'failed') AND sent_at <= ?",
+                (cutoff,),
+            )
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET edit_status = 'expired', "
+                "edit_error = 'message_expired' "
+                "WHERE edit_status IN ('available', 'failed', 'edited') "
+                "AND sent_at <= ?",
+                (cutoff,),
+            )
+            self._conn.commit()
+
+    def _list_broadcast_jobs(
+        self, limit: int, cutoff: str
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET delete_status = 'expired', "
+                "delete_error = 'message_expired' "
+                "WHERE delete_status IN ('available', 'failed') AND sent_at <= ?",
+                (cutoff,),
+            )
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET edit_status = 'expired', "
+                "edit_error = 'message_expired' "
+                "WHERE edit_status IN ('available', 'failed', 'edited') "
+                "AND sent_at <= ?",
+                (cutoff,),
+            )
+            self._conn.commit()
+            rows = self._conn.execute(
+                """
+                SELECT j.id, j.status, j.total, j.sent, j.failed,
+                       j.created_at, j.completed_at, j.media_type,
+                       COALESCE(d.delivered, 0) AS delivered_messages,
+                       COALESCE(d.available, 0) AS deletable_messages,
+                       COALESCE(d.deleted, 0) AS deleted_messages,
+                       COALESCE(d.expired, 0) AS expired_messages,
+                       COALESCE(d.delete_failed, 0) AS delete_failed_messages,
+                       COALESCE(d.editable, 0) AS editable_messages,
+                       x.status AS deletion_status,
+                       x.total AS deletion_total,
+                       x.deleted AS deletion_deleted,
+                       x.failed AS deletion_failed,
+                       x.expired AS deletion_expired,
+                       x.created_at AS deletion_created_at,
+                       x.completed_at AS deletion_completed_at,
+                       e.status AS edit_status,
+                       e.total AS edit_total,
+                       e.edited AS edit_edited,
+                       e.failed AS edit_failed,
+                       e.expired AS edit_expired,
+                       e.created_at AS edit_created_at,
+                       e.completed_at AS edit_completed_at
+                FROM broadcast_jobs j
+                LEFT JOIN (
+                    SELECT job_id,
+                           COUNT(*) AS delivered,
+                           SUM(CASE WHEN delete_status IN ('available', 'failed')
+                               THEN 1 ELSE 0 END) AS available,
+                           SUM(CASE WHEN delete_status = 'deleted'
+                               THEN 1 ELSE 0 END) AS deleted,
+                           SUM(CASE WHEN delete_status = 'expired'
+                               THEN 1 ELSE 0 END) AS expired,
+                           SUM(CASE WHEN delete_status = 'failed'
+                               THEN 1 ELSE 0 END) AS delete_failed,
+                           SUM(CASE WHEN edit_status IN
+                                        ('available', 'failed', 'edited')
+                                    AND delete_status != 'deleted'
+                               THEN 1 ELSE 0 END) AS editable
+                    FROM broadcast_deliveries GROUP BY job_id
+                ) d ON d.job_id = j.id
+                LEFT JOIN broadcast_delete_jobs x ON x.job_id = j.id
+                LEFT JOIN broadcast_edit_jobs e ON e.job_id = j.id
+                ORDER BY j.id DESC LIMIT ?
+                """,
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    async def list_broadcast_jobs(
+        self, limit: int = 30, cutoff: str | None = None
+    ) -> list[dict[str, Any]]:
+        cutoff = cutoff or (
+            datetime.now(timezone.utc) - timedelta(hours=48)
+        ).isoformat(timespec="seconds")
+        return await asyncio.to_thread(self._list_broadcast_jobs, limit, cutoff)
+
+    def _prepare_broadcast_delete(
+        self, job_id: int, actor_id: int, cutoff: str
+    ) -> dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            job = self._conn.execute(
+                "SELECT status FROM broadcast_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if job is None:
+                return {"error": "not_found"}
+            if job["status"] in {"queued", "running", "cancel_requested"}:
+                return {"error": "broadcast_in_progress"}
+            current = self._conn.execute(
+                "SELECT status FROM broadcast_delete_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if current and current["status"] == "running":
+                return {"error": "deletion_in_progress"}
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET delete_status = 'expired', "
+                "delete_error = 'message_expired' "
+                "WHERE job_id = ? AND delete_status IN ('available', 'failed') "
+                "AND sent_at <= ?",
+                (job_id, cutoff),
+            )
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET edit_status = 'expired', "
+                "edit_error = 'message_expired' "
+                "WHERE job_id = ? AND edit_status IN "
+                "('available', 'failed', 'edited') "
+                "AND sent_at <= ?",
+                (job_id, cutoff),
+            )
+            rows = self._conn.execute(
+                "SELECT user_id, message_id FROM broadcast_deliveries "
+                "WHERE job_id = ? AND delete_status IN ('available', 'failed') "
+                "AND sent_at > ? ORDER BY user_id",
+                (job_id, cutoff),
+            ).fetchall()
+            expired = self._conn.execute(
+                "SELECT COUNT(*) FROM broadcast_deliveries "
+                "WHERE job_id = ? AND delete_status = 'expired'",
+                (job_id,),
+            ).fetchone()[0]
+            deleted = self._conn.execute(
+                "SELECT COUNT(*) FROM broadcast_deliveries "
+                "WHERE job_id = ? AND delete_status = 'deleted'",
+                (job_id,),
+            ).fetchone()[0]
+            if not rows:
+                self._conn.commit()
+                return {
+                    "error": None,
+                    "deliveries": [],
+                    "total": 0,
+                    "expired": int(expired),
+                    "deleted": int(deleted),
+                }
+            self._conn.execute(
+                """
+                INSERT INTO broadcast_delete_jobs
+                    (job_id, actor_id, status, total, deleted, failed, expired,
+                     created_at, completed_at)
+                VALUES (?, ?, 'running', ?, 0, 0, ?, ?, NULL)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    actor_id = excluded.actor_id,
+                    status = 'running',
+                    total = excluded.total,
+                    deleted = 0,
+                    failed = 0,
+                    expired = excluded.expired,
+                    created_at = excluded.created_at,
+                    completed_at = NULL
+                """,
+                (job_id, actor_id, len(rows), int(expired), now_iso),
+            )
+            self._conn.commit()
+            return {
+                "error": None,
+                "deliveries": [
+                    {"user_id": int(row["user_id"]),
+                     "message_id": int(row["message_id"])}
+                    for row in rows
+                ],
+                "total": len(rows),
+                "expired": int(expired),
+                "deleted": int(deleted),
+            }
+
+    async def prepare_broadcast_delete(
+        self, job_id: int, actor_id: int, cutoff: str | None = None
+    ) -> dict[str, Any]:
+        cutoff = cutoff or (
+            datetime.now(timezone.utc) - timedelta(hours=48)
+        ).isoformat(timespec="seconds")
+        return await asyncio.to_thread(
+            self._prepare_broadcast_delete, job_id, actor_id, cutoff
+        )
+
+    def _prepare_broadcast_edit(
+        self, job_id: int, actor_id: int, content: str, cutoff: str
+    ) -> dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            job = self._conn.execute(
+                "SELECT status FROM broadcast_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if job is None:
+                return {"error": "not_found"}
+            if job["status"] in {"queued", "running", "cancel_requested"}:
+                return {"error": "broadcast_in_progress"}
+            current = self._conn.execute(
+                "SELECT status FROM broadcast_edit_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if current and current["status"] == "running":
+                return {"error": "edit_in_progress"}
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET edit_status = 'expired', "
+                "edit_error = 'message_expired' "
+                "WHERE job_id = ? AND edit_status IN "
+                "('available', 'failed', 'edited') "
+                "AND sent_at <= ?",
+                (job_id, cutoff),
+            )
+            rows = self._conn.execute(
+                "SELECT user_id, message_id FROM broadcast_deliveries "
+                "WHERE job_id = ? AND delete_status != 'deleted' "
+                "AND edit_status IN ('available', 'failed', 'edited') "
+                "AND sent_at > ? "
+                "ORDER BY user_id",
+                (job_id, cutoff),
+            ).fetchall()
+            expired = self._conn.execute(
+                "SELECT COUNT(*) FROM broadcast_deliveries "
+                "WHERE job_id = ? AND edit_status = 'expired'",
+                (job_id,),
+            ).fetchone()[0]
+            if not rows:
+                self._conn.commit()
+                return {
+                    "error": None,
+                    "deliveries": [],
+                    "total": 0,
+                    "expired": int(expired),
+                }
+            self._conn.execute(
+                """
+                INSERT INTO broadcast_edit_jobs
+                    (job_id, actor_id, status, content, total, edited, failed,
+                     expired, created_at, completed_at)
+                VALUES (?, ?, 'running', ?, ?, 0, 0, ?, ?, NULL)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    actor_id = excluded.actor_id,
+                    status = 'running',
+                    content = excluded.content,
+                    total = excluded.total,
+                    edited = 0,
+                    failed = 0,
+                    expired = excluded.expired,
+                    created_at = excluded.created_at,
+                    completed_at = NULL
+                """,
+                (job_id, actor_id, content, len(rows), int(expired), now_iso),
+            )
+            self._conn.commit()
+            return {
+                "error": None,
+                "deliveries": [
+                    {"user_id": int(row["user_id"]), "message_id": int(row["message_id"])}
+                    for row in rows
+                ],
+                "total": len(rows),
+                "expired": int(expired),
+            }
+
+    async def prepare_broadcast_edit(
+        self, job_id: int, actor_id: int, content: str, cutoff: str | None = None
+    ) -> dict[str, Any]:
+        cutoff = cutoff or (
+            datetime.now(timezone.utc) - timedelta(hours=48)
+        ).isoformat(timespec="seconds")
+        return await asyncio.to_thread(
+            self._prepare_broadcast_edit, job_id, actor_id, content, cutoff
+        )
+
+    def _update_broadcast_delivery_edit(
+        self, job_id: int, user_id: int, status: str, error: str | None
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET edit_status = ?, edit_error = ? "
+                "WHERE job_id = ? AND user_id = ?",
+                (status, error, job_id, user_id),
+            )
+            self._conn.commit()
+
+    async def update_broadcast_delivery_edit(
+        self, job_id: int, user_id: int, status: str, error: str | None = None
+    ) -> None:
+        await asyncio.to_thread(
+            self._update_broadcast_delivery_edit, job_id, user_id, status, error
+        )
+
+    def _update_broadcast_edit_job(
+        self,
+        job_id: int,
+        edited: int,
+        failed: int,
+        expired: int,
+        status: str | None = None,
+    ) -> None:
+        completed_at = (
+            datetime.now(timezone.utc).isoformat(timespec="seconds")
+            if status else None
+        )
+        with self._lock:
+            self._conn.execute(
+                "UPDATE broadcast_edit_jobs SET edited = ?, failed = ?, expired = ?, "
+                "status = COALESCE(?, status), "
+                "completed_at = COALESCE(?, completed_at) WHERE job_id = ?",
+                (edited, failed, expired, status, completed_at, job_id),
+            )
+            if status == "completed" and failed == 0:
+                self._conn.execute(
+                    "UPDATE broadcast_jobs SET text = ? WHERE id = ?",
+                    (
+                        self._conn.execute(
+                            "SELECT content FROM broadcast_edit_jobs WHERE job_id = ?",
+                            (job_id,),
+                        ).fetchone()["content"],
+                        job_id,
+                    ),
+                )
+            self._conn.commit()
+
+    async def update_broadcast_edit_job(
+        self,
+        job_id: int,
+        edited: int,
+        failed: int,
+        expired: int,
+        status: str | None = None,
+    ) -> None:
+        await asyncio.to_thread(
+            self._update_broadcast_edit_job,
+            job_id,
+            edited,
+            failed,
+            expired,
+            status,
+        )
+
+    def _update_broadcast_delivery_delete(
+        self, job_id: int, user_id: int, status: str, error: str | None
+    ) -> None:
+        deleted_at = (
+            datetime.now(timezone.utc).isoformat(timespec="seconds")
+            if status == "deleted" else None
+        )
+        with self._lock:
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET delete_status = ?, "
+                "delete_error = ?, deleted_at = ? "
+                "WHERE job_id = ? AND user_id = ?",
+                (status, error, deleted_at, job_id, user_id),
+            )
+            self._conn.commit()
+
+    async def update_broadcast_delivery_delete(
+        self, job_id: int, user_id: int, status: str, error: str | None = None
+    ) -> None:
+        await asyncio.to_thread(
+            self._update_broadcast_delivery_delete,
+            job_id, user_id, status, error,
+        )
+
+    def _update_broadcast_delete_job(
+        self,
+        job_id: int,
+        deleted: int,
+        failed: int,
+        expired: int,
+        status: str | None = None,
+    ) -> None:
+        completed_at = (
+            datetime.now(timezone.utc).isoformat(timespec="seconds")
+            if status else None
+        )
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE broadcast_delete_jobs
+                SET deleted = ?, failed = ?, expired = ?,
+                    status = COALESCE(?, status),
+                    completed_at = COALESCE(?, completed_at)
+                WHERE job_id = ?
+                """,
+                (deleted, failed, expired, status, completed_at, job_id),
+            )
+            self._conn.commit()
+
+    async def update_broadcast_delete_job(
+        self,
+        job_id: int,
+        deleted: int,
+        failed: int,
+        expired: int,
+        status: str | None = None,
+    ) -> None:
+        await asyncio.to_thread(
+            self._update_broadcast_delete_job,
+            job_id, deleted, failed, expired, status,
+        )
+
+    def _get_broadcast_delete_job(self, job_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT job_id, actor_id, status, total, deleted, failed, expired, "
+                "created_at, completed_at FROM broadcast_delete_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+
+    async def get_broadcast_delete_job(
+        self, job_id: int
+    ) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._get_broadcast_delete_job, job_id)
 
     def _update_broadcast_job(
         self, job_id: int, sent: int, failed: int, status: str | None = None
@@ -2347,12 +3132,80 @@ class Database:
 
     def _get_broadcast_job(self, job_id: int) -> dict[str, Any] | None:
         with self._lock:
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(hours=48)
+            ).isoformat(timespec="seconds")
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET delete_status = 'expired', "
+                "delete_error = 'message_expired' "
+                "WHERE job_id = ? AND delete_status IN ('available', 'failed') "
+                "AND sent_at <= ?",
+                (job_id, cutoff),
+            )
+            self._conn.execute(
+                "UPDATE broadcast_deliveries SET edit_status = 'expired', "
+                "edit_error = 'message_expired' "
+                "WHERE job_id = ? AND edit_status IN "
+                "('available', 'failed', 'edited') AND sent_at <= ?",
+                (job_id, cutoff),
+            )
+            self._conn.commit()
             row = self._conn.execute(
-                "SELECT id, status, total, sent, failed, created_at, completed_at "
+                "SELECT id, status, total, sent, failed, created_at, completed_at, "
+                "media_type "
                 "FROM broadcast_jobs WHERE id = ?",
                 (job_id,),
             ).fetchone()
-            return _row_to_dict(row) if row else None
+            if row is None:
+                return None
+            job = _row_to_dict(row)
+            delivery = self._conn.execute(
+                """
+                SELECT COUNT(*) AS delivered_messages,
+                       SUM(CASE WHEN delete_status IN ('available', 'failed')
+                           THEN 1 ELSE 0 END) AS deletable_messages,
+                       SUM(CASE WHEN delete_status = 'deleted'
+                           THEN 1 ELSE 0 END) AS deleted_messages,
+                       SUM(CASE WHEN delete_status = 'expired'
+                           THEN 1 ELSE 0 END) AS expired_messages,
+                       SUM(CASE WHEN delete_status = 'failed'
+                           THEN 1 ELSE 0 END) AS delete_failed_messages
+                FROM broadcast_deliveries WHERE job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+            deletion = self._conn.execute(
+                "SELECT status, total, deleted, failed, expired, created_at, "
+                "completed_at FROM broadcast_delete_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            job.update(_row_to_dict(delivery) or {})
+            job.update({
+                "delivered_messages": int(job.get("delivered_messages") or 0),
+                "deletable_messages": int(job.get("deletable_messages") or 0),
+                "deleted_messages": int(job.get("deleted_messages") or 0),
+                "expired_messages": int(job.get("expired_messages") or 0),
+                "delete_failed_messages": int(
+                    job.get("delete_failed_messages") or 0
+                ),
+            })
+            if deletion:
+                deletion_values = _row_to_dict(deletion) or {}
+                job.update({
+                    f"deletion_{key}": value
+                    for key, value in deletion_values.items()
+                })
+            edit = self._conn.execute(
+                "SELECT status, content, total, edited, failed, expired, "
+                "created_at, completed_at FROM broadcast_edit_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if edit:
+                edit_values = _row_to_dict(edit) or {}
+                job.update({
+                    f"edit_{key}": value for key, value in edit_values.items()
+                })
+            return job
 
     async def get_broadcast_job(self, job_id: int) -> dict[str, Any] | None:
         return await asyncio.to_thread(self._get_broadcast_job, job_id)

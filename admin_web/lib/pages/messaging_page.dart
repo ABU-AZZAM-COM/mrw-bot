@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:html' as html;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -44,6 +47,8 @@ class _MessagingPageState extends State<MessagingPage> {
   bool _tplLoading = true;
   bool _tplDirty = false;
   List<Map<String, dynamic>> _conversations = [];
+  List<Map<String, dynamic>> _broadcastHistory = [];
+  bool _canManageMessages = false;
   String _conversationQuery = '';
   Timer? _conversationTimer;
 
@@ -64,6 +69,7 @@ class _MessagingPageState extends State<MessagingPage> {
     super.initState();
     _loadTemplates();
     _loadConversations();
+    _loadBroadcastHistory();
     _conversationTimer = Timer.periodic(
       const Duration(seconds: 15),
       (_) => _loadConversations(),
@@ -88,6 +94,33 @@ class _MessagingPageState extends State<MessagingPage> {
       if (!mounted) return;
       setState(() {
         _conversations = (result['items'] as List? ?? const [])
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
+      });
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  Future<void> _loadBroadcastHistory() async {
+    try {
+      final session = await widget.api.get('/api/admin/session');
+      if (!mounted) return;
+      final canManage = session['role'] == 'owner';
+      if (!canManage) {
+        setState(() {
+          _canManageMessages = false;
+          _broadcastHistory = [];
+        });
+        return;
+      }
+      final result = await widget.api.get('/api/admin/broadcast', {
+        'limit': '30',
+      });
+      if (!mounted) return;
+      setState(() {
+        _canManageMessages = true;
+        _broadcastHistory = (result['items'] as List? ?? const [])
             .map((item) => Map<String, dynamic>.from(item as Map))
             .toList();
       });
@@ -207,7 +240,7 @@ class _MessagingPageState extends State<MessagingPage> {
     }
   }
 
-  Future<void> _watchBroadcast(int jobId) async {
+  Future<void> _watchBroadcast(int jobId, {String kind = 'broadcast'}) async {
     while (mounted) {
       await Future<void>.delayed(const Duration(seconds: 2));
       if (!mounted) return;
@@ -215,20 +248,127 @@ class _MessagingPageState extends State<MessagingPage> {
         final job = await widget.api.get('/api/admin/broadcast/$jobId');
         if (!mounted) return;
         setState(() => _broadcastJob = job);
-        if (job['status'] != 'running' && job['status'] != 'queued') {
-          final completed = job['status'] == 'completed';
+        final progressStatus = kind == 'delete'
+            ? job['deletion_status']
+            : kind == 'edit'
+            ? job['edit_status']
+            : job['status'];
+        if (progressStatus != 'running' && progressStatus != 'queued') {
+          final completed =
+              progressStatus == 'completed' || progressStatus == null;
           toast(
             context,
-            '${completed ? 'اكتمل' : 'توقف'} التعميم: نجح ${job['sent']}، '
-            'تعذّر ${job['failed']} من ${job['total']}',
+            kind == 'delete'
+                ? 'اكتمل حذف ${job['deletion_deleted'] ?? 0} رسالة، '
+                      'وتعذّر ${job['deletion_failed'] ?? 0}'
+                : kind == 'edit'
+                ? 'اكتمل تعديل ${job['edit_edited'] ?? 0} رسالة، '
+                      'وتعذّر ${job['edit_failed'] ?? 0}'
+                : '${completed ? 'اكتمل' : 'توقف'} التعميم: '
+                      'نجح ${job['sent']}، تعذّر ${job['failed']} من ${job['total']}',
             error: !completed,
           );
+          await _loadBroadcastHistory();
           return;
         }
       } catch (e) {
         if (mounted) toast(context, errMsg(e), error: true);
         return;
       }
+    }
+  }
+
+  Future<void> _deleteBroadcast(Map<String, dynamic> job) async {
+    final id = (job['id'] as num).toInt();
+    final confirmed = await confirmDialog(
+      context,
+      'حذف التعميم',
+      'سيحاول البوت حذف الرسالة لدى كل مستلم خلال حد تيليجرام (48 ساعة). '
+          'لا يمكن التراجع عن الحذف.',
+      okLabel: 'حذف الرسائل',
+      danger: true,
+    );
+    if (!confirmed || !mounted) return;
+    try {
+      final result = await widget.api.post(
+        '/api/admin/broadcast/$id/delete',
+        {},
+      );
+      if (result['status'] == 'running') {
+        await _watchBroadcast(id, kind: 'delete');
+      } else {
+        toast(
+          context,
+          'لا توجد رسائل قابلة للحذف؛ منتهية الصلاحية: '
+          '${result['expired'] ?? 0}',
+        );
+        await _loadBroadcastHistory();
+      }
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  Future<void> _editBroadcast(Map<String, dynamic> job) async {
+    final id = (job['id'] as num).toInt();
+    final controller = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('تعديل الرسالة المرسلة'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 4,
+          maxLength: job['media_type'] == 'text' || job['media_type'] == ''
+              ? 1000
+              : 900,
+          decoration: const InputDecoration(
+            labelText: 'النص الجديد',
+            alignLabelWithHint: true,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (controller.text.trim().isNotEmpty) {
+                Navigator.pop(ctx, controller.text.trim());
+              }
+            },
+            child: const Text('تعديل'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value == null || !mounted) return;
+    final confirmed = await confirmDialog(
+      context,
+      'تأكيد التعديل',
+      'سيُحدّث النص لدى المستلمين الذين ما زالت رسائلهم قابلة للتعديل.',
+      okLabel: 'تعديل الرسائل',
+    );
+    if (!confirmed || !mounted) return;
+    try {
+      final result = await widget.api.post('/api/admin/broadcast/$id/edit', {
+        'text': value,
+      });
+      if (result['status'] == 'running') {
+        await _watchBroadcast(id, kind: 'edit');
+      } else {
+        toast(
+          context,
+          'لا توجد رسائل قابلة للتعديل؛ منتهية الصلاحية: '
+          '${result['expired'] ?? 0}',
+        );
+        await _loadBroadcastHistory();
+      }
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
     }
   }
 
@@ -399,7 +539,11 @@ class _MessagingPageState extends State<MessagingPage> {
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : null,
+              : IconButton(
+                  tooltip: 'تحديث سجل النشر',
+                  onPressed: _loadBroadcastHistory,
+                  icon: const Icon(Icons.refresh),
+                ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -437,6 +581,61 @@ class _MessagingPageState extends State<MessagingPage> {
                   '${_broadcastJob!['failed'] ?? 0} متعذّر من '
                   '${_broadcastJob!['total'] ?? 0}',
                 ),
+              ],
+              if (_broadcastHistory.isNotEmpty) ...[
+                const Divider(height: 24),
+                Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Text(
+                    'سجل الرسائل المرسلة',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                for (final item in _broadcastHistory)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(
+                      'رسالة #${item['id']} · ${item['media_type'] ?? 'text'}',
+                    ),
+                    subtitle: Text(
+                      '${item['created_at'] ?? ''} · '
+                      'وصل ${item['sent'] ?? 0} من ${item['total'] ?? 0} · '
+                      'قابلة للتعديل ${item['editable_messages'] ?? 0} · '
+                      'قابلة للحذف ${item['deletable_messages'] ?? 0}',
+                    ),
+                    trailing: _canManageMessages
+                        ? Wrap(
+                            spacing: 2,
+                            children: [
+                              IconButton(
+                                tooltip: 'تعديل الرسائل لدى المستلمين',
+                                onPressed:
+                                    ((item['editable_messages'] as num?)
+                                                ?.toInt() ??
+                                            0) >
+                                        0
+                                    ? () => _editBroadcast(item)
+                                    : null,
+                                icon: const Icon(Icons.edit_outlined),
+                              ),
+                              IconButton(
+                                tooltip: 'حذف الرسائل لدى المستلمين',
+                                onPressed:
+                                    ((item['deletable_messages'] as num?)
+                                                ?.toInt() ??
+                                            0) >
+                                        0
+                                    ? () => _deleteBroadcast(item)
+                                    : null,
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  color: Color(0xFFE06C75),
+                                ),
+                              ),
+                            ],
+                          )
+                        : null,
+                  ),
               ],
               const SizedBox(height: 8),
               FilledButton.icon(
@@ -542,11 +741,15 @@ class _ConversationDialog extends StatefulWidget {
 class _ConversationDialogState extends State<_ConversationDialog> {
   final TextEditingController _message = TextEditingController();
   List<Map<String, dynamic>> _items = [];
+  Uint8List? _mediaBytes;
+  String? _filename;
+  String _mediaType = 'photo';
   Timer? _timer;
   String? _error;
   bool _loading = true;
   bool _sending = false;
   bool _fetching = false;
+  bool _canManageMessages = false;
 
   @override
   void initState() {
@@ -575,6 +778,7 @@ class _ConversationDialogState extends State<_ConversationDialog> {
           .toList();
       setState(() {
         _items = items;
+        _canManageMessages = result['can_manage_messages'] == true;
         _error = null;
         _loading = false;
       });
@@ -598,12 +802,23 @@ class _ConversationDialogState extends State<_ConversationDialog> {
 
   Future<void> _send() async {
     final text = _message.text.trim();
-    if (text.isEmpty || text.length > 1000) return;
+    if ((text.isEmpty && _mediaBytes == null) || text.length > 1000) return;
     setState(() => _sending = true);
     try {
-      await widget.api.post('/api/admin/users/${widget.userId}/message', {
-        'text': text,
-      });
+      if (_mediaBytes != null) {
+        await widget.api.upload(
+          '/api/admin/users/${widget.userId}/media',
+          fields: {'media_type': _mediaType, 'caption': text},
+          filename: _filename,
+          bytes: _mediaBytes,
+        );
+        _mediaBytes = null;
+        _filename = null;
+      } else {
+        await widget.api.post('/api/admin/users/${widget.userId}/message', {
+          'text': text,
+        });
+      }
       if (!mounted) return;
       _message.clear();
       await _load();
@@ -615,6 +830,128 @@ class _ConversationDialogState extends State<_ConversationDialog> {
       }
     } finally {
       if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  Future<void> _pickMedia() async {
+    final accept = switch (_mediaType) {
+      'photo' => 'image/jpeg,image/png',
+      'video' => 'video/mp4',
+      'audio' => 'audio/*',
+      'voice' => '.ogg,.oga,audio/ogg',
+      _ => '*/*',
+    };
+    final picker = html.FileUploadInputElement()
+      ..accept = accept
+      ..multiple = false;
+    picker.click();
+    await picker.onChange.first;
+    final files = picker.files;
+    if (files == null || files.isEmpty) return;
+    final file = files.first;
+    final maxBytes = _mediaType == 'photo'
+        ? 10 * 1024 * 1024
+        : 20 * 1024 * 1024;
+    if (file.size <= 0 || file.size > maxBytes) {
+      if (mounted) {
+        toast(
+          context,
+          file.size <= 0
+              ? 'الملف المحدد فارغ'
+              : 'حجم الملف يتجاوز الحد المسموح',
+          error: true,
+        );
+      }
+      return;
+    }
+    final reader = html.FileReader()..readAsDataUrl(file);
+    await reader.onLoad.first;
+    final result = reader.result;
+    if (result is! String || !result.contains(',')) {
+      if (mounted) toast(context, 'تعذرت قراءة الملف', error: true);
+      return;
+    }
+    try {
+      final bytes = base64Decode(result.substring(result.indexOf(',') + 1));
+      if (!mounted) return;
+      setState(() {
+        _mediaBytes = bytes;
+        _filename = file.name;
+      });
+    } on FormatException {
+      if (mounted) toast(context, 'تعذر تحليل الملف المحدد', error: true);
+    }
+  }
+
+  Future<void> _editMessage(Map<String, dynamic> item) async {
+    final controller = TextEditingController(text: item['text']?.toString());
+    final value = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('تعديل الرسالة'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 4,
+          maxLength: 1000,
+          decoration: const InputDecoration(labelText: 'النص الجديد'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (controller.text.trim().isNotEmpty) {
+                Navigator.pop(ctx, controller.text.trim());
+              }
+            },
+            child: const Text('حفظ التعديل'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value == null || !mounted) return;
+    try {
+      await widget.api.put(
+        '/api/admin/users/${widget.userId}/messages/${item['id']}',
+        {'text': value},
+      );
+      await _load();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  Future<void> _deleteMessage(Map<String, dynamic> item) async {
+    final confirmed = await confirmDialog(
+      context,
+      'حذف رسالة المستخدم',
+      'سيحاول البوت حذف الرسالة لدى المستخدم. الحذف متاح خلال 48 ساعة فقط.',
+      okLabel: 'حذف',
+      danger: true,
+    );
+    if (!confirmed || !mounted) return;
+    try {
+      await widget.api.del(
+        '/api/admin/users/${widget.userId}/messages/${item['id']}',
+        {},
+      );
+      await _load();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  Future<void> _downloadMedia(Map<String, dynamic> item) async {
+    try {
+      await widget.api.download(
+        '/api/admin/users/${widget.userId}/messages/${item['id']}/media',
+      );
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
     }
   }
 
@@ -684,7 +1021,25 @@ class _ConversationDialogState extends State<_ConversationDialog> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(item['text']?.toString() ?? ''),
+                                  Text(
+                                    item['is_deleted'] == true ||
+                                            item['is_deleted'] == 1
+                                        ? 'تم حذف هذه الرسالة'
+                                        : (item['text']?.toString() ?? ''),
+                                  ),
+                                  if (item['has_media'] == true) ...[
+                                    const SizedBox(height: 4),
+                                    TextButton.icon(
+                                      onPressed: () => _downloadMedia(item),
+                                      icon: const Icon(
+                                        Icons.download_outlined,
+                                        size: 16,
+                                      ),
+                                      label: Text(
+                                        'تنزيل ${item['filename'] ?? item['media_type'] ?? 'الوسيط'}',
+                                      ),
+                                    ),
+                                  ],
                                   const SizedBox(height: 4),
                                   Text(
                                     '${outgoing ? 'الإدارة' : 'المستخدم'} · '
@@ -719,7 +1074,9 @@ class _ConversationDialogState extends State<_ConversationDialog> {
                                         label: const Text('إعادة الإرسال'),
                                       ),
                                     ),
-                                  ] else if (outgoing) ...[
+                                  ] else if (outgoing &&
+                                      item['is_deleted'] != true &&
+                                      item['is_deleted'] != 1) ...[
                                     const SizedBox(height: 3),
                                     Text(
                                       item['delivery_status'] == 'delivered'
@@ -729,6 +1086,30 @@ class _ConversationDialogState extends State<_ConversationDialog> {
                                         context,
                                       ).textTheme.labelSmall,
                                     ),
+                                    if (_canManageMessages &&
+                                        item['telegram_message_id'] != null)
+                                      Wrap(
+                                        spacing: 4,
+                                        children: [
+                                          TextButton.icon(
+                                            onPressed: () => _editMessage(item),
+                                            icon: const Icon(
+                                              Icons.edit_outlined,
+                                              size: 15,
+                                            ),
+                                            label: const Text('تعديل'),
+                                          ),
+                                          TextButton.icon(
+                                            onPressed: () =>
+                                                _deleteMessage(item),
+                                            icon: const Icon(
+                                              Icons.delete_outline,
+                                              size: 15,
+                                            ),
+                                            label: const Text('حذف'),
+                                          ),
+                                        ],
+                                      ),
                                   ],
                                 ],
                               ),
@@ -748,6 +1129,50 @@ class _ConversationDialogState extends State<_ConversationDialog> {
               ),
             ),
           const SizedBox(height: 8),
+          Row(
+            children: [
+              TextButton.icon(
+                onPressed: _sending ? null : _pickMedia,
+                icon: const Icon(Icons.attach_file),
+                label: Text(
+                  _filename == null ? 'إرفاق وسيط' : _filename!,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              DropdownButton<String>(
+                value: _mediaType,
+                onChanged: _sending
+                    ? null
+                    : (value) {
+                        if (value == null) return;
+                        setState(() {
+                          _mediaType = value;
+                          _mediaBytes = null;
+                          _filename = null;
+                        });
+                      },
+                items: const [
+                  DropdownMenuItem(value: 'photo', child: Text('صورة')),
+                  DropdownMenuItem(value: 'video', child: Text('فيديو')),
+                  DropdownMenuItem(value: 'audio', child: Text('صوت')),
+                  DropdownMenuItem(value: 'voice', child: Text('رسالة صوتية')),
+                  DropdownMenuItem(value: 'document', child: Text('ملف')),
+                ],
+              ),
+              if (_filename != null)
+                IconButton(
+                  tooltip: 'إزالة الملف',
+                  onPressed: _sending
+                      ? null
+                      : () => setState(() {
+                          _mediaBytes = null;
+                          _filename = null;
+                        }),
+                  icon: const Icon(Icons.close),
+                ),
+            ],
+          ),
           Row(
             children: [
               Expanded(
