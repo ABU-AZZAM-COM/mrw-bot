@@ -16,6 +16,7 @@ class _HealthPageState extends State<HealthPage> {
   final Map<String, _HealthCheck> _checks = {};
   Map<String, dynamic>? _overview;
   Map<String, dynamic>? _health;
+  Map<String, dynamic>? _integrations;
   bool _loading = true;
   DateTime? _checkedAt;
 
@@ -66,6 +67,10 @@ class _HealthPageState extends State<HealthPage> {
         _health = await widget.api.get('/api/admin/system/health');
         return _health;
       }),
+      _check('سجل المستودع والفحوص الآلية', () async {
+        _integrations = await widget.api.get('/api/admin/system/integrations');
+        return _integrations;
+      }),
     ]);
     if (!mounted) return;
     setState(() {
@@ -88,6 +93,11 @@ class _HealthPageState extends State<HealthPage> {
     final backupLastSuccess = DateTime.tryParse(
       health?['backup_last_success_at']?.toString() ?? '',
     )?.toLocal();
+    final integrations = _integrations;
+    final github = integrations?['github'] as Map<String, dynamic>?;
+    final services = (integrations?['services'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
 
     return RefreshIndicator(
       onRefresh: _runChecks,
@@ -242,9 +252,153 @@ class _HealthPageState extends State<HealthPage> {
               ),
             ),
           ),
+          const SizedBox(height: 10),
+          SectionCard(
+            'الخدمات المرتبطة بالمشروع',
+            icon: Icons.hub_outlined,
+            child: Column(
+              children: [
+                const Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Text(
+                    'زمن الاستجابة هنا مقاس من متصفحك إلى الخدمة، وليس قياسًا لسرعة الإنترنت العامة.',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                for (final service in services)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      _statusIcon(service['status']?.toString() ?? 'unknown'),
+                      color: _statusColor(
+                        context,
+                        service['status']?.toString() ?? 'unknown',
+                      ),
+                    ),
+                    title: Text(service['name']?.toString() ?? 'خدمة'),
+                    subtitle: Text(service['detail']?.toString() ?? ''),
+                    trailing: Text(
+                      _statusLabel(service['status']?.toString() ?? 'unknown'),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          SectionCard(
+            'سجل المستودع والدمج',
+            icon: Icons.account_tree_outlined,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  github == null
+                      ? 'تعذّر تحميل نشاط المستودع.'
+                      : 'المستودع: ${github['repository'] ?? 'غير معروف'} · '
+                            'آخر تحقق: ${_formatTime(github['checked_at'])}',
+                ),
+                if (github?['error'] != null)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text(
+                      'تعذّر التحقق من GitHub؛ لا يعني ذلك وحده وجود عطل في الخدمة.',
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                const Text(
+                  'آخر الفحوص الآلية',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                for (final run
+                    in (github?['recent_runs'] as List? ?? const [])
+                        .whereType<Map<String, dynamic>>())
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      _statusIcon(run['status']?.toString() ?? 'unknown'),
+                      color: _statusColor(
+                        context,
+                        run['status']?.toString() ?? 'unknown',
+                      ),
+                    ),
+                    title: Text(
+                      run['name']?.toString() ?? 'فحص آلي',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${run['event'] ?? 'حدث غير معروف'} · '
+                      '${_formatTime(run['updated_at'])}',
+                    ),
+                    trailing: Text(
+                      run['conclusion']?.toString().isNotEmpty == true
+                          ? run['conclusion'].toString()
+                          : _statusLabel(run['status']?.toString() ?? ''),
+                    ),
+                  ),
+                if ((github?['recent_runs'] as List? ?? const []).isEmpty)
+                  const Text('لا تتوفر فحوص آلية حديثة.'),
+                const Divider(),
+                const Text(
+                  'آخر الدمجات',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                for (final merge
+                    in (github?['recent_merges'] as List? ?? const [])
+                        .whereType<Map<String, dynamic>>())
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.merge_type_outlined),
+                    title: Text(
+                      '#${merge['number']} · ${merge['title'] ?? 'دمج تغييرات'}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(_formatTime(merge['merged_at'])),
+                  ),
+                if ((github?['recent_merges'] as List? ?? const []).isEmpty)
+                  const Text('لا تتوفر عمليات دمج حديثة.'),
+              ],
+            ),
+          ),
         ],
       ),
     );
+  }
+
+  IconData _statusIcon(String status) => switch (status) {
+    'healthy' => Icons.check_circle_outline,
+    'running' => Icons.autorenew,
+    'degraded' => Icons.error_outline,
+    _ => Icons.help_outline,
+  };
+
+  Color _statusColor(BuildContext context, String status) => switch (status) {
+    'healthy' => const Color(0xFF67D6A6),
+    'running' => Theme.of(context).colorScheme.primary,
+    'degraded' => const Color(0xFFFFD166),
+    _ => Theme.of(context).colorScheme.onSurfaceVariant,
+  };
+
+  String _statusLabel(String status) => switch (status) {
+    'healthy' => 'سليم',
+    'running' => 'قيد التشغيل',
+    'degraded' => 'متدهور',
+    _ => 'تعذّر التحقق',
+  };
+
+  String _formatTime(Object? value) {
+    final parsed = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
+    if (parsed == null) return 'وقت غير متاح';
+    final date =
+        '${parsed.year}-${parsed.month.toString().padLeft(2, '0')}-'
+        '${parsed.day.toString().padLeft(2, '0')}';
+    final time =
+        '${parsed.hour.toString().padLeft(2, '0')}:'
+        '${parsed.minute.toString().padLeft(2, '0')}';
+    return '$date $time';
   }
 }
 

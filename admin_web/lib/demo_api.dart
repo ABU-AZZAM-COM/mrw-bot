@@ -20,6 +20,9 @@ class DemoApi implements AdminApi {
     'max_reports_per_minute': 2,
   };
   final List<Map<String, dynamic>> _audit = [];
+  final List<Map<String, dynamic>> _osintSources = [];
+  int _publicationJobId = 0;
+  Map<String, dynamic>? _publicationJob;
   final List<Map<String, dynamic>> _reports = [
     {
       'id': 101,
@@ -126,11 +129,33 @@ class DemoApi implements AdminApi {
     String path, [
     Map<String, String>? query,
   ]) async {
+    if (path == '/api/admin/publications/summary') {
+      return {
+        'ok': true,
+        'recipients': _users.length,
+        'count_capped': false,
+        'photo_max_bytes': 10 * 1024 * 1024,
+        'other_media_max_bytes': 20 * 1024 * 1024,
+      };
+    }
+    final broadcastStatus = RegExp(
+      r'^/api/admin/broadcast/(\d+)$',
+    ).firstMatch(path);
+    if (broadcastStatus != null) {
+      final id = int.parse(broadcastStatus.group(1)!);
+      if (_publicationJob == null || id != _publicationJobId) {
+        throw ApiException(404, 'not_found');
+      }
+      return {'ok': true, ..._publicationJob!};
+    }
     if (path == '/api/admin/notifications') {
       return {'ok': true, 'items': <Map<String, dynamic>>[], 'unread_count': 0};
     }
     if (path == '/api/admin/session') {
       return {'ok': true, 'role': 'owner', 'admin_id': 0};
+    }
+    if (path == '/api/admin/conversations') {
+      return {'ok': true, 'items': <Map<String, dynamic>>[]};
     }
     if (path == '/api/admin/overview') {
       final counts = <String, int>{
@@ -217,6 +242,48 @@ class DemoApi implements AdminApi {
         'backup_configured': false,
         'emergency': _emergency,
       };
+    }
+    if (path == '/api/admin/system/integrations') {
+      return {
+        'ok': true,
+        'checked_at': DateTime.now().toUtc().toIso8601String(),
+        'services': [
+          {
+            'id': 'render',
+            'name': 'خدمة الاستضافة الحالية',
+            'status': 'healthy',
+            'detail': 'بيانات تدريبية',
+          },
+          {
+            'id': 'database',
+            'name': 'قاعدة البيانات',
+            'status': 'healthy',
+            'detail': 'بيانات تدريبية',
+          },
+          {
+            'id': 'github',
+            'name': 'المستودع والفحوص الآلية',
+            'status': 'unknown',
+            'detail': 'نشاط تدريبي غير متصل',
+          },
+        ],
+        'github': {
+          'repository': 'مثال تدريبي',
+          'checked_at': DateTime.now().toUtc().toIso8601String(),
+          'error': 'demo_data',
+          'recent_runs': [],
+          'recent_merges': [],
+        },
+      };
+    }
+    if (path == '/api/admin/osint/sources') {
+      final reportId = int.tryParse(query?['report_id'] ?? '');
+      final items = reportId == null
+          ? _osintSources
+          : _osintSources
+                .where((item) => item['report_id'] == reportId)
+                .toList();
+      return {'ok': true, 'items': items};
     }
     if (path == '/api/admin/templates') {
       return {
@@ -333,6 +400,30 @@ class DemoApi implements AdminApi {
     String path,
     Map<String, dynamic> body,
   ) async {
+    if (path == '/api/admin/publications/send') {
+      _publicationJobId++;
+      _publicationJob = {
+        'job_id': _publicationJobId,
+        'status': 'completed',
+        'sent': _users.length,
+        'failed': 0,
+        'total': _users.length,
+      };
+      _record('publication_sent', 'تجربة محلية');
+      return {'ok': true, ..._publicationJob!};
+    }
+    final cancelJob = RegExp(
+      r'^/api/admin/broadcast/(\d+)/cancel$',
+    ).firstMatch(path);
+    if (cancelJob != null) {
+      if (_publicationJob == null ||
+          int.parse(cancelJob.group(1)!) != _publicationJobId ||
+          _publicationJob!['status'] != 'running') {
+        throw ApiException(409, 'broadcast_not_active');
+      }
+      _publicationJob!['status'] = 'cancelled';
+      return {'ok': true, 'status': 'cancel_requested'};
+    }
     if (path == '/api/admin/notifications/read-all' ||
         RegExp(r'^/api/admin/notifications/\d+/read$').hasMatch(path)) {
       return {'ok': true};
@@ -362,6 +453,19 @@ class DemoApi implements AdminApi {
     if (path == '/api/admin/broadcast') {
       _record('broadcast', 'تجربة محلية');
       return {'ok': true, 'sent': 3, 'failed': 0, 'total': 3};
+    }
+    if (path == '/api/admin/osint/sources') {
+      final item = {
+        'id': _osintSources.length + 1,
+        'report_id': body['report_id'],
+        'url': body['url'],
+        'title': body['title'],
+        'notes': body['notes'] ?? '',
+        'source_level': body['source_level'] ?? 'unverified',
+        'accessed_at': DateTime.now().toUtc().toIso8601String(),
+      };
+      _osintSources.insert(0, item);
+      return {'ok': true, 'item': item};
     }
     final setStatus = RegExp(
       r'^/api/admin/reports/(\d+)/status$',
@@ -511,6 +615,12 @@ class DemoApi implements AdminApi {
     String path,
     Map<String, dynamic> body,
   ) async {
+    final source = RegExp(r'^/api/admin/osint/sources/(\d+)$').firstMatch(path);
+    if (source != null) {
+      final id = int.parse(source.group(1)!);
+      _osintSources.removeWhere((item) => item['id'] == id);
+      return {'ok': true, 'deleted': true};
+    }
     final match = RegExp(r'^/api/admin/reports/(\d+)$').firstMatch(path);
     if (match == null) throw ApiException(404, 'not_found');
     final report = _report(int.parse(match.group(1)!));
@@ -551,6 +661,31 @@ class DemoApi implements AdminApi {
   @override
   Future<Uint8List> getBytes(String path) async {
     throw ApiException(404, 'demo_photo_unavailable');
+  }
+
+  @override
+  Future<Map<String, dynamic>> upload(
+    String path, {
+    required Map<String, String> fields,
+    String? filename,
+    Uint8List? bytes,
+  }) async {
+    if (path != '/api/admin/publications/preview') {
+      throw ApiException(404, 'not_found');
+    }
+    if ((fields['media_type'] ?? '').isNotEmpty && (bytes?.isEmpty ?? true)) {
+      throw ApiException(400, 'media_required');
+    }
+    _record('publication_preview', fields['media_type'] ?? 'text');
+    return {
+      'ok': true,
+      'preview_sent': true,
+      'media_type': fields['media_type']?.isNotEmpty == true
+          ? fields['media_type']
+          : null,
+      'file_id': bytes == null ? null : 'demo-file-id',
+      'filename': filename,
+    };
   }
 
   void _record(String action, String target) {

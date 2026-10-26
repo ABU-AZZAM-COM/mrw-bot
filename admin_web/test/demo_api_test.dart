@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:admin_web/demo_api.dart';
@@ -76,6 +78,36 @@ void main() {
       final settings = await api.get('/api/admin/settings');
       expect(settings['items']['max_description_length'], 1800);
       expect((await api.get('/api/admin/session'))['role'], 'owner');
+    },
+  );
+
+  test(
+    'demo publication flow stays local and tracks delivery status',
+    () async {
+      final api = DemoApi();
+
+      final summary = await api.get('/api/admin/publications/summary');
+      expect(summary['recipients'], 3);
+      expect(summary['count_capped'], isFalse);
+
+      final preview = await api.upload(
+        '/api/admin/publications/preview',
+        fields: {'caption': 'رسالة تجريبية', 'media_type': 'photo'},
+        filename: 'sample.png',
+        bytes: Uint8List.fromList([1, 2, 3]),
+      );
+      expect(preview['preview_sent'], isTrue);
+      expect(preview['file_id'], 'demo-file-id');
+
+      final job = await api.post('/api/admin/publications/send', {
+        'caption': 'رسالة تجريبية',
+        'media_type': 'photo',
+        'file_id': preview['file_id'],
+      });
+      expect(job['status'], 'completed');
+      final status = await api.get('/api/admin/broadcast/${job['job_id']}');
+      expect(status['sent'], 3);
+      expect(status['failed'], 0);
     },
   );
 

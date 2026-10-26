@@ -455,13 +455,13 @@ class _MainShellState extends State<MainShell> {
           _selectedIndex = 1;
         case 'user_blocked':
           _pendingBlockedUserId = (payload['user_id'] as num?)?.toInt();
-          _selectedIndex = 7;
+          _selectedIndex = 8;
         case 'user_message':
           _pendingUserId = (payload['user_id'] as num?)?.toInt();
-          _selectedIndex = 2;
+          _selectedIndex = 4;
         case 'emergency':
         case 'heartbeat_fail':
-          _selectedIndex = type == 'heartbeat_fail' ? 9 : 3;
+          _selectedIndex = type == 'heartbeat_fail' ? 10 : 3;
         default:
           break;
       }
@@ -527,11 +527,13 @@ class _MainShellState extends State<MainShell> {
     ('المتبلّغون', Icons.people_outline),
     ('التشغيل', Icons.emergency_outlined),
     ('الرسائل', Icons.campaign_outlined),
+    ('المنشورات', Icons.perm_media_outlined),
     ('التصنيفات', Icons.category_outlined),
     ('سجل التدقيق', Icons.history_outlined),
     ('المُقيَّدون', Icons.block_outlined),
     ('التحليلات', Icons.query_stats_outlined),
     ('سلامة النظام', Icons.monitor_heart_outlined),
+    ('التحقق من المصادر', Icons.manage_search_outlined),
     ('التفضيلات', Icons.palette_outlined),
   ];
 
@@ -558,7 +560,15 @@ class _MainShellState extends State<MainShell> {
       },
     ),
     OperationsPage(api: widget.api),
-    MessagingPage(api: widget.api),
+    MessagingPage(
+      key: ValueKey('messages-${_pendingUserId ?? 0}'),
+      api: widget.api,
+      initialUserId: _pendingUserId,
+      onFocusHandled: () {
+        if (mounted) setState(() => _pendingUserId = null);
+      },
+    ),
+    PublicationsPage(api: widget.api),
     TypesPage(api: widget.api),
     AuditPage(api: widget.api),
     BlockedPage(
@@ -571,6 +581,7 @@ class _MainShellState extends State<MainShell> {
     ),
     AnalyticsPage(key: ValueKey('analytics-$_eventRevision'), api: widget.api),
     HealthPage(api: widget.api),
+    OsintPage(api: widget.api),
     PreferencesPage(
       mode: ThemeMode.values.firstWhere(
         (value) => value.name == widget.preferences['mode'],

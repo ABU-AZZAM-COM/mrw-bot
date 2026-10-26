@@ -2,6 +2,7 @@
 python-telegram-bot~=22.0
 python-dotenv~=1.0
 fastapi~=0.115
+python-multipart~=0.0.20
 uvicorn[standard]~=0.34
 pandas~=2.2
 openpyxl~=3.1

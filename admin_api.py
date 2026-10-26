@@ -21,10 +21,12 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import mimetypes
 import os
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -190,6 +192,36 @@ def _audit_date_range(start: str, end: str) -> tuple[str, str] | None:
     )
 
 
+def _sanitize_public_source_url(value: str) -> str | None:
+    try:
+        parsed = urllib.parse.urlsplit(value.strip())
+        hostname = parsed.hostname
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not hostname
+            or parsed.username
+            or parsed.password
+            or hostname.lower() == "localhost"
+            or hostname.lower().endswith(".localhost")
+            or "." not in hostname
+        ):
+            return None
+        try:
+            address = ipaddress.ip_address(hostname)
+        except ValueError:
+            address = None
+        if address is not None and not address.is_global:
+            return None
+        port = parsed.port
+        netloc = hostname.lower() + (f":{port}" if port else "")
+        sanitized = urllib.parse.urlunsplit(
+            (parsed.scheme.lower(), netloc, parsed.path[:1500], "", "")
+        )
+        return sanitized if len(sanitized) <= 1800 else None
+    except (TypeError, ValueError):
+        return None
+
+
 # ==================================================================
 # إشعار المتبلّغ (نفس آلية التكرار التي تستخدمها لوحة تيليغرام)
 # ==================================================================
@@ -312,22 +344,48 @@ async def _send_panel_reply(r: dict[str, Any], reply_text: str) -> bool:
     return await _on_bot_loop(_sender)
 
 
-async def _send_direct_message(user_id: int, text: str) -> bool:
+async def _send_direct_message_result(user_id: int, text: str) -> dict[str, Any]:
     async def _sender():
         bot, loop = _bot_runtime()
         if bot is None:
-            return False
+            return {"sent": False, "error_code": "bot_not_ready"}
         try:
-            await bot.send_message(
+            message = await bot.send_message(
                 chat_id=int(user_id),
                 text=f"📨 رسالة من الجهة المختصة:\n\n{text}",
             )
-            return True
-        except Exception:
-            logger.info("تعذر إرسال رسالة مباشرة للمستخدم", exc_info=True)
-            return False
+            return {
+                "sent": True,
+                "message_id": getattr(message, "message_id", None),
+            }
+        except Exception as exc:
+            from telegram.error import BadRequest, Forbidden, NetworkError  # noqa: PLC0415
 
-    return await _on_bot_loop(_sender)
+            if isinstance(exc, Forbidden):
+                error_code = "user_blocked_bot"
+            elif isinstance(exc, BadRequest):
+                error_code = "recipient_unavailable"
+            elif isinstance(exc, NetworkError):
+                error_code = "telegram_network_error"
+            else:
+                error_code = "telegram_send_failed"
+            logger.info(
+                "تعذر إرسال رسالة مباشرة للمستخدم (%s)",
+                error_code,
+                exc_info=True,
+            )
+            return {"sent": False, "error_code": error_code}
+
+    result = await _on_bot_loop_value(_sender)
+    return result if isinstance(result, dict) else {
+        "sent": False,
+        "error_code": "bot_not_ready",
+    }
+
+
+async def _send_direct_message(user_id: int, text: str) -> bool:
+    result = await _send_direct_message_result(user_id, text)
+    return result.get("sent") is True
 
 
 async def _send_block_notice(user_id: int, kind: str, reason: str, db) -> bool:
@@ -1062,18 +1120,57 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("not_found", 404)
         if not await db.user_contact_enabled(uid):
             return bad("direct_contact_disabled", 403)
-        sent = await _send_direct_message(uid, text)
-        if not sent:
-            await db.audit(
-                _admin_actor(request), "user_message_failed", str(uid), text[:120]
-            )
-            return bad("telegram_send_failed", 502)
         await db.open_user_conversation(uid)
-        await db.add_user_message(uid, "out", text, _admin_actor(request))
-        await db.audit(
-            _admin_actor(request), "user_message", str(uid), f"sent: {text[:120]}"
+        result = await _send_direct_message_result(uid, text)
+        sent = result.get("sent") is True
+        message_id = await db.add_user_message(
+            uid,
+            "out",
+            text,
+            _admin_actor(request),
+            delivery_status="delivered" if sent else "failed",
+            error_code=None if sent else str(result.get("error_code") or "telegram_send_failed"),
         )
-        return JSONResponse({"ok": True, "sent": True})
+        if not sent:
+            error_code = str(result.get("error_code") or "telegram_send_failed")
+            await db.audit(
+                _admin_actor(request),
+                "user_message_failed",
+                str(uid),
+                f"message_id={message_id}; error={error_code}",
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "sent": False,
+                    "message_id": message_id,
+                    "error": error_code,
+                },
+                status_code=502,
+            )
+        await db.audit(
+            _admin_actor(request),
+            "user_message",
+            str(uid),
+            f"message_id={message_id}; sent",
+        )
+        return JSONResponse({"ok": True, "sent": True, "message_id": message_id})
+
+    @app.get("/api/admin/conversations")
+    async def conversations(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        try:
+            limit = min(int(request.query_params.get("limit", "100") or 100), 200)
+            if limit < 1:
+                return bad("bad_query")
+        except ValueError:
+            return bad("bad_query")
+        items = await db_of().list_user_conversations(
+            request.query_params.get("q"), limit
+        )
+        return JSONResponse({"ok": True, "items": items})
 
     @app.get("/api/admin/users/{uid}/messages")
     async def user_messages(uid: int, request: Request) -> JSONResponse:
@@ -1094,6 +1191,74 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "ok": True,
             "items": await db.list_user_messages(uid, after_id, limit),
         })
+
+    @app.post("/api/admin/users/{uid}/messages/read")
+    async def mark_messages_read(uid: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        through_message_id = body.get("last_message_id")
+        if through_message_id is not None and (
+            type(through_message_id) is not int or through_message_id < 0
+        ):
+            return bad("bad_request")
+        db = db_of()
+        if not await db.user_profile(uid):
+            return bad("not_found", 404)
+        last_read_id = await db.mark_user_conversation_read(
+            uid, through_message_id
+        )
+        return JSONResponse({"ok": True, "last_read_message_id": last_read_id})
+
+    @app.post("/api/admin/users/{uid}/messages/{message_id}/retry")
+    async def retry_user_message(
+        uid: int, message_id: int, request: Request
+    ) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        if not await db.user_profile(uid):
+            return bad("not_found", 404)
+        if not await db.user_contact_enabled(uid):
+            return bad("direct_contact_disabled", 403)
+        rows = await db.list_user_messages(uid, max(0, message_id - 1), 1)
+        if not rows or int(rows[0]["id"]) != message_id:
+            return bad("not_found", 404)
+        message = rows[0]
+        if message.get("direction") != "out":
+            return bad("message_not_outgoing", 400)
+        if message.get("delivery_status") != "failed":
+            return bad("message_not_retryable", 409)
+        result = await _send_direct_message_result(uid, str(message["text"]))
+        sent = result.get("sent") is True
+        error_code = None if sent else str(
+            result.get("error_code") or "telegram_send_failed"
+        )
+        await db.update_user_message_delivery(
+            message_id,
+            "delivered" if sent else "failed",
+            error_code,
+        )
+        await db.audit(
+            _admin_actor(request),
+            "user_message_retry",
+            str(uid),
+            f"message_id={message_id}; "
+            f"{'sent' if sent else 'error=' + str(error_code)}",
+        )
+        if not sent:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "sent": False,
+                    "message_id": message_id,
+                    "error": error_code,
+                },
+                status_code=502,
+            )
+        return JSONResponse({"ok": True, "sent": True, "message_id": message_id})
 
     @app.put("/api/admin/users/{uid}/contact")
     async def set_user_contact(uid: int, request: Request) -> JSONResponse:
@@ -1129,6 +1294,81 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "changed": changed,
             "notified": notified,
         })
+
+    @app.get("/api/admin/osint/sources")
+    async def osint_sources(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        raw_report_id = request.query_params.get("report_id")
+        try:
+            report_id = int(raw_report_id) if raw_report_id else None
+            limit = min(int(request.query_params.get("limit", "100") or 100), 500)
+            if report_id is not None and report_id <= 0 or limit < 1:
+                return bad("bad_query")
+        except ValueError:
+            return bad("bad_query")
+        items = await db_of().list_osint_sources(report_id, limit)
+        return JSONResponse({"ok": True, "items": items})
+
+    @app.post("/api/admin/osint/sources")
+    async def osint_source_add(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        title = str(body.get("title") or "").strip()
+        notes = str(body.get("notes") or "").strip()
+        source_level = str(body.get("source_level") or "")
+        source_url = _sanitize_public_source_url(str(body.get("url") or ""))
+        if not source_url:
+            return bad("invalid_public_source_url")
+        if not 2 <= len(title) <= 180:
+            return bad("title_length")
+        if len(notes) > 2000:
+            return bad("notes_too_long")
+        if source_level not in {"primary", "secondary", "unverified"}:
+            return bad("bad_source_level")
+        raw_report_id = body.get("report_id")
+        if raw_report_id is None:
+            report_id = None
+        elif isinstance(raw_report_id, int) and not isinstance(raw_report_id, bool):
+            report_id = raw_report_id
+        else:
+            return bad("bad_report_id")
+        db = db_of()
+        if report_id is not None and not await db.get_by_id(report_id):
+            return bad("not_found", 404)
+        item = await db.add_osint_source(
+            report_id,
+            source_url,
+            title,
+            notes,
+            source_level,
+            _admin_actor(request),
+        )
+        await db.audit(
+            _admin_actor(request),
+            "osint_source_added",
+            str(report_id or "general"),
+            f"source_id={item['id']}; level={source_level}",
+        )
+        return JSONResponse({"ok": True, "item": item})
+
+    @app.delete("/api/admin/osint/sources/{source_id}")
+    async def osint_source_delete(
+        source_id: int, request: Request
+    ) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        deleted = await db_of().delete_osint_source(source_id)
+        if not deleted:
+            return bad("not_found", 404)
+        await db_of().audit(
+            _admin_actor(request), "osint_source_deleted", str(source_id), ""
+        )
+        return JSONResponse({"ok": True, "deleted": True})
 
     # ------------------------------------------------------------
     # 4) سجل التدقيق + التصدير (لتكميل أروقة الالتزام)
@@ -1435,6 +1675,19 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             payload = texts.BROADCAST_NOTIF.format(text=utils.esc(text))
             try:
                 for index, uid in enumerate(ids, 1):
+                    if index == 1 or index % 5 == 0:
+                        job = await db.get_broadcast_job(job_id)
+                        if job and job.get("status") == "cancel_requested":
+                            await db.update_broadcast_job(
+                                job_id, sent, failed, status="cancelled"
+                            )
+                            await db.audit(
+                                actor_id,
+                                "broadcast_cancelled",
+                                str(job_id),
+                                f"توقف بعد نجاح {sent} وتعذر {failed}",
+                            )
+                            return
                     try:
                         await bot.send_message(
                             chat_id=uid, text=payload, parse_mode=_parse_html()
@@ -1446,9 +1699,15 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                     if index % 20 == 0:
                         await db.update_broadcast_job(job_id, sent, failed)
                     await asyncio.sleep(0.08)
-                await db.update_broadcast_job(
-                    job_id, sent, failed, status="completed"
-                )
+                final_status = await db.finish_broadcast_job(job_id, sent, failed)
+                if final_status == "cancelled":
+                    await db.audit(
+                        actor_id,
+                        "broadcast_cancelled",
+                        str(job_id),
+                        f"توقف بعد نجاح {sent} وتعذر {failed}",
+                    )
+                    return
                 await db.audit(
                     actor_id,
                     "broadcast",
@@ -1488,6 +1747,268 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "total": len(ids),
         })
 
+    @app.get("/api/admin/publications/summary")
+    async def publications_summary(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        ids, overflow = await db_of().all_user_ids(cap=100_000)
+        return JSONResponse({
+            "ok": True,
+            "recipients": len(ids),
+            "count_capped": overflow,
+            "photo_max_bytes": 10 * 1024 * 1024,
+            "other_media_max_bytes": 20 * 1024 * 1024,
+        })
+
+    @app.post("/api/admin/publications/preview")
+    async def publication_preview(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        try:
+            form = await request.form()
+        except Exception:
+            logger.exception("تعذر قراءة ملف معاينة المنشور")
+            return bad("multipart_unavailable", 503)
+        caption = str(form.get("caption") or "").strip()
+        media_type = str(form.get("media_type") or "").strip()
+        upload = form.get("media")
+        if len(caption) > 900:
+            return bad("caption_too_long")
+        if media_type not in {"", "photo", "video", "document"}:
+            return bad("bad_media_type")
+        if media_type and not upload:
+            return bad("media_required")
+        if not media_type and len(caption) < 3:
+            return bad("publication_content_required")
+        media_data = b""
+        filename = "attachment"
+        if media_type:
+            if not hasattr(upload, "read"):
+                return bad("bad_media")
+            filename = os.path.basename(str(getattr(upload, "filename", "") or "attachment"))
+            filename = filename.replace("\x00", "")[:180] or "attachment"
+            limit = 10 * 1024 * 1024 if media_type == "photo" else 20 * 1024 * 1024
+            media_data = await upload.read(limit + 1)
+            if len(media_data) > limit:
+                return bad("media_too_large", 413)
+            if not media_data:
+                return bad("empty_media")
+            if media_type == "photo" and _image_media_type(media_data, filename) not in {
+                "image/jpeg",
+                "image/png",
+            }:
+                return bad("unsupported_photo_format")
+            if media_type == "video" and (
+                len(media_data) < 12 or media_data[4:8] != b"ftyp"
+            ):
+                return bad("invalid_video_format")
+
+        import config  # noqa: PLC0415
+        from telegram import InputFile  # noqa: PLC0415
+        from telegram.error import BadRequest, Forbidden, NetworkError  # noqa: PLC0415
+
+        admin_id = _admin_actor(request)
+        if admin_id not in config.ADMIN_IDS:
+            admin_id = config.ADMIN_IDS[0] if config.ADMIN_IDS else 0
+        if admin_id <= 0:
+            return bad("preview_admin_not_configured", 503)
+        bot, _loop = _bot_runtime()
+        if bot is None:
+            return bad("bot_not_ready", 503)
+
+        async def _send_preview():
+            try:
+                text = "معاينة منشور من لوحة الإدارة"
+                if caption:
+                    text += f"\n\n{caption}"
+                if not media_type:
+                    await bot.send_message(chat_id=admin_id, text=text)
+                    return {"file_id": None}
+                media_file = InputFile(media_data, filename=filename)
+                if media_type == "photo":
+                    message = await bot.send_photo(
+                        chat_id=admin_id, photo=media_file, caption=text
+                    )
+                    media = message.photo[-1] if message.photo else None
+                elif media_type == "video":
+                    message = await bot.send_video(
+                        chat_id=admin_id, video=media_file, caption=text
+                    )
+                    media = message.video
+                else:
+                    message = await bot.send_document(
+                        chat_id=admin_id, document=media_file, caption=text
+                    )
+                    media = message.document
+                if media is None or not getattr(media, "file_id", None):
+                    return {"error_code": "preview_media_id_missing"}
+                return {"file_id": media.file_id}
+            except Forbidden:
+                return {"error_code": "preview_admin_unreachable"}
+            except BadRequest:
+                return {"error_code": "preview_content_rejected"}
+            except NetworkError:
+                return {"error_code": "telegram_network_error"}
+            except Exception:
+                logger.exception("فشل إرسال معاينة المنشور")
+                return {"error_code": "preview_send_failed"}
+
+        result = await _on_bot_loop_value(_send_preview)
+        if not isinstance(result, dict):
+            return bad("bot_not_ready", 503)
+        if result.get("error_code"):
+            return bad(str(result["error_code"]), 502)
+        await db_of().audit(
+            _admin_actor(request),
+            "publication_preview",
+            str(media_type or "text"),
+            "أُرسلت المعاينة إلى مشرف",
+        )
+        return JSONResponse({
+            "ok": True,
+            "preview_sent": True,
+            "media_type": media_type or None,
+            "file_id": result.get("file_id"),
+            "filename": filename if media_type else None,
+        })
+
+    @app.post("/api/admin/publications/send")
+    async def publication_send(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        caption = str(body.get("caption") or "").strip()
+        media_type = str(body.get("media_type") or "").strip()
+        file_id = str(body.get("file_id") or "").strip()
+        if len(caption) > 900:
+            return bad("caption_too_long")
+        if media_type not in {"", "photo", "video", "document"}:
+            return bad("bad_media_type")
+        if media_type and not file_id:
+            return bad("media_preview_required")
+        if not media_type and len(caption) < 3:
+            return bad("publication_content_required")
+        db = db_of()
+        ids, overflow = await db.all_user_ids(cap=100_000)
+        if overflow:
+            return bad("recipient_limit_exceeded", 413)
+        if not ids:
+            return JSONResponse({"ok": True, "sent": 0, "failed": 0, "total": 0})
+        bot, loop = _bot_runtime()
+        if bot is None:
+            return bad("bot_not_ready", 503)
+        actor_id = _admin_actor(request)
+        job_id = await db.create_broadcast_job(
+            caption or f"منشور وسائط: {media_type}", actor_id, len(ids)
+        )
+        if job_id is None:
+            return bad("broadcast_in_progress", 409)
+
+        async def _send_to_user(user_id: int) -> None:
+            text = f"📨 منشور من الجهة المختصة\n\n{caption}".strip()
+            if not media_type:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=texts.BROADCAST_NOTIF.format(text=utils.esc(caption)),
+                    parse_mode=_parse_html(),
+                )
+                return
+            send_method = {
+                "photo": bot.send_photo,
+                "video": bot.send_video,
+                "document": bot.send_document,
+            }[media_type]
+            media_field = {
+                "photo": "photo",
+                "video": "video",
+                "document": "document",
+            }[media_type]
+            await send_method(
+                chat_id=user_id,
+                caption=text,
+                **{media_field: file_id},
+            )
+
+        async def _send_all():
+            sent = failed = 0
+            try:
+                for index, uid in enumerate(ids, 1):
+                    if index == 1 or index % 5 == 0:
+                        job = await db.get_broadcast_job(job_id)
+                        if job and job.get("status") == "cancel_requested":
+                            await db.update_broadcast_job(
+                                job_id, sent, failed, status="cancelled"
+                            )
+                            await db.audit(
+                                actor_id,
+                                "publication_cancelled",
+                                str(job_id),
+                                f"نجح {sent} وتعذر {failed}",
+                            )
+                            return
+                    try:
+                        await _send_to_user(uid)
+                        sent += 1
+                    except Exception:
+                        failed += 1
+                        logger.debug("Publication delivery failed for one recipient")
+                    if index % 10 == 0:
+                        await db.update_broadcast_job(job_id, sent, failed)
+                    await asyncio.sleep(0.1)
+                final_status = await db.finish_broadcast_job(job_id, sent, failed)
+                if final_status == "cancelled":
+                    await db.audit(
+                        actor_id,
+                        "publication_cancelled",
+                        str(job_id),
+                        f"نجح {sent} وتعذر {failed}",
+                    )
+                    return
+                await db.audit(
+                    actor_id,
+                    "publication_sent",
+                    str(job_id),
+                    f"type={media_type or 'text'}; sent={sent}; failed={failed}",
+                )
+            except Exception:
+                logger.exception("Publication job %s failed", job_id)
+                await db.update_broadcast_job(
+                    job_id, sent, failed, status="failed"
+                )
+                await db.audit(
+                    actor_id,
+                    "publication_failed",
+                    str(job_id),
+                    f"sent={sent}; failed={failed}",
+                )
+
+        def _schedule():
+            asyncio.create_task(_send_all())
+
+        try:
+            loop.call_soon_threadsafe(_schedule)
+        except RuntimeError:
+            await db.update_broadcast_job(job_id, 0, 0, status="failed")
+            return bad("bot_not_ready", 503)
+        await db.audit(
+            actor_id,
+            "publication_started",
+            str(job_id),
+            f"type={media_type or 'text'}; recipients={len(ids)}",
+        )
+        return JSONResponse({
+            "ok": True,
+            "job_id": job_id,
+            "status": "running",
+            "sent": 0,
+            "failed": 0,
+            "total": len(ids),
+            "media_type": media_type or None,
+        })
+
     @app.get("/api/admin/broadcast/{job_id}")
     async def broadcast_status(job_id: int, request: Request) -> JSONResponse:
         refuse = _auth(request)
@@ -1497,6 +2018,19 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if not job:
             return bad("not_found", 404)
         return JSONResponse({"ok": True, **job})
+
+    @app.post("/api/admin/broadcast/{job_id}/cancel")
+    async def broadcast_cancel(job_id: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        if not await db.request_broadcast_cancel(job_id):
+            return bad("broadcast_not_active", 409)
+        await db.audit(
+            _admin_actor(request), "broadcast_cancel_requested", str(job_id), ""
+        )
+        return JSONResponse({"ok": True, "status": "cancel_requested"})
 
     @app.get("/api/admin/templates")
     async def templates_get(request: Request) -> JSONResponse:
@@ -1754,6 +2288,95 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "backup_last_success_at": await db.get_state("backup_last_success_at"),
             "backup_last_status": await db.get_state("backup_last_status"),
             "emergency": await db.get_state("emergency") == "1",
+        })
+
+    @app.get("/api/admin/system/integrations")
+    async def system_integrations(request: Request) -> JSONResponse:
+        """Read-only snapshot of this deployment and public GitHub activity."""
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        try:
+            database_ready = bool(db.health_check())
+        except Exception:
+            database_ready = False
+            logger.warning("تعذر فحص قاعدة البيانات لملخص التكاملات", exc_info=True)
+        try:
+            heartbeat = await db.get_state("bot_last_heartbeat")
+            heartbeat_at = (
+                datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
+                if heartbeat
+                else None
+            )
+            if heartbeat_at and heartbeat_at.tzinfo is None:
+                heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+            bot_alive = bool(
+                heartbeat_at
+                and 0 <= (
+                    datetime.now(timezone.utc) - heartbeat_at
+                ).total_seconds() < 180
+            )
+        except (TypeError, ValueError):
+            bot_alive = False
+        except Exception:
+            logger.warning("تعذرت قراءة نبضة البوت للتكاملات", exc_info=True)
+            bot_alive = False
+
+        import hub_backup  # noqa: PLC0415
+        import integrations_monitor  # noqa: PLC0415
+
+        backup_configured = hub_backup.is_configured()
+        backup_status = await db.get_state("backup_last_status")
+        github = await asyncio.to_thread(integrations_monitor.github_activity)
+        bot_ready = await _bot_ready()
+        services = [
+            {
+                "id": "render",
+                "name": "خدمة الاستضافة الحالية",
+                "status": "healthy",
+                "detail": "تخدم هذا الطلب الآن",
+            },
+            {
+                "id": "database",
+                "name": "قاعدة البيانات",
+                "status": "healthy" if database_ready else "degraded",
+                "detail": db.backend,
+            },
+            {
+                "id": "telegram",
+                "name": "البوت والنبض",
+                "status": (
+                    "healthy" if bot_ready and bot_alive else "degraded"
+                ),
+                "detail": "نبضة حديثة" if bot_alive else "لا توجد نبضة حديثة",
+            },
+            {
+                "id": "backup",
+                "name": "النسخ الاحتياطي",
+                "status": (
+                    "unknown"
+                    if not backup_configured or not backup_status
+                    else "healthy"
+                    if backup_status == "success"
+                    else "degraded"
+                ),
+                "detail": backup_status or (
+                    "غير مهيأ" if not backup_configured else "لم تُسجل محاولة"
+                ),
+            },
+            {
+                "id": "github",
+                "name": "المستودع والفحوص الآلية",
+                "status": github["status"],
+                "detail": github.get("error") or github["repository"],
+            },
+        ]
+        return JSONResponse({
+            "ok": True,
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "services": services,
+            "github": github,
         })
 
     # ------------------------------------------------------------
