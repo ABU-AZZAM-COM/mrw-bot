@@ -26,6 +26,11 @@ cd admin_web
 2. يبني Flutter Web بـ `--base-href=/admin/`.
 3. يمرّر الإصدار عبر `--dart-define=APP_VERSION=...`.
 4. ينسخ المخرجات إلى `dist/` (المجلد الذي يخدمه خادم البوت).
+5. يزيد رقمًا فرعيًا إذا تكرر بناء إصدار في اليوم نفسه.
+
+أضف ملخص الإصدار وميزاته إلى أعلى قائمة `releaseNotes` في
+`lib/release_notes.dart` عند تجهيز كل إصدار؛ تعرض صفحة «ما الجديد» السجل
+بالإصدارات وتُبرز الإصدار المثبت.
 
 للاتصال بخادم مختلف وقت البناء:
 
@@ -64,6 +69,7 @@ $env:API_BASE = "https://example.com"
 | عميل الـ API | `lib/web_api.dart` |
 | الثيمات | `lib/app_theme.dart` |
 | الحقوق والإصدار | `lib/app_credits.dart` |
+| سجل الإصدارات | `lib/release_notes.dart` و `lib/pages/whats_new_page.dart` |
 
 ## الحقوق
 
