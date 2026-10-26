@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import mimetypes
 import tempfile
@@ -97,6 +98,18 @@ def _db(context: ContextTypes.DEFAULT_TYPE) -> Database:
     return context.bot_data["db"]
 
 
+async def _welcome_content(db: Database) -> tuple[str, ParseMode | None]:
+    raw = await db.get_state("bot_profile")
+    try:
+        profile = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        profile = {}
+    custom = profile.get("welcome_text") if isinstance(profile, dict) else None
+    if isinstance(custom, str) and custom.strip():
+        return custom.strip(), None
+    return texts.WELCOME, ParseMode.HTML
+
+
 # ==================================================================
 # نقطة الدخول: /start أو /report
 # ==================================================================
@@ -121,12 +134,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.log_event(user.id, "start")
 
     context.user_data.clear()
-    welcome = texts.WELCOME
+    welcome, parse_mode = await _welcome_content(db)
     if await guards.is_emergency(db):
-        welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
+        if parse_mode == ParseMode.HTML:
+            welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
+        else:
+            welcome = "🛑 استقبال البلاغات الجديدة متوقف مؤقتًا.\n\n" + welcome
     await update.effective_message.reply_text(
         welcome,
-        parse_mode=ParseMode.HTML,
+        parse_mode=parse_mode,
         reply_markup=main_menu_kb(),
     )
     return ConversationHandler.END
@@ -1452,12 +1468,15 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # --- القائمة الرئيسية ---
     if parts[1] == "menu":
-        welcome = texts.WELCOME
+        welcome, parse_mode = await _welcome_content(db)
         if await guards.is_emergency(db):
-            welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
+            if parse_mode == ParseMode.HTML:
+                welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
+            else:
+                welcome = "🛑 استقبال البلاغات الجديدة متوقف مؤقتًا.\n\n" + welcome
         await query.edit_message_text(
             welcome,
-            parse_mode=ParseMode.HTML,
+            parse_mode=parse_mode,
             reply_markup=main_menu_kb(),
         )
         return ConversationHandler.END

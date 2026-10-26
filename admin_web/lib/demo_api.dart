@@ -19,6 +19,14 @@ class DemoApi implements AdminApi {
     'max_reports_per_day': 10,
     'max_reports_per_minute': 2,
   };
+  final Map<String, dynamic> _botProfile = {
+    'name': 'بوت البلاغات',
+    'short_description': 'استقبال ومتابعة البلاغات.',
+    'description': 'قناة لاستقبال البلاغات ومتابعتها.',
+    'welcome_text':
+        'أهلًا بك. يمكنك إرسال بلاغ ومتابعة حالته من هذه المحادثة.\nاختر الخدمة التي تحتاجها:',
+    'username': 'demo_bot',
+  };
   final List<Map<String, dynamic>> _audit = [];
   final List<Map<String, dynamic>> _osintSources = [];
   int _publicationJobId = 0;
@@ -153,6 +161,14 @@ class DemoApi implements AdminApi {
     }
     if (path == '/api/admin/session') {
       return {'ok': true, 'role': 'owner', 'admin_id': 0};
+    }
+    if (path == '/api/admin/bot-profile') {
+      return {
+        'ok': true,
+        'items': {..._botProfile},
+        'bot_ready': true,
+        'can_edit': true,
+      };
     }
     if (path == '/api/admin/conversations') {
       return {'ok': true, 'items': <Map<String, dynamic>>[]};
@@ -670,6 +686,18 @@ class DemoApi implements AdminApi {
     String? filename,
     Uint8List? bytes,
   }) async {
+    if (path == '/api/admin/bot-profile') {
+      _botProfile
+        ..['name'] = fields['name'] ?? ''
+        ..['short_description'] = fields['short_description'] ?? ''
+        ..['description'] = fields['description'] ?? ''
+        ..['welcome_text'] = fields['welcome_text'] ?? '';
+      _record('bot_profile_changed', filename ?? 'تحديث نصوص الهوية');
+      return {
+        'ok': true,
+        'items': {..._botProfile},
+      };
+    }
     if (path != '/api/admin/publications/preview') {
       throw ApiException(404, 'not_found');
     }

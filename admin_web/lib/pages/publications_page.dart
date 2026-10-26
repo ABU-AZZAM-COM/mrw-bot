@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:typed_data';
 
@@ -94,16 +95,32 @@ class _PublicationsPageState extends State<PublicationsPage> {
       return;
     }
     final reader = html.FileReader();
-    reader.readAsArrayBuffer(file);
+    reader.readAsDataUrl(file);
     await reader.onLoad.first;
     final result = reader.result;
-    if (result is! ByteBuffer) {
+    if (result is! String) {
       if (mounted) toast(context, 'تعذرت قراءة الملف', error: true);
+      return;
+    }
+    final separator = result.indexOf(',');
+    if (separator < 0) {
+      if (mounted) toast(context, 'تعذر تحليل الملف المحدد', error: true);
+      return;
+    }
+    late final Uint8List bytes;
+    try {
+      bytes = base64Decode(result.substring(separator + 1));
+    } on FormatException {
+      if (mounted) toast(context, 'تعذر تحليل الملف المحدد', error: true);
+      return;
+    }
+    if (bytes.isEmpty) {
+      if (mounted) toast(context, 'الملف المحدد فارغ أو تعذرت قراءته', error: true);
       return;
     }
     if (!mounted) return;
     setState(() {
-      _mediaBytes = Uint8List.view(result);
+      _mediaBytes = bytes;
       _filename = file.name;
       _previewFileId = null;
       _previewSent = false;

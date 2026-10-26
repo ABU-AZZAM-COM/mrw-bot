@@ -181,6 +181,28 @@ String errMsg(Object e) {
         return 'إعداد رموز الإدارة غير صالح على الخادم';
       case 'bot_not_ready':
         return 'البوت قيد التشغيل — أعِد المحاولة بعد لحظات';
+      case 'bad_bot_name':
+        return 'اسم البوت مطلوب وبحد أقصى 64 حرفاً';
+      case 'short_description_too_long':
+        return 'النبذة القصيرة تتجاوز 120 حرفاً';
+      case 'description_too_long':
+        return 'الوصف الكامل يتجاوز 512 حرفاً';
+      case 'bad_welcome_text':
+        return 'رسالة البداية مطلوبة ويجب ألا تتجاوز 3500 حرف';
+      case 'profile_photo_too_large':
+        return 'حجم صورة الحساب يتجاوز 10 ميغابايت';
+      case 'profile_photo_must_be_jpeg':
+        return 'صورة الحساب يجب أن تكون بصيغة JPEG';
+      case 'telegram_profile_method_unavailable':
+        return 'إصدار واجهة تيليجرام لا يدعم تعديل بيانات الحساب المطلوبة';
+      case 'telegram_photo_update_unavailable':
+        return 'تحديث صورة الحساب غير مدعوم في إصدار مكتبة تيليجرام المثبت';
+      case 'telegram_profile_update_rejected':
+      case 'telegram_photo_update_rejected':
+      case 'telegram_profile_update_failed':
+        return 'رفضت تيليجرام التغيير. راجع البيانات وحاول مرة أخرى';
+      case 'multipart_unavailable':
+        return 'تعذر استقبال الملف على الخادم';
       case 'telegram_send_failed':
         return 'تعذر تسليم الرسالة عبر Telegram؛ قد يكون المستخدم حظر البوت';
       case 'reason_required':

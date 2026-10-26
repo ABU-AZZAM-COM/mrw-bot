@@ -1335,6 +1335,16 @@ settings_endpoint = next(
     if getattr(route, "path", None) == "/api/admin/settings"
     and "PUT" in getattr(route, "methods", set())
 )
+bot_profile_get_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/bot-profile"
+    and "GET" in getattr(route, "methods", set())
+)
+bot_profile_put_endpoint = next(
+    route.endpoint for route in api_app.routes
+    if getattr(route, "path", None) == "/api/admin/bot-profile"
+    and "POST" in getattr(route, "methods", set())
+)
 auto_freeze_endpoint = next(
     route.endpoint for route in api_app.routes
     if getattr(route, "path", None) == "/api/admin/system/auto-freeze"
@@ -1953,6 +1963,108 @@ class _Request:
 
     async def is_disconnected(self):
         return False
+
+
+class _ProfileBot:
+    def __init__(self):
+        self.profile = {
+            "name": "قديم",
+            "short_description": "نبذة قديمة",
+            "description": "وصف قديم",
+        }
+        self.calls = []
+
+    async def get_my_name(self):
+        return SimpleNamespace(name=self.profile["name"])
+
+    async def get_my_short_description(self):
+        return SimpleNamespace(short_description=self.profile["short_description"])
+
+    async def get_my_description(self):
+        return SimpleNamespace(description=self.profile["description"])
+
+    async def set_my_name(self, name):
+        self.calls.append(("name", name))
+        self.profile["name"] = name
+        return True
+
+    async def set_my_short_description(self, short_description):
+        self.calls.append(("short_description", short_description))
+        self.profile["short_description"] = short_description
+        return True
+
+    async def set_my_description(self, description):
+        self.calls.append(("description", description))
+        self.profile["description"] = description
+        return True
+
+    async def _post(self, endpoint, data):
+        self.calls.append((endpoint, data["photo"]))
+        return True
+
+
+profile_bot = _ProfileBot()
+profile_apply_result = asyncio.run(admin_api._set_telegram_bot_profile(
+    profile_bot,
+    {
+        "name": "اسم جديد",
+        "short_description": "نبذة جديدة",
+        "description": "وصف جديد",
+    },
+    b"\xff\xd8\xffprofile",
+))
+assert profile_apply_result["ok"] is True
+assert profile_bot.profile == {
+    "name": "اسم جديد",
+    "short_description": "نبذة جديدة",
+    "description": "وصف جديد",
+}
+assert [call[0] for call in profile_bot.calls] == [
+    "name", "short_description", "description", "setMyProfilePhoto"
+]
+print("admin_api: Telegram bot profile and JPEG updates use the bot API")
+
+original_bot_profile_app = _bot_main.app
+old_saved_bot_profile = asyncio.run(pdb.get_state("bot_profile"))
+_bot_main.app = SimpleNamespace(bot_data={"db": pdb}, bot=None)
+asyncio.run(pdb.set_state(
+    "bot_profile",
+    json.dumps({"welcome_text": "نص بداية مخصص"}, ensure_ascii=False),
+))
+profile_get_request = _Request({})
+profile_get_request.url.path = "/api/admin/bot-profile"
+profile_get_request.state.admin_role = "owner"
+profile_payload = json.loads(asyncio.run(
+    bot_profile_get_endpoint(profile_get_request)
+).body)
+assert profile_payload["bot_ready"] is False
+assert profile_payload["items"]["welcome_text"] == "نص بداية مخصص"
+custom_welcome, custom_parse_mode = asyncio.run(handlers._welcome_content(pdb))
+assert custom_welcome == "نص بداية مخصص"
+assert custom_parse_mode is None
+if old_saved_bot_profile is None:
+    asyncio.run(pdb.set_state("bot_profile", None))
+else:
+    asyncio.run(pdb.set_state("bot_profile", old_saved_bot_profile))
+_bot_main.app = original_bot_profile_app
+print("admin_api: bot profile settings are persisted and load without a live bot")
+old_profile_tokens = _os.environ.get("ADMIN_API_TOKENS_JSON")
+try:
+    _os.environ["ADMIN_API_TOKENS_JSON"] = json.dumps([
+        {"token": "profile-operator-token", "role": "operator", "admin_id": 77}
+    ])
+    non_owner_request = _Request({})
+    non_owner_request.method = "POST"
+    non_owner_request.url.path = "/api/admin/bot-profile"
+    non_owner_request.headers = {"x-admin-token": "profile-operator-token"}
+    profile_forbidden = asyncio.run(bot_profile_put_endpoint(non_owner_request))
+    assert profile_forbidden.status_code == 403
+finally:
+    if old_profile_tokens is None:
+        _os.environ.pop("ADMIN_API_TOKENS_JSON", None)
+    else:
+        _os.environ["ADMIN_API_TOKENS_JSON"] = old_profile_tokens
+print("admin_api: bot profile editing is restricted to the owner role")
 
 notifications_api_response = asyncio.run(
     notifications_endpoint(_Request({}), unread=False, limit=20)

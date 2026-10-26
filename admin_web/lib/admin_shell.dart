@@ -526,6 +526,7 @@ class _MainShellState extends State<MainShell> {
     ('البلاغات', Icons.report_outlined),
     ('المتبلّغون', Icons.people_outline),
     ('التشغيل', Icons.emergency_outlined),
+    ('هوية البوت', Icons.smart_toy_outlined),
     ('الرسائل', Icons.campaign_outlined),
     ('المنشورات', Icons.perm_media_outlined),
     ('التصنيفات', Icons.category_outlined),
@@ -560,6 +561,7 @@ class _MainShellState extends State<MainShell> {
       },
     ),
     OperationsPage(api: widget.api),
+    BotProfilePage(api: widget.api),
     MessagingPage(
       key: ValueKey('messages-${_pendingUserId ?? 0}'),
       api: widget.api,
