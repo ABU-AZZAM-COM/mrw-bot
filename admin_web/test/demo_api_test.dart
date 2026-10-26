@@ -111,6 +111,29 @@ void main() {
     },
   );
 
+  test('demo bot profile settings stay local and are auditable', () async {
+    final api = DemoApi();
+    final original = await api.get('/api/admin/bot-profile');
+    expect(original['items']['name'], 'بوت البلاغات');
+
+    final updated = await api.upload(
+      '/api/admin/bot-profile',
+      fields: {
+        'name': 'هوية تجريبية',
+        'short_description': 'نبذة محلية',
+        'description': 'وصف الخدمات',
+        'welcome_text': 'أهلًا بك في التجربة.',
+      },
+    );
+    expect(updated['items']['name'], 'هوية تجريبية');
+    expect(
+      (await api.get('/api/admin/bot-profile'))['items']['welcome_text'],
+      'أهلًا بك في التجربة.',
+    );
+    final audit = await api.get('/api/admin/audit');
+    expect(audit['items'].first['action'], 'bot_profile_changed');
+  });
+
   test(
     'demo data supports the analytics and diagnostics API contract',
     () async {

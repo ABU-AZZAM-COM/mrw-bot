@@ -257,6 +257,52 @@ async def _on_bot_loop_value(coro_factory):
         return None
 
 
+async def _set_telegram_bot_profile(
+    bot, profile: dict[str, str], photo_bytes: bytes | None = None
+) -> dict[str, Any]:
+    updates = (
+        ("name", "get_my_name", "set_my_name", "name"),
+        ("short_description", "get_my_short_description",
+         "set_my_short_description", "short_description"),
+        ("description", "get_my_description",
+         "set_my_description", "description"),
+    )
+    for key, getter_name, setter_name, attribute in updates:
+        setter = getattr(bot, setter_name, None)
+        if setter is None:
+            return {"ok": False, "error": "telegram_profile_method_unavailable"}
+        current = None
+        getter = getattr(bot, getter_name, None)
+        if getter is not None:
+            result = await getter()
+            current = getattr(result, attribute, None)
+        if current == profile[key]:
+            continue
+        if not await setter(**{key: profile[key]}):
+            return {"ok": False, "error": "telegram_profile_update_rejected"}
+
+    if photo_bytes:
+        photo_setter = getattr(bot, "set_my_profile_photo", None)
+        try:
+            from telegram import InputProfilePhotoStatic
+
+            photo = InputProfilePhotoStatic(photo_bytes)
+        except ImportError:
+            return {"ok": False, "error": "telegram_photo_update_unavailable"}
+        if photo_setter is not None:
+            accepted = await photo_setter(photo=photo)
+        else:
+            post_method = getattr(bot, "_post", None)
+            if post_method is None:
+                return {"ok": False, "error": "telegram_photo_update_unavailable"}
+            accepted = await post_method(
+                "setMyProfilePhoto", data={"photo": photo}
+            )
+        if not accepted:
+            return {"ok": False, "error": "telegram_photo_update_rejected"}
+    return {"ok": True}
+
+
 async def _bot_ready() -> bool:
     return _bot_runtime()[0] is not None
 
@@ -2142,6 +2188,142 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 "block_messages": await guards.get_block_messages(db),
             },
         })
+
+    @app.get("/api/admin/bot-profile")
+    async def bot_profile_get(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        raw = await db.get_state("bot_profile")
+        try:
+            saved = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            saved = {}
+        if not isinstance(saved, dict):
+            saved = {}
+        values = {
+            "name": str(saved.get("name") or ""),
+            "short_description": str(saved.get("short_description") or ""),
+            "description": str(saved.get("description") or ""),
+            "welcome_text": str(
+                saved.get("welcome_text") or texts.BOT_PROFILE_DEFAULT_WELCOME
+            ),
+            "photo_updated_at": str(saved.get("photo_updated_at") or ""),
+        }
+        bot, _ = _bot_runtime()
+        if bot is not None:
+            async def _load_remote_profile():
+                remote = {}
+                me = await bot.get_me()
+                remote["username"] = me.username or ""
+                for key, method_name, attribute in (
+                    ("name", "get_my_name", "name"),
+                    ("short_description", "get_my_short_description", "short_description"),
+                    ("description", "get_my_description", "description"),
+                ):
+                    method = getattr(bot, method_name, None)
+                    if method is not None:
+                        result = await method()
+                        remote[key] = getattr(result, attribute, "") or ""
+                return remote
+
+            remote = await _on_bot_loop_value(_load_remote_profile)
+            if isinstance(remote, dict):
+                for key in ("name", "short_description", "description"):
+                    if key in remote:
+                        values[key] = remote[key]
+                values["username"] = remote.get("username", "")
+        return JSONResponse({
+            "ok": True,
+            "items": values,
+            "bot_ready": bot is not None,
+            "can_edit": getattr(getattr(request, "state", None), "admin_role", "") == "owner",
+        })
+
+    @app.post("/api/admin/bot-profile")
+    async def bot_profile_put(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        bot, _ = _bot_runtime()
+        if bot is None:
+            return bad("bot_not_ready", 503)
+        try:
+            form = await request.form()
+        except Exception:
+            logger.exception("تعذر قراءة إعدادات هوية البوت")
+            return bad("multipart_unavailable", 503)
+
+        name = str(form.get("name") or "").strip()
+        short_description = str(form.get("short_description") or "").strip()
+        description = str(form.get("description") or "").strip()
+        welcome_text = str(form.get("welcome_text") or "").strip()
+        if not name or len(name) > 64:
+            return bad("bad_bot_name")
+        if len(short_description) > 120:
+            return bad("short_description_too_long")
+        if len(description) > 512:
+            return bad("description_too_long")
+        if not welcome_text or len(welcome_text) > 3500:
+            return bad("bad_welcome_text")
+
+        upload = form.get("photo") or form.get("media")
+        photo_bytes = None
+        if upload is not None and hasattr(upload, "read"):
+            photo_bytes = await upload.read(10 * 1024 * 1024 + 1)
+            if len(photo_bytes) > 10 * 1024 * 1024:
+                return bad("profile_photo_too_large", 413)
+            if photo_bytes and not photo_bytes.startswith(b"\xff\xd8\xff"):
+                return bad("profile_photo_must_be_jpeg")
+            if not photo_bytes:
+                photo_bytes = None
+
+        db = db_of()
+        previous_raw = await db.get_state("bot_profile")
+        try:
+            previous = json.loads(previous_raw) if previous_raw else {}
+        except (TypeError, ValueError):
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
+
+        requested = {
+            "name": name,
+            "short_description": short_description,
+            "description": description,
+        }
+        applied = await _on_bot_loop_value(
+            lambda: _set_telegram_bot_profile(bot, requested, photo_bytes)
+        )
+        if not isinstance(applied, dict) or not applied.get("ok"):
+            error = applied.get("error") if isinstance(applied, dict) else None
+            return bad(error or "telegram_profile_update_failed", 502)
+
+        values = {
+            "name": name,
+            "short_description": short_description,
+            "description": description,
+            "welcome_text": welcome_text,
+            "photo_updated_at": (
+                datetime.now(timezone.utc).isoformat(timespec="seconds")
+                if photo_bytes else str(previous.get("photo_updated_at") or "")
+            ),
+        }
+        await db.set_state(
+            "bot_profile", json.dumps(values, ensure_ascii=False, sort_keys=True)
+        )
+        await db.audit(
+            _admin_actor(request),
+            "bot_profile_changed",
+            "هوية البوت",
+            "تحديث بيانات الحساب ورسالة البداية"
+            + (" وتغيير الصورة" if photo_bytes else ""),
+        )
+        return JSONResponse({"ok": True, "items": values})
 
     @app.put("/api/admin/settings")
     async def runtime_settings_put(request: Request) -> JSONResponse:
