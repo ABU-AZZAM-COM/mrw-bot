@@ -985,6 +985,35 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "reports_total": total, "reports": [_safe_report(r) for r in reports],
         })
 
+    @app.get("/api/admin/users/{uid}/dossier")
+    async def user_dossier(uid: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        dossier = await db.user_dossier(uid)
+        if not dossier:
+            return bad("not_found", 404)
+        await db.audit(
+            _admin_actor(request),
+            "user_dossier_viewed",
+            str(uid),
+            "فتح بطاقة الكشف الشامل",
+        )
+        return JSONResponse({
+            "ok": True,
+            "profile": dossier["profile"],
+            "reports": [_safe_report(row) for row in dossier["reports"]],
+            "reports_total": dossier["reports_total"],
+            "audit": dossier["audit"],
+            "audit_total": dossier["audit_total"],
+            "audit_truncated": dossier["audit_truncated"],
+            "scope": "submitted_reports_only",
+        })
+
     @app.post("/api/admin/users/{uid}/block")
     async def block_user(uid: int, request: Request) -> JSONResponse:
         refuse = _auth(request)
@@ -1169,13 +1198,27 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         await db.open_user_conversation(uid)
         result = await _send_direct_message_result(uid, text)
         sent = result.get("sent") is True
-        message_id = await db.add_user_message(
-            uid,
-            "out",
-            text,
-            _admin_actor(request),
-            delivery_status="delivered" if sent else "failed",
-            error_code=None if sent else str(result.get("error_code") or "telegram_send_failed"),
+        telegram_id = (
+            int(result["message_id"])
+            if isinstance(result.get("message_id"), int)
+            else None
+        )
+        logged_message = (
+            await db.get_user_message_by_telegram_id(uid, telegram_id)
+            if sent and telegram_id is not None else None
+        )
+        message_id = int(logged_message["id"]) if logged_message else (
+            await db.add_user_message(
+                uid,
+                "out",
+                f"📨 رسالة من الجهة المختصة:\n\n{text}" if sent else text,
+                _admin_actor(request),
+                delivery_status="delivered" if sent else "failed",
+                error_code=None if sent else str(
+                    result.get("error_code") or "telegram_send_failed"
+                ),
+                telegram_message_id=telegram_id,
+            )
         )
         if not sent:
             error_code = str(result.get("error_code") or "telegram_send_failed")
@@ -1199,6 +1242,121 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "user_message",
             str(uid),
             f"message_id={message_id}; sent",
+        )
+        return JSONResponse({"ok": True, "sent": True, "message_id": message_id})
+
+    @app.post("/api/admin/users/{uid}/media")
+    async def message_user_media(uid: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        if not await db.user_profile(uid):
+            return bad("not_found", 404)
+        if not await db.user_contact_enabled(uid):
+            return bad("direct_contact_disabled", 403)
+        try:
+            form = await request.form()
+        except Exception:
+            logger.exception("تعذر قراءة وسيط الرسالة المباشرة")
+            return bad("multipart_unavailable", 503)
+        media_type = str(form.get("media_type") or "").strip()
+        caption = str(form.get("caption") or "").strip()
+        upload = form.get("media")
+        if media_type not in {"photo", "video", "audio", "voice", "document"}:
+            return bad("bad_media_type")
+        if len(caption) > 1000:
+            return bad("caption_too_long")
+        if not hasattr(upload, "read"):
+            return bad("media_required")
+        filename = os.path.basename(str(getattr(upload, "filename", "") or "attachment"))
+        filename = filename.replace("\x00", "")[:180] or "attachment"
+        limit = 10 * 1024 * 1024 if media_type == "photo" else 20 * 1024 * 1024
+        media_data = await upload.read(limit + 1)
+        if len(media_data) > limit:
+            return bad("media_too_large", 413)
+        if not media_data:
+            return bad("empty_media")
+        if media_type == "photo" and _image_media_type(media_data, filename) not in {
+            "image/jpeg", "image/png",
+        }:
+            return bad("unsupported_photo_format")
+        if media_type == "video" and (
+            len(media_data) < 12 or media_data[4:8] != b"ftyp"
+        ):
+            return bad("invalid_video_format")
+        if media_type == "voice" and not filename.lower().endswith((".ogg", ".oga")):
+            return bad("invalid_voice_format")
+
+        from telegram import InputFile  # noqa: PLC0415
+        from telegram.error import BadRequest, Forbidden, NetworkError  # noqa: PLC0415
+
+        bot, _loop = _bot_runtime()
+        if bot is None:
+            return bad("bot_not_ready", 503)
+        method = {
+            "photo": "send_photo",
+            "video": "send_video",
+            "audio": "send_audio",
+            "voice": "send_voice",
+            "document": "send_document",
+        }[media_type]
+        field = {
+            "photo": "photo",
+            "video": "video",
+            "audio": "audio",
+            "voice": "voice",
+            "document": "document",
+        }[media_type]
+
+        async def _send():
+            telegram_method = getattr(bot, method)
+            return await telegram_method(
+                chat_id=uid,
+                caption=caption or None,
+                **{field: InputFile(media_data, filename=filename)},
+            )
+
+        try:
+            message = await _on_bot_loop_value(_send)
+        except Forbidden:
+            return bad("user_blocked_bot", 502)
+        except BadRequest:
+            return bad("recipient_unavailable", 502)
+        except NetworkError:
+            return bad("telegram_network_error", 502)
+        except Exception:
+            logger.exception("تعذر إرسال وسيط إلى المستخدم %s", uid)
+            return bad("telegram_send_failed", 502)
+        if message is None:
+            return bad("bot_not_ready", 503)
+        media_obj = getattr(message, media_type, None)
+        if media_type == "photo":
+            photos = getattr(message, "photo", None) or []
+            media_obj = photos[-1] if photos else None
+        await db.open_user_conversation(uid)
+        telegram_id = getattr(message, "message_id", None)
+        logged_message = (
+            await db.get_user_message_by_telegram_id(uid, int(telegram_id))
+            if isinstance(telegram_id, int) else None
+        )
+        message_id = int(logged_message["id"]) if logged_message else (
+            await db.add_user_message(
+                uid,
+                "out",
+                caption or f"[وسيط: {media_type}]",
+                _admin_actor(request),
+                media_type=media_type,
+                telegram_file_id=getattr(media_obj, "file_id", None),
+                telegram_message_id=telegram_id,
+                filename=filename,
+            )
+        )
+        await db.audit(
+            _admin_actor(request),
+            "user_media_message",
+            str(uid),
+            f"message_id={message_id}; type={media_type}",
         )
         return JSONResponse({"ok": True, "sent": True, "message_id": message_id})
 
@@ -1235,8 +1393,170 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("not_found", 404)
         return JSONResponse({
             "ok": True,
-            "items": await db.list_user_messages(uid, after_id, limit),
+            "can_manage_messages": (
+                getattr(request.state, "admin_role", "") == "owner"
+            ),
+            "items": [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "telegram_file_id"
+                }
+                | {"has_media": bool(item.get("telegram_file_id"))}
+                for item in await db.list_user_messages(uid, after_id, limit)
+            ],
         })
+
+    @app.get("/api/admin/users/{uid}/messages/{message_id}/media")
+    async def get_user_message_media(
+        uid: int, message_id: int, request: Request
+    ) -> Response:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        messages = await db_of().list_user_messages(uid, max(0, message_id - 1), 1)
+        if not messages or int(messages[0]["id"]) != message_id:
+            return bad("not_found", 404)
+        item = messages[0]
+        file_id = str(item.get("telegram_file_id") or "")
+        if not file_id:
+            return bad("media_not_available", 404)
+        bot, _loop = _bot_runtime()
+        if bot is None:
+            return bad("bot_not_ready", 503)
+
+        async def _download():
+            telegram_file = await bot.get_file(file_id)
+            return await telegram_file.download_as_bytearray()
+
+        try:
+            data = await _on_bot_loop_value(_download)
+        except Exception:
+            logger.exception("تعذر تنزيل وسيط المحادثة %s للمستخدم %s", message_id, uid)
+            return bad("media_download_failed", 502)
+        if data is None:
+            return bad("bot_not_ready", 503)
+        media_type = str(item.get("media_type") or "")
+        filename = str(item.get("filename") or "")
+        guessed = mimetypes.guess_type(filename)[0]
+        content_type = guessed or {
+            "photo": "image/jpeg",
+            "video": "video/mp4",
+            "voice": "audio/ogg",
+            "audio": "audio/mpeg",
+        }.get(media_type, "application/octet-stream")
+        return Response(
+            content=bytes(data),
+            media_type=content_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "Content-Disposition": (
+                    "attachment; filename*=UTF-8''"
+                    + urllib.parse.quote(filename or f"message-{message_id}")
+                ),
+            },
+        )
+
+    @app.put("/api/admin/users/{uid}/messages/{message_id}")
+    async def edit_user_message(
+        uid: int, message_id: int, request: Request
+    ) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        text = str(body.get("text") or "").strip()
+        if not 1 <= len(text) <= 1000:
+            return bad("text_length")
+        db = db_of()
+        item = await db.get_outgoing_user_message(uid, message_id)
+        if not item:
+            return bad("not_found", 404)
+        if item.get("is_deleted"):
+            return bad("message_deleted", 409)
+        telegram_message_id = item.get("telegram_message_id")
+        if not telegram_message_id:
+            return bad("message_not_editable", 409)
+        created = datetime.fromisoformat(str(item["created_at"]))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created < datetime.now(timezone.utc) - timedelta(hours=48):
+            return bad("message_expired", 410)
+        bot, _loop = _bot_runtime()
+        if bot is None:
+            return bad("bot_not_ready", 503)
+        media_type = str(item.get("media_type") or "")
+
+        async def _edit():
+            if media_type:
+                return await bot.edit_message_caption(
+                    chat_id=uid,
+                    message_id=int(telegram_message_id),
+                    caption=text,
+                )
+            return await bot.edit_message_text(
+                chat_id=uid,
+                message_id=int(telegram_message_id),
+                text=text,
+            )
+
+        try:
+            await _on_bot_loop_value(_edit)
+        except Exception:
+            logger.exception("تعذر تعديل رسالة المستخدم %s/%s", uid, message_id)
+            return bad("telegram_edit_failed", 502)
+        await db.edit_user_message_content(uid, message_id, text)
+        await db.audit(
+            _admin_actor(request), "user_message_edited", str(uid),
+            f"message_id={message_id}",
+        )
+        return JSONResponse({"ok": True})
+
+    @app.delete("/api/admin/users/{uid}/messages/{message_id}")
+    async def delete_user_message(
+        uid: int, message_id: int, request: Request
+    ) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        item = await db.get_outgoing_user_message(uid, message_id)
+        if not item:
+            return bad("not_found", 404)
+        if item.get("is_deleted"):
+            return bad("message_deleted", 409)
+        telegram_message_id = item.get("telegram_message_id")
+        if not telegram_message_id:
+            return bad("message_not_deletable", 409)
+        created = datetime.fromisoformat(str(item["created_at"]))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created < datetime.now(timezone.utc) - timedelta(hours=48):
+            return bad("message_expired", 410)
+        bot, _loop = _bot_runtime()
+        if bot is None:
+            return bad("bot_not_ready", 503)
+        try:
+            await _on_bot_loop_value(
+                lambda: bot.delete_message(
+                    chat_id=uid, message_id=int(telegram_message_id)
+                )
+            )
+        except Exception:
+            logger.exception("تعذر حذف رسالة المستخدم %s/%s", uid, message_id)
+            return bad("telegram_delete_failed", 502)
+        await db.mark_user_message_changed(uid, message_id, deleted=True)
+        await db.audit(
+            _admin_actor(request), "user_message_deleted", str(uid),
+            f"message_id={message_id}",
+        )
+        return JSONResponse({"ok": True})
 
     @app.post("/api/admin/users/{uid}/messages/read")
     async def mark_messages_read(uid: int, request: Request) -> JSONResponse:
@@ -1282,11 +1602,18 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         error_code = None if sent else str(
             result.get("error_code") or "telegram_send_failed"
         )
-        await db.update_user_message_delivery(
-            message_id,
-            "delivered" if sent else "failed",
-            error_code,
-        )
+        if sent:
+            telegram_id = (
+                int(result["message_id"])
+                if isinstance(result.get("message_id"), int) else None
+            )
+            await db.reconcile_retried_message(uid, message_id, telegram_id)
+        else:
+            await db.update_user_message_delivery(
+                message_id,
+                "failed",
+                error_code,
+            )
         await db.audit(
             _admin_actor(request),
             "user_message_retry",
@@ -1735,10 +2062,16 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                             )
                             return
                     try:
-                        await bot.send_message(
+                        telegram_message = await bot.send_message(
                             chat_id=uid, text=payload, parse_mode=_parse_html()
                         )
                         sent += 1
+                        await db.record_broadcast_delivery(
+                            job_id,
+                            uid,
+                            int(telegram_message.message_id),
+                            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        )
                     except Exception:
                         failed += 1
                         logger.debug("Broadcast delivery failed for one recipient")
@@ -1948,7 +2281,10 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("bot_not_ready", 503)
         actor_id = _admin_actor(request)
         job_id = await db.create_broadcast_job(
-            caption or f"منشور وسائط: {media_type}", actor_id, len(ids)
+            caption or f"منشور وسائط: {media_type}",
+            actor_id,
+            len(ids),
+            media_type or "text",
         )
         if job_id is None:
             return bad("broadcast_in_progress", 409)
@@ -1956,12 +2292,11 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         async def _send_to_user(user_id: int) -> None:
             text = f"📨 منشور من الجهة المختصة\n\n{caption}".strip()
             if not media_type:
-                await bot.send_message(
+                return await bot.send_message(
                     chat_id=user_id,
                     text=texts.BROADCAST_NOTIF.format(text=utils.esc(caption)),
                     parse_mode=_parse_html(),
                 )
-                return
             send_method = {
                 "photo": bot.send_photo,
                 "video": bot.send_video,
@@ -1972,7 +2307,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 "video": "video",
                 "document": "document",
             }[media_type]
-            await send_method(
+            return await send_method(
                 chat_id=user_id,
                 caption=text,
                 **{media_field: file_id},
@@ -1996,8 +2331,14 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                             )
                             return
                     try:
-                        await _send_to_user(uid)
+                        telegram_message = await _send_to_user(uid)
                         sent += 1
+                        await db.record_broadcast_delivery(
+                            job_id,
+                            uid,
+                            int(telegram_message.message_id),
+                            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        )
                     except Exception:
                         failed += 1
                         logger.debug("Publication delivery failed for one recipient")
@@ -2053,6 +2394,221 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "failed": 0,
             "total": len(ids),
             "media_type": media_type or None,
+        })
+
+    @app.get("/api/admin/broadcast")
+    async def broadcast_history(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        try:
+            limit = min(max(int(request.query_params.get("limit", "30")), 1), 100)
+        except ValueError:
+            return bad("bad_query")
+        items = await db_of().list_broadcast_jobs(limit)
+        return JSONResponse({"ok": True, "items": items})
+
+    @app.post("/api/admin/broadcast/{job_id}/delete")
+    async def broadcast_delete(job_id: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        actor_id = _admin_actor(request)
+        prepared = await db.prepare_broadcast_delete(job_id, actor_id)
+        if prepared.get("error"):
+            return bad(str(prepared["error"]), 409 if prepared["error"] != "not_found" else 404)
+        if not prepared.get("total"):
+            return JSONResponse({
+                "ok": True,
+                "status": "completed",
+                "deleted": prepared.get("deleted", 0),
+                "expired": prepared.get("expired", 0),
+            })
+        bot, loop = _bot_runtime()
+        if bot is None or loop is None:
+            await db.update_broadcast_delete_job(
+                job_id, 0, 0, int(prepared.get("expired") or 0), "failed"
+            )
+            return bad("bot_not_ready", 503)
+        deliveries = prepared["deliveries"]
+
+        async def _delete_all():
+            deleted = failed = 0
+            expired = int(prepared.get("expired") or 0)
+            try:
+                for index, delivery in enumerate(deliveries, 1):
+                    try:
+                        await bot.delete_message(
+                            chat_id=delivery["user_id"],
+                            message_id=delivery["message_id"],
+                        )
+                        deleted += 1
+                        status, error = "deleted", None
+                    except Exception:
+                        failed += 1
+                        status, error = "failed", "telegram_delete_failed"
+                    await db.update_broadcast_delivery_delete(
+                        job_id, delivery["user_id"], status, error
+                    )
+                    if status == "deleted":
+                        await db.update_message_by_telegram_id(
+                            delivery["user_id"],
+                            delivery["message_id"],
+                            None,
+                            deleted=True,
+                        )
+                    if index % 20 == 0:
+                        await db.update_broadcast_delete_job(
+                            job_id, deleted, failed, expired
+                        )
+                    await asyncio.sleep(0.05)
+                await db.update_broadcast_delete_job(
+                    job_id, deleted, failed, expired, "completed"
+                )
+                await db.audit(
+                    actor_id, "broadcast_deleted", str(job_id),
+                    f"deleted={deleted}; failed={failed}; expired={expired}",
+                )
+            except Exception:
+                logger.exception("Broadcast deletion job %s failed", job_id)
+                await db.update_broadcast_delete_job(
+                    job_id, deleted, failed, expired, "failed"
+                )
+
+        try:
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(_delete_all()))
+        except RuntimeError:
+            await db.update_broadcast_delete_job(
+                job_id, 0, 0, int(prepared.get("expired") or 0), "failed"
+            )
+            return bad("bot_not_ready", 503)
+        await db.audit(
+            actor_id, "broadcast_delete_started", str(job_id),
+            f"eligible={prepared['total']}; expired={prepared.get('expired', 0)}",
+        )
+        return JSONResponse({
+            "ok": True,
+            "status": "running",
+            "job_id": job_id,
+            "total": prepared["total"],
+            "expired": prepared.get("expired", 0),
+        })
+
+    @app.post("/api/admin/broadcast/{job_id}/edit")
+    async def broadcast_edit(job_id: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        content = str(body.get("text") or "").strip()
+        db = db_of()
+        job = await db.get_broadcast_job(job_id)
+        if not job:
+            return bad("not_found", 404)
+        limit = 900 if job.get("media_type") not in ("", "text") else 1000
+        if not 1 <= len(content) <= limit:
+            return bad("text_length")
+        actor_id = _admin_actor(request)
+        prepared = await db.prepare_broadcast_edit(job_id, actor_id, content)
+        if prepared.get("error"):
+            return bad(str(prepared["error"]), 409 if prepared["error"] != "not_found" else 404)
+        if not prepared.get("total"):
+            return JSONResponse({
+                "ok": True,
+                "status": "completed",
+                "edited": 0,
+                "expired": prepared.get("expired", 0),
+            })
+        bot, loop = _bot_runtime()
+        if bot is None or loop is None:
+            await db.update_broadcast_edit_job(
+                job_id, 0, 0, int(prepared.get("expired") or 0), "failed"
+            )
+            return bad("bot_not_ready", 503)
+        deliveries = prepared["deliveries"]
+        media_type = str(job.get("media_type") or "")
+
+        async def _edit_all():
+            edited = failed = 0
+            expired = int(prepared.get("expired") or 0)
+            try:
+                for index, delivery in enumerate(deliveries, 1):
+                    try:
+                        if media_type in ("", "text"):
+                            edited_text = texts.BROADCAST_NOTIF.format(
+                                text=utils.esc(content)
+                            )
+                            await bot.edit_message_text(
+                                chat_id=delivery["user_id"],
+                                message_id=delivery["message_id"],
+                                text=edited_text,
+                                parse_mode=_parse_html(),
+                            )
+                        else:
+                            edited_text = (
+                                f"📨 منشور من الجهة المختصة\n\n{content}"
+                            )
+                            await bot.edit_message_caption(
+                                chat_id=delivery["user_id"],
+                                message_id=delivery["message_id"],
+                                caption=edited_text,
+                            )
+                        edited += 1
+                        status, error = "edited", None
+                        await db.update_message_by_telegram_id(
+                            delivery["user_id"],
+                            delivery["message_id"],
+                            edited_text,
+                            deleted=False,
+                        )
+                    except Exception:
+                        failed += 1
+                        status, error = "failed", "telegram_edit_failed"
+                    await db.update_broadcast_delivery_edit(
+                        job_id, delivery["user_id"], status, error
+                    )
+                    if index % 20 == 0:
+                        await db.update_broadcast_edit_job(
+                            job_id, edited, failed, expired
+                        )
+                    await asyncio.sleep(0.05)
+                await db.update_broadcast_edit_job(
+                    job_id, edited, failed, expired, "completed"
+                )
+                await db.audit(
+                    actor_id, "broadcast_edited", str(job_id),
+                    f"edited={edited}; failed={failed}; expired={expired}",
+                )
+            except Exception:
+                logger.exception("Broadcast edit job %s failed", job_id)
+                await db.update_broadcast_edit_job(
+                    job_id, edited, failed, expired, "failed"
+                )
+
+        try:
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(_edit_all()))
+        except RuntimeError:
+            await db.update_broadcast_edit_job(
+                job_id, 0, 0, int(prepared.get("expired") or 0), "failed"
+            )
+            return bad("bot_not_ready", 503)
+        await db.audit(
+            actor_id, "broadcast_edit_started", str(job_id),
+            f"eligible={prepared['total']}; expired={prepared.get('expired', 0)}",
+        )
+        return JSONResponse({
+            "ok": True,
+            "status": "running",
+            "job_id": job_id,
+            "total": prepared["total"],
+            "expired": prepared.get("expired", 0),
         })
 
     @app.get("/api/admin/broadcast/{job_id}")

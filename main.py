@@ -32,6 +32,7 @@ import handlers
 import health_server  # noqa: E402
 import hub_backup  # noqa: E402
 from database import Database  # noqa: E402
+from tracking_bot import TrackedBot  # noqa: E402
 
 from telegram import BotCommand, BotCommandScopeChat, MenuButtonDefault, Update
 from telegram.ext import (
@@ -349,7 +350,7 @@ def main() -> None:
 
     app = (
         ApplicationBuilder()
-        .token(config.BOT_TOKEN)
+        .bot(TrackedBot(config.BOT_TOKEN, config.ADMIN_IDS))
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
@@ -357,6 +358,7 @@ def main() -> None:
 
     # قاعدة البيانات متاحة لكل المعالجات عبر context.bot_data["db"]
     app.bot_data["db"] = db
+    app.bot.set_tracking_database(db)
 
     # Run before every command-specific handler so unlisted commands are gated too.
     app.add_handler(

@@ -7,6 +7,7 @@ import '../widgets.dart';
 import 'overview_page.dart' show fmt, kStatusOrder, kStatusStyles;
 import 'messaging_page.dart' show openUserConversation;
 import 'shared_dialogs.dart';
+import 'user_dossier_dialog.dart';
 
 String priorityLabel(String value) => switch (value) {
   'low' => 'منخفضة',
@@ -592,6 +593,17 @@ class _ReportDetailState extends State<_ReportDetail> {
                 ),
               ),
               const Spacer(),
+              IconButton(
+                tooltip: 'فتح بطاقة الكشف للمبلّغ',
+                onPressed: int.tryParse('${r['user_id'] ?? ''}') == null
+                    ? null
+                    : () => showUserDossier(
+                        context,
+                        widget.api,
+                        int.parse('${r['user_id']}'),
+                      ),
+                icon: const Icon(Icons.manage_search_outlined, size: 20),
+              ),
               IconButton(
                 tooltip: 'فتح محادثة مباشرة مع المستخدم',
                 onPressed: int.tryParse('${r['user_id'] ?? ''}') == null

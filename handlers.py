@@ -1250,8 +1250,30 @@ async def receive_support_message(
             await message.reply_text(texts.WELCOME_HINT, parse_mode=ParseMode.HTML)
         return ConversationHandler.END
 
-    text = (message.text or "").strip()
-    if not 2 <= len(text) <= SUPPORT_MAX_LENGTH:
+    media_type = None
+    file_id = None
+    filename = None
+    if getattr(message, "photo", None):
+        media_type = "photo"
+        file_id = message.photo[-1].file_id
+    elif getattr(message, "video", None):
+        media_type = "video"
+        file_id = message.video.file_id
+        filename = message.video.file_name
+    elif getattr(message, "voice", None):
+        media_type = "voice"
+        file_id = message.voice.file_id
+        filename = "voice.ogg"
+    elif getattr(message, "audio", None):
+        media_type = "audio"
+        file_id = message.audio.file_id
+        filename = message.audio.file_name
+    elif getattr(message, "document", None):
+        media_type = "document"
+        file_id = message.document.file_id
+        filename = message.document.file_name
+    text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    if media_type is None and not 2 <= len(text) <= SUPPORT_MAX_LENGTH:
         await message.reply_text(
             texts.SUPPORT_TOO_LONG
             if len(text) > SUPPORT_MAX_LENGTH
@@ -1271,12 +1293,23 @@ async def receive_support_message(
     db = _db(context)
     await db.record_user(user.id, user.username, user.full_name)
     await db.open_user_conversation(user.id)
-    await db.add_user_message(user.id, "in", text)
+    await db.add_user_message(
+        user.id,
+        "in",
+        text or f"[وسيط وارد: {media_type}]",
+        media_type=media_type,
+        telegram_file_id=file_id,
+        telegram_message_id=getattr(message, "message_id", None),
+        filename=filename,
+    )
     await db.audit(
         user.id,
         "user_support_message",
         str(user.id),
-        f"عدد الأحرف: {len(text)}",
+        (
+            f"type={media_type}; caption_length={len(text)}"
+            if media_type else f"عدد الأحرف: {len(text)}"
+        ),
     )
     context.user_data.pop("support_pending", None)
 
@@ -1287,8 +1320,11 @@ async def receive_support_message(
         f"👤 المرسل: {utils.esc(user.full_name or '-')}\n"
         f"🆔 المعرف: <code>{user.id}</code>\n"
         f"🔗 الحساب: @{utils.esc(user.username or 'بدون معرف')}\n\n"
-        f"{utils.esc(text)}\n\n"
-        "يمكن متابعة المحادثة من قسم الرسائل في لوحة الإدارة."
+        +
+        (
+            f"{utils.esc(text)}\n\n"
+            if text else f"أرسل المستخدم وسيطًا: {media_type}\n\n"
+        ) + "يمكن متابعة المحادثة من قسم الرسائل في لوحة الإدارة."
     )
     for admin_id in config.ADMIN_IDS:
         try:
@@ -1897,8 +1933,7 @@ def build_conversation() -> ConversationHandler:
             ],
             ASK_SUPPORT: [
                 MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_support_message),
-                MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
+                MessageHandler(filters.ALL & ~filters.COMMAND, receive_support_message),
             ],
         },
         fallbacks=[
