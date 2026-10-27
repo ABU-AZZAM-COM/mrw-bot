@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+os.environ.setdefault("BOT_TOKEN", "123:TEST_TOKEN")
+
 from admin_dashboard import (
     build_dashboard_payload,
     register_dashboard,
