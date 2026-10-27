@@ -1,15 +1,5 @@
-def merge_intervals(intervals):
-    if not intervals:
-        return []
-    
-    intervals.sort(key=lambda x: x[0])
-    merged = [intervals[0]]
-    
-    for current in intervals[1:]:
-        last = merged[-1]
-        if current[0] <= last[1]:
-            last[1] = max(last[1], current[1])
-        else:
-            merged.append(current)
-    
-    return merged
+"""Compatibility import for time interval utilities."""
+from importlib import import_module as _import_module
+import sys as _sys
+
+_sys.modules[__name__] = _import_module("services.merge_intervals")

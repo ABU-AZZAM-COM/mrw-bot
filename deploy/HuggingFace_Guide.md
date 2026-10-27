@@ -120,8 +120,7 @@ $env:HF_SPACE  = "اسم-المستخدم/mrw-bot"
 
 ```
 space_app.py
-main.py  config.py  texts.py  handlers.py  admin.py  database.py
-keyboards.py  utils.py  exporters.py  archive.py  health_server.py
+main.py  config.py  bot/  services/  api/  app/  database/
 requirements-space.txt   ←  Rename it to: requirements.txt
 ```
 

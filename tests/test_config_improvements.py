@@ -2,6 +2,7 @@ import importlib
 import os
 import sys
 import unittest
+from pathlib import Path
 
 
 class ConfigImprovementsTests(unittest.TestCase):
@@ -31,6 +32,15 @@ class ConfigImprovementsTests(unittest.TestCase):
         self.assertTrue(self.config.ALLOW_GROUP_REPORTS)
         self.assertFalse(self.config.SAVE_MEDIA_LOCALLY)
         self.assertEqual(self.config.ADMIN_IDS, (1001, 2002, 3003))
+
+    def test_root_compatibility_import_uses_package_module(self):
+        import app.config as package_config
+
+        self.assertIs(self.config, package_config)
+        self.assertEqual(
+            self.config.BASE_DIR,
+            Path(__file__).resolve().parents[1],
+        )
 
 
 if __name__ == "__main__":

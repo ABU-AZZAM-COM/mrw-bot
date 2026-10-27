@@ -175,18 +175,18 @@
 Telegram / تطبيق البلاغ
         │
         ▼
-main.py + handlers.py ─────► database.py (SQLite)
+app/main.py + bot/handlers.py ─────► database/ (SQLite)
         │                          ▲
         └── رسائل وإشعارات ────────┤
                                    │
-لوحة Flutter ── HTTPS + X-Admin-Token ──► admin_api.py
+لوحة Flutter ── HTTPS + X-Admin-Token ──► api/admin_api.py
                                               ▲
                                               │
-                                        space_app.py
+                                        app/space_app.py
                                    /admin + /api/admin
 ```
 
-- `space_app.py` ينشئ خدمة FastAPI، يسجل API الإدارة ويقدم تطبيق البلاغ، ويخدم لوحة الإدارة من `admin_web/dist` على `/admin` إذا كان المجلد موجودًا.
+- `app/space_app.py` ينشئ خدمة FastAPI، يسجل API الإدارة ويقدم تطبيق البلاغ، ويخدم لوحة الإدارة من `admin_web/dist` على `/admin` إذا كان المجلد موجودًا. ملف `space_app.py` في الجذر يبقى نقطة توافق للتشغيل الحالي.
 - `Dockerfile` يشغّل `python space_app.py`. في الاستضافة يجب أن تكون ملفات Flutter المبنية متاحة في مسار `admin_web/dist` كما يتوقع التطبيق.
 - `launch_desktop.bat` يبني لوحة الويب ويقدمها محليًا على `http://127.0.0.1:9000`؛ لا يشغّل البوت ولا يستضيف API. شاشة الدخول تتطلب عنوان API الفعلي ورمزًا صالحًا؛ لا يوجد خيار تدريب في الواجهة.
 - نقاط الإدارة تبدأ بـ `/api/admin`. شاشة الاتصال تختبر `/api/admin/overview`. الفحص العام `/health` لا يكفي وحده لإثبات أن البوت وقاعدة البيانات والنسخ الاحتياطية سليمة.
@@ -195,9 +195,10 @@ main.py + handlers.py ─────► database.py (SQLite)
 
 | المجال | الملفات |
 |---|---|
-| تشغيل البوت | `main.py`, `config.py`, `handlers.py`, `admin.py`, `keyboards.py`, `texts.py` |
-| البيانات | `database.py` — SQLite، ترحيلات، البلاغات، الإعدادات، الحجب، سجل التدقيق |
-| الخدمة وواجهة البرمجة (API) | `space_app.py`, `admin_api.py`, `health_server.py` |
+| تشغيل البوت | `app/`, `bot/` |
+| البيانات | `database/` — SQLite، ترحيلات، البلاغات، الإعدادات، الحجب، سجل التدقيق |
+| الخدمات وواجهة البرمجة (API) | `services/`, `api/` |
+| التوافق | ملفات التشغيل القديمة في الجذر، باستثناء قاعدة البيانات التي أصبحت حزمة `database/` |
 | لوحة Flutter | `admin_web/lib/main.dart`, `api.dart`, `web_api.dart`, `admin_shell.dart`, `pages/` |
 | النسخ والتصدير | `hub_backup.py`, `archive.py`, `exporters.py` |
 | تطبيق البلاغ | `webapp/` |
@@ -259,7 +260,8 @@ main.py + handlers.py ─────► database.py (SQLite)
 من جذر المستودع:
 
 ```powershell
-python -m py_compile admin_api.py database.py config.py handlers.py main.py _selftest.py _selftest_guards.py
+python -m compileall -q app bot services api database
+python -m unittest discover -s tests -v
 python _selftest.py
 python _selftest_guards.py
 ```
@@ -497,10 +499,15 @@ HTTP 404، كما أن لوحة النشر تعرض ثمانية أقسام فق
 - عُدّل تعليم الرسائل كمقروءة ليقتصر على الرسائل الواردة التي وصلت إلى واجهة
   المحادثة، لتجنب تعليم رسالة جديدة كمقروءة قبل ظهورها. وصُححت وجهات إشعارات
   الحظر والنبض بعد إضافة الأقسام الجديدة.
-- التحقق المحلي الأخير: `python -m py_compile admin_api.py database.py`،
-  و`python _selftest.py`، و`flutter test --no-pub` (10 اختبارات)، وبناء الويب
-  باستخدام `--base-href=/admin/` كلها نجحت. `dart analyze lib test` لم يجد
-  أخطاء، مع 35 ملاحظة معلوماتية/قديمة. بُنيت ملفات `admin_web/dist` من المصدر.
-- التغييرات الحالية محلية على الفرع ولم تُلتزم أو تُنشر إلى Render. لم يُختبر
-  إرسال منشور أو رسالة حيًا، ولم تُختبر واجهات GitHub/Render على الخدمة
-  المنشورة؛ يلزم اختبار معتمد على بيئة الإنتاج قبل النشر.
+- جُمعت وحدات التشغيل في `app/` و`api/` و`bot/` و`services/` مع إبقاء وحدات
+  الجذر كواجهات توافق، ووُثّق الهيكل في `docs/architecture.md`. عولج تخطيط
+  بطاقات النظرة العامة واختُبرت حالات نجاح التحميل وفشل قسم التحليلات الاختياري.
+- التحقق المحلي في 2026-10-27: نجحت اختبارات CI على Python 3.12
+  (`unittest`: 10 اختبارات، و`_selftest.py`، و`check_integrity.py` مع 44
+  تنبيهًا غير مانع، و`compileall` للحزم). نجحت اختبارات Flutter الـ14،
+  واكتمل `dart analyze lib test` دون أخطاء (40 ملاحظة معلوماتية قائمة).
+  بُنيت لوحة الإنتاج بالإصدار `2.7.20261027`، وتأكد
+  `<base href="/admin/">` ووجود `main.dart.js` و`flutter_bootstrap.js`.
+- التغييرات وحزمة `admin_web/dist` جاهزة محليًا لمرحلة الالتزام/النشر، لكنها
+  لم تُلتزم أو تُدفع أو تُنشر إلى Render. لم يُختبر إرسال منشور أو رسالة حيًا؛
+  يلزم اختبار الإنتاج المعتمد بعد نشر المالك.

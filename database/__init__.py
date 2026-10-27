@@ -1638,7 +1638,7 @@ class Database:
     def _remove_local_media_if_unreferenced(self, raw_path: str | None) -> None:
         if not raw_path:
             return
-        import config
+        from app import config
 
         path = Path(raw_path)
         if not path.is_absolute():
@@ -1666,7 +1666,7 @@ class Database:
             logger.warning("تعذر حذف ملف وسائط يتيم: %s", resolved, exc_info=True)
 
     def _cleanup_orphaned_media(self, older_than_days: int = 7) -> int:
-        import config
+        from app import config
 
         cutoff = datetime.now(timezone.utc).timestamp() - max(1, older_than_days) * 86400
         media_root = config.MEDIA_DIR.resolve()
@@ -2578,7 +2578,7 @@ class Database:
         clean = [str(t).strip() for t in parsed if str(t).strip()]
         if clean:
             return clean
-        import config  # noqa: PLC0415 — داخل الدالة لتفادي الدوران
+        from app import config  # noqa: PLC0415 — داخل الدالة لتفادي الدوران
 
         return list(config.VIOLATION_TYPES)
 

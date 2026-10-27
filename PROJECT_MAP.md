@@ -37,15 +37,15 @@ SQLite قديمة، ولم يمكن فحص قرص Render السابق بصورة
 
 ```mermaid
 flowchart LR
-  Telegram --> main[main.py]
-  main --> handlers[handlers.py + admin.py]
-  handlers --> screening[image_moderation.py + sightengine_moderation.py]
-  screening --> db[database.py / Turso on Render, SQLite locally]
+  Telegram --> main[app/main.py]
+  main --> handlers[bot/handlers.py + bot/admin.py]
+  handlers --> screening[services/image_moderation.py + services/sightengine_moderation.py]
+  screening --> db[database/ / Turso on Render, SQLite locally]
   screening -->|صورة شكوى خاصة عند ضبط الاعتمادات| sightengine[Sightengine nudity-2.1]
   dashboard[Flutter محلي على localhost:9000] --> contract[api.dart: عقد AdminApi]
   contract --> web[web_api.dart: عميل المتصفح]
   web -->|HTTPS + X-Admin-Token| remote[عنوان API اختياري: Hugging Face افتراضيًا]
-  remote --> api[admin_api.py: /api/admin]
+  remote --> api[api/admin_api.py: /api/admin]
   api --> db
   api --> botloop[حلقة البوت لإرسال رسائل تيليغرام]
   tests -->|بيانات وهمية للاختبارات فقط| demo[demo_api.dart: API اختبارية في الذاكرة]
@@ -62,14 +62,15 @@ Flutter على `127.0.0.1:9000` فقط؛ لا يشغّل البوت محليًا
 
 | المسار | المسؤولية |
 | --- | --- |
-| `main.py` | إنشاء البوت، إعداد المعالجات، وربط دورة حياة التطبيق |
-| `handlers.py` | تدفقات البلاغ في المحادثة وMini App، مع فحوص الرابط والوصف والتكرار المشتركة |
-| `image_moderation.py` | فحص NudeNet محلي متعدد الدقة؛ مؤشرات التعري المكشوف فوق 0.40 تقيّد الحساب |
-| `sightengine_moderation.py` | عميل Sightengine لصور الشكاوى الخاصة؛ يرسل multipart إلى `check.json` ويحلل درجات `nudity-2.1` مع تشخيص آمن لأخطاء API |
-| `admin.py` و`keyboards.py` | تفاعلات المشرف داخل تيليغرام، ومنها طلب سبب الرفض قبل اعتماده وأمر `/stats` |
-| `database.py` | تخزين البيانات؛ Turso على Render وSQLite للتطوير المحلي، مع مخطط وترحيلات وفحص اتصال |
-| `admin_api.py` | API الإدارة، صلاحيات رموز الخدمة، واستدعاء قاعدة البيانات والبوت |
-| `space_app.py` | تطبيق الخدمة، تشغيل البوت وتسجيل الواجهة البرمجية، وتهيئة CORS لمصدر اللوحة المحلي المحدد |
+| `app/` | نقاط تشغيل البوت والويب، الصحة، والإعدادات |
+| `bot/handlers.py` | تدفقات البلاغ في المحادثة وMini App، مع فحوص الرابط والوصف والتكرار المشتركة |
+| `services/image_moderation.py` | فحص NudeNet محلي متعدد الدقة؛ مؤشرات التعري المكشوف فوق 0.40 تقيّد الحساب |
+| `services/sightengine_moderation.py` | عميل Sightengine لصور الشكاوى الخاصة؛ يرسل multipart إلى `check.json` ويحلل درجات `nudity-2.1` مع تشخيص آمن لأخطاء API |
+| `bot/admin.py` و`bot/keyboards.py` | تفاعلات المشرف داخل تيليغرام، ومنها طلب سبب الرفض قبل اعتماده وأمر `/stats` |
+| `database/` | تخزين البيانات؛ Turso على Render وSQLite للتطوير المحلي، مع مخطط وترحيلات وفحص اتصال |
+| `api/admin_api.py` | API الإدارة، صلاحيات رموز الخدمة، واستدعاء قاعدة البيانات والبوت |
+| `app/space_app.py` | تطبيق الخدمة، تشغيل البوت وتسجيل الواجهة البرمجية، وتهيئة CORS لمصدر اللوحة المحلي المحدد |
+| ملفات التوافق في الجذر | تحفظ أوامر التشغيل والاستيرادات القديمة؛ استخدم الحزم أعلاه في التطوير الجديد |
 | `launch_desktop.bat` | بناء Flutter Web وإطلاق خادم ملفات محلي للواجهة فقط |
 | `desktop_panel/panel.py` | واجهة Python بديلة غير مستخدمة في مسار Flutter الأساسي |
 | `desktop_panel/panel_addon.py` و`link_addon.py` | إضافات تاريخية للواجهة البديلة |
@@ -102,7 +103,7 @@ Flutter على `127.0.0.1:9000` فقط؛ لا يشغّل البوت محليًا
 
 ## واجهات API
 
-توجد المسارات في `admin_api.py` تحت `/api/admin`، وتشمل:
+توجد المسارات في `api/admin_api.py` تحت `/api/admin`، وتشمل:
 
 - النظرة العامة، الإحصاءات، البيانات الوصفية وسجل التدقيق.
 - قائمة البلاغات وتفاصيلها، الحالة والتصنيف والملاحظة والرد والحذف والصورة.
@@ -114,7 +115,7 @@ Flutter على `127.0.0.1:9000` فقط؛ لا يشغّل البوت محليًا
 - جلسة الإدارة وفحص صحة الخدمة والتخزين والنسخ.
 - تنزيل النسخة الاحتياطية وإنشاؤها والتصدير.
 
-يوفر `space_app.py` كذلك `GET /api/public/vtypes` لتطبيق البلاغ: يعيد
+يوفر `app/space_app.py` كذلك `GET /api/public/vtypes` لتطبيق البلاغ: يعيد
 التصنيفات المحفوظة الفعلية وحدود الوصف والصورة دون بيانات سرية، مع منع التخزين
 المؤقت. لا يعتمد Mini App على قائمة تصنيفات ثابتة؛ إذا تعذّر تحميلها يعطّل
 البدء ويعرض خطأ واضحًا. يعالج `/api/app-data` الطلب الموقّع من Telegram ثم
@@ -135,7 +136,7 @@ Flutter على `127.0.0.1:9000` فقط؛ لا يشغّل البوت محليًا
 للمراجعة اليدوية ولا يمنع حفظه. لا يجلب الخادم الرابط بنفسه. تحفظ النتائج
 المكتملة في ذاكرة العملية ست ساعات لتقليل الطلبات الخارجية.
 
-تُفلتر الأوامر في `main.py` قبل معالجات البوت: الأمر العام الوحيد هو `/start`،
+تُفلتر الأوامر في `app/main.py` قبل معالجات البوت: الأمر العام الوحيد هو `/start`،
 وأي أمر آخر يتطلب أن يكون معرف المرسل ضمن `ADMIN_IDS` من متغيرات البيئة. لا
 يُعرض في قائمة أوامر تيليغرام العامة سوى `/start`، بينما تُعرض الأوامر
 الإدارية للمشرفين فقط. إخفاء الأمر واجهي فقط؛ المنع الفعلي يتم ببوابة
@@ -150,7 +151,7 @@ Flutter على `127.0.0.1:9000` فقط؛ لا يشغّل البوت محليًا
 باستخدام `file_id`، مع MIME صحيح ومنع التخزين المؤقت. بيانات البلاغ الآمنة
 تتضمن `has_photo` حتى تظهر الصور المحلية القديمة التي لا تملك `file_id` في
 لوحة الإدارة. يمر مسارا البلاغ العادي وMini App عبر `_save_photo` ثم
-`_screen_uploaded_photo` في `handlers.py`.
+`_screen_uploaded_photo` في `bot/handlers.py`.
 
 - يفحص NudeNet محليًا الصورة الأصلية وحتى أربع قصاصات متداخلة للصور الكبيرة.
   تُقيّد مؤشرات التعري المكشوف المحددة في `image_moderation.py` إذا تجاوزت
@@ -250,7 +251,7 @@ Flutter على `127.0.0.1:9000` فقط؛ لا يشغّل البوت محليًا
 - `admin_web/test/demo_api_test.dart`: اختبارات بيانات الوضع التدريبي وإجراءاته المحلية وعقد التحليلات/الفحص.
 - `_selftest.py`: اختبارات تكامل محلية لقاعدة البيانات وطبقة الويب والأدوار والإعدادات وسير العمل؛ تستبدل إرسال تيليغرام ببديل اختباري ولا ترسل رسالة فعلية.
 - `_selftest_guards.py`: اختبارات الحماية والتحقق من المدخلات وسلوك التطبيق، بما فيها فحوص البلاغ المشتركة.
-- تحقق Python: `python -m py_compile admin_api.py database.py admin.py keyboards.py main.py _selftest.py _selftest_guards.py`.
+- تحقق Python: `python -m compileall -q app bot services api database` ثم شغّل الاختبارات من جذر المستودع.
 - اختبار الويب: من `admin_web` شغّل `flutter test --no-pub`.
 - بناء لوحة سطح المكتب المحلية: شغّل `launch_desktop.bat`؛ يبني إلى `admin_web/build/web` ثم يخدم الملفات على `127.0.0.1:9000`.
 - يتطلب الاتصال بخدمة فعلية تفعيل واجهة الإدارة والسماح بطلبات المصدر المحلي، إضافة إلى ضبط `ADMIN_API_TOKEN`.

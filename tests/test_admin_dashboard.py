@@ -111,7 +111,7 @@ class AdminDashboardTests(unittest.TestCase):
 
         with patch.dict(
             sys.modules,
-            {"main": bot_main},
+            {"app.main": bot_main},
         ), patch.dict(os.environ, {
             "ADMIN_API_TOKEN": "test-token",
             "ADMIN_API_TOKENS_JSON": "",
