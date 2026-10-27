@@ -102,6 +102,8 @@ void main() {
     );
 
     expect(find.text('ما الجديد في لوحة الإدارة؟'), findsOneWidget);
+    expect(find.textContaining('2.7.20261027'), findsWidgets);
+    expect(find.text('مركز قيادة البلاغات'), findsOneWidget);
     expect(find.textContaining('2.7.20261026.2'), findsWidgets);
     expect(find.textContaining('2.7.20261026.1'), findsWidgets);
     expect(find.text('سجل الإصدارات ومعرفة الجديد'), findsOneWidget);
