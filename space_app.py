@@ -61,6 +61,7 @@ except ImportError:  # pragma: no cover - بيئة محلية بدون Hugging F
 
 import main as bot_main  # noqa: E402
 import admin_api  # noqa: E402
+import admin_dashboard  # noqa: E402
 import texts  # noqa: E402
 import config  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
@@ -567,6 +568,7 @@ def build_app() -> FastAPI:
     }
     if admin_enabled:
         admin_api.register(app)
+        admin_dashboard.register_dashboard(app)
         logger.info("🛡️ واجهة التحكم الإدارية جاهزة (+ADMIN_API_TOKEN)")
 
         # 6) لوحة الإدارة (Flutter وب) على مسار فرعي خاص — قبل جذر التطبيق

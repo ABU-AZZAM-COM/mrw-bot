@@ -31,12 +31,32 @@ if not BOT_TOKEN or BOT_TOKEN.startswith("ضع_هنا"):
 
 
 # ------------------------------------------------------------------
-# معرفات المشرفين (Telegram User ID) — مفصولة بفواصل
+# وظائف تحليل القيم من ملف .env (سهولة الاستخدام والاختبار)
 # ------------------------------------------------------------------
-def _parse_admin_ids(raw: str) -> tuple[int, ...]:
+TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+FALSE_VALUES = {"0", "false", "no", "n", "off"}
+
+
+def parse_bool(value: str | bool | int | None, default: bool = False) -> bool:
+    """Parse environment values like 'true/false', '1/0', 'yes/no' robustly."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value != 0
+    cleaned = str(value).strip().lower()
+    if cleaned in TRUE_VALUES:
+        return True
+    if cleaned in FALSE_VALUES:
+        return False
+    return default
+
+
+def parse_admin_ids(raw: str | None) -> tuple[int, ...]:
     """تحويل نص ADMIN_IDS إلى مجموعة أرقام صحيحة مع تجاهل القيم الخاطئة."""
     ids: list[int] = []
-    for part in raw.replace(";", ",").split(","):
+    for part in (raw or "").replace(";", ",").split(","):
         part = part.strip()
         if not part:
             continue
@@ -47,7 +67,12 @@ def _parse_admin_ids(raw: str) -> tuple[int, ...]:
     return tuple(ids)
 
 
-ADMIN_IDS: tuple[int, ...] = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+# Backward-compatible alias for any older callers.
+def _parse_admin_ids(raw: str | None) -> tuple[int, ...]:
+    return parse_admin_ids(raw)
+
+
+ADMIN_IDS: tuple[int, ...] = parse_admin_ids(os.getenv("ADMIN_IDS", ""))
 VIRUSTOTAL_API_KEY: str = os.getenv("VIRUSTOTAL_API_KEY", "").strip()
 
 # ------------------------------------------------------------------
@@ -138,9 +163,7 @@ BLOCKED_DOMAINS: tuple[str, ...] = tuple(
 )
 
 # هل يسمح بتلقي البلاغات من المجموعات/القنوات؟ (لا: المحادثات الخاصة فقط)
-ALLOW_GROUP_REPORTS: bool = os.getenv("ALLOW_GROUP_REPORTS", "0").strip().lower() not in {
-    "0", "false", "no", "off",
-}
+ALLOW_GROUP_REPORTS: bool = parse_bool(os.getenv("ALLOW_GROUP_REPORTS", "0"), default=False)
 
 # أقصى عدد رسائل يرسلها البوت لمستخدم واحد في الدقيقة (حماية من علامة السبام)
 MAX_BOT_MESSAGES_PER_MINUTE: int = int(os.getenv("MAX_BOT_MESSAGES_PER_MINUTE", "6"))
@@ -165,9 +188,7 @@ VIOLATION_TYPES: tuple[str, ...] = (
 
 # هل يُنشر البلاغ في القناة الرسمية تلقائيًا بعد الحفظ؟
 # 0 = لا (يلزم موافقة المشرف) — وهو الخيار الآمن ضد البلاغات الكيدية.
-AUTO_PUBLISH_TO_ARCHIVE: bool = os.getenv("AUTO_PUBLISH_TO_ARCHIVE", "0").strip().lower() in {
-    "1", "true", "yes", "on",
-}
+AUTO_PUBLISH_TO_ARCHIVE: bool = parse_bool(os.getenv("AUTO_PUBLISH_TO_ARCHIVE", "0"), default=False)
 
 # ------------------------------------------------------------------
 # إعدادات الأرشفة السحابية (اختيارية — تعمل فقط عند ضبط القيم)
@@ -180,9 +201,7 @@ ARCHIVE_CHAT_ID: int = int(os.getenv("ARCHIVE_CHAT_ID", "0") or 0)
 # هل نحفظ نسخة من الصور على القرص المحلي؟
 # في الاستضافة السحابية قد لا يوجد قرص دائم، و file_id في تلغرام
 # يكفي ليبقى الدليل محفوظًا إلى الأبد.
-SAVE_MEDIA_LOCALLY: bool = os.getenv("SAVE_MEDIA_LOCALLY", "1").strip().lower() not in {
-    "0", "false", "no", "off",
-}
+SAVE_MEDIA_LOCALLY: bool = parse_bool(os.getenv("SAVE_MEDIA_LOCALLY", "1"), default=True)
 
 # رابط الخدمة على منصة الاستضافة — يُستدعى دوريًا لإبقائها نشطة
 KEEPALIVE_URL: str = os.getenv("KEEPALIVE_URL", "").strip()
