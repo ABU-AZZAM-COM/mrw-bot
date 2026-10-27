@@ -35,6 +35,7 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
+  final ScrollController _drawerScrollController = ScrollController();
   String _role = '';
   String _roleLabel = 'لوحة الإدارة';
   int _unreadCount = 0;
@@ -60,6 +61,7 @@ class _MainShellState extends State<MainShell> {
   void dispose() {
     _reconnectTimer?.cancel();
     _eventsSubscription?.cancel();
+    _drawerScrollController.dispose();
     super.dispose();
   }
 
@@ -542,9 +544,14 @@ class _MainShellState extends State<MainShell> {
     ('ما الجديد', Icons.new_releases_outlined),
   ];
 
+  static const _adminsDestination = (
+    'المشرفون والصلاحيات',
+    Icons.manage_accounts_outlined,
+  );
+
   List<(String, IconData)> get _destinations => [
     ..._baseDestinations,
-    if (_role == 'owner') ('المشرفون والصلاحيات', Icons.manage_accounts_outlined),
+    if (_role == 'owner') _adminsDestination,
   ];
 
   List<Widget> get _pages => [
@@ -647,55 +654,83 @@ class _MainShellState extends State<MainShell> {
     if (Navigator.of(context).canPop()) Navigator.of(context).pop();
   }
 
+  void _openAdmins() {
+    final index = _destinations.indexOf(_adminsDestination);
+    if (index >= 0) _select(index);
+  }
+
   Widget _drawer() => Drawer(
     child: SafeArea(
-      child: NavigationDrawer(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: _select,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  backgroundColor: Theme.of(
-                    context,
-                  ).colorScheme.primary.withValues(alpha: 0.14),
-                  child: Icon(
-                    Icons.shield_outlined,
-                    color: Theme.of(context).colorScheme.primary,
+      child: Scrollbar(
+        controller: _drawerScrollController,
+        thumbVisibility: true,
+        child: ListView(
+          controller: _drawerScrollController,
+          padding: EdgeInsets.zero,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.14),
+                    child: Icon(
+                      Icons.shield_outlined,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'مركز إدارة البلاغات',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const Text(
+                          'منظومة المخالفات العسكرية',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (_role == 'owner')
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.tonalIcon(
+                    onPressed: _openAdmins,
+                    icon: const Icon(Icons.manage_accounts_outlined),
+                    label: const Text('المشرفون والصلاحيات'),
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'مركز إدارة البلاغات',
-                        style: Theme.of(context).textTheme.titleSmall,
-                      ),
-                      const Text(
-                        'منظومة المخالفات العسكرية',
-                        style: TextStyle(fontSize: 11),
-                      ),
-                    ],
+              ),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Divider(),
+            ),
+            for (var i = 0; i < _destinations.length; i++)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: ListTile(
+                  selected: i == _selectedIndex,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
                   ),
+                  leading: Icon(_destinations[i].$2),
+                  title: Text(_destinations[i].$1),
+                  onTap: () => _select(i),
                 ),
-              ],
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            child: Divider(),
-          ),
-          for (var i = 0; i < _destinations.length; i++)
-            NavigationDrawerDestination(
-              icon: Icon(_destinations[i].$2),
-              selectedIcon: Icon(_destinations[i].$2),
-              label: Text(_destinations[i].$1),
-            ),
-        ],
+              ),
+          ],
+        ),
       ),
     ),
   );
