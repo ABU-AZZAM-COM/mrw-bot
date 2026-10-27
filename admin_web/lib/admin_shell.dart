@@ -6,8 +6,11 @@ import 'package:flutter/material.dart';
 import 'api.dart';
 import 'app_credits.dart';
 import 'app_theme.dart';
+import 'admin_navigation_drawer.dart';
 import 'pages.dart';
 import 'pages2.dart';
+import 'pages/bot_management_page.dart';
+import 'pages/settings_page.dart';
 import 'pages/whats_new_page.dart';
 import 'pages/admins_page.dart';
 import 'design_tokens.dart';
@@ -35,7 +38,6 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
-  final ScrollController _drawerScrollController = ScrollController();
   String _role = '';
   String _roleLabel = 'لوحة الإدارة';
   int _unreadCount = 0;
@@ -61,7 +63,6 @@ class _MainShellState extends State<MainShell> {
   void dispose() {
     _reconnectTimer?.cancel();
     _eventsSubscription?.cancel();
-    _drawerScrollController.dispose();
     super.dispose();
   }
 
@@ -460,13 +461,13 @@ class _MainShellState extends State<MainShell> {
           _selectedIndex = 1;
         case 'user_blocked':
           _pendingBlockedUserId = (payload['user_id'] as num?)?.toInt();
-          _selectedIndex = 8;
+          _selectedIndex = 7;
         case 'user_message':
           _pendingUserId = (payload['user_id'] as num?)?.toInt();
           _selectedIndex = 4;
         case 'emergency':
         case 'heartbeat_fail':
-          _selectedIndex = type == 'heartbeat_fail' ? 10 : 3;
+          _selectedIndex = type == 'heartbeat_fail' ? 9 : 11;
         default:
           break;
       }
@@ -530,17 +531,15 @@ class _MainShellState extends State<MainShell> {
     ('نظرة عامة', Icons.dashboard_outlined),
     ('البلاغات', Icons.report_outlined),
     ('المتبلّغون', Icons.people_outline),
-    ('التشغيل', Icons.emergency_outlined),
-    ('هوية البوت', Icons.smart_toy_outlined),
+    ('البوت', Icons.smart_toy_outlined),
     ('الرسائل', Icons.campaign_outlined),
     ('المنشورات', Icons.perm_media_outlined),
-    ('التصنيفات', Icons.category_outlined),
     ('سجل التدقيق', Icons.history_outlined),
     ('المُقيَّدون', Icons.block_outlined),
     ('التحليلات', Icons.query_stats_outlined),
     ('سلامة النظام', Icons.monitor_heart_outlined),
     ('التحقق من المصادر', Icons.manage_search_outlined),
-    ('التفضيلات', Icons.palette_outlined),
+    ('الإعدادات', Icons.settings_outlined),
     ('ما الجديد', Icons.new_releases_outlined),
   ];
 
@@ -578,8 +577,7 @@ class _MainShellState extends State<MainShell> {
         if (mounted) setState(() => _pendingUserId = null);
       },
     ),
-    OperationsPage(api: widget.api),
-    BotProfilePage(api: widget.api),
+    BotManagementPage(api: widget.api),
     MessagingPage(
       key: ValueKey('messages-${_pendingUserId ?? 0}'),
       api: widget.api,
@@ -589,7 +587,6 @@ class _MainShellState extends State<MainShell> {
       },
     ),
     PublicationsPage(api: widget.api),
-    TypesPage(api: widget.api),
     AuditPage(api: widget.api),
     BlockedPage(
       key: ValueKey('blocked-$_eventRevision-${_pendingBlockedUserId ?? 0}'),
@@ -602,7 +599,8 @@ class _MainShellState extends State<MainShell> {
     AnalyticsPage(key: ValueKey('analytics-$_eventRevision'), api: widget.api),
     HealthPage(api: widget.api),
     OsintPage(api: widget.api),
-    PreferencesPage(
+    SettingsPage(
+      api: widget.api,
       mode: ThemeMode.values.firstWhere(
         (value) => value.name == widget.preferences['mode'],
         orElse: () => ThemeMode.dark,
@@ -659,80 +657,12 @@ class _MainShellState extends State<MainShell> {
     if (index >= 0) _select(index);
   }
 
-  Widget _drawer() => Drawer(
-    child: SafeArea(
-      child: Scrollbar(
-        controller: _drawerScrollController,
-        thumbVisibility: true,
-        child: ListView(
-          controller: _drawerScrollController,
-          padding: EdgeInsets.zero,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    backgroundColor: Theme.of(
-                      context,
-                    ).colorScheme.primary.withValues(alpha: 0.14),
-                    child: Icon(
-                      Icons.shield_outlined,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'مركز إدارة البلاغات',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        const Text(
-                          'منظومة المخالفات العسكرية',
-                          style: TextStyle(fontSize: 11),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (_role == 'owner')
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 18),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.tonalIcon(
-                    onPressed: _openAdmins,
-                    icon: const Icon(Icons.manage_accounts_outlined),
-                    label: const Text('المشرفون والصلاحيات'),
-                  ),
-                ),
-              ),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-              child: Divider(),
-            ),
-            for (var i = 0; i < _destinations.length; i++)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: ListTile(
-                  selected: i == _selectedIndex,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  leading: Icon(_destinations[i].$2),
-                  title: Text(_destinations[i].$1),
-                  onTap: () => _select(i),
-                ),
-              ),
-          ],
-        ),
-      ),
-    ),
+  Widget _drawer() => AdminNavigationDrawer(
+    destinations: _destinations,
+    selectedIndex: _selectedIndex,
+    onDestinationSelected: _select,
+    isOwner: _role == 'owner',
+    onOpenAdmins: _openAdmins,
   );
 
   @override

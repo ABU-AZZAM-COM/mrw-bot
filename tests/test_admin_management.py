@@ -75,23 +75,54 @@ class AdminManagementTests(unittest.TestCase):
         self.env_patch.stop()
         self.modules_patch.stop()
 
-    def test_create_admin_returns_token_once_and_persists_only_digest(self):
+    def test_login_preserves_environment_token_access(self):
+        response = self.client.post(
+            "/api/admin/login",
+            json={"credential": "bootstrap-owner-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["token"], "bootstrap-owner-token")
+
+    def test_create_admin_stores_password_hash_and_login_issues_session(self):
         response = self.client.post(
             "/api/admin/admins",
             headers={"Authorization": "Bearer bootstrap-owner-token"},
-            json={"name": "مشرف المراجعة", "role": "reviewer", "admin_id": 1234},
+            json={
+                "name": "مشرف المراجعة",
+                "role": "reviewer",
+                "admin_id": 1234,
+                "password": "strong-admin-password-2026",
+            },
         )
 
         self.assertEqual(response.status_code, 200)
-        token = response.json()["token"]
+        self.assertNotIn("token", response.json())
+        self.assertNotIn("password_hash", response.json()["item"])
+        self.assertNotIn("password_salt", response.json()["item"])
         self.assertEqual(self.db.audit_entries[0][1], "admin_created")
-        self.assertTrue(token)
-        self.assertNotIn(token, repr(self.db.accounts))
         account = self.db.accounts[0]
-        self.assertEqual(account["token_hash"], hashlib.sha256(token.encode()).hexdigest())
+        self.assertEqual(account["password_iterations"], 600_000)
+        self.assertNotEqual(account["password_hash"], "strong-admin-password-2026")
         self.assertEqual(account["role"], "reviewer")
         self.assertEqual(account["permissions"], ["read", "review"])
         self.assertEqual(account["admin_id"], 1234)
+
+        failed_login = self.client.post(
+            "/api/admin/login",
+            json={"name": "مشرف المراجعة", "credential": "wrong-password"},
+        )
+        self.assertEqual(failed_login.status_code, 401)
+        login = self.client.post(
+            "/api/admin/login",
+            json={
+                "name": "مشرف المراجعة",
+                "credential": "strong-admin-password-2026",
+            },
+        )
+        self.assertEqual(login.status_code, 200)
+        token = login.json()["token"]
+        self.assertNotIn(token, repr(self.db.accounts))
+        self.assertEqual(len(self.db.accounts[0]["sessions"]), 1)
 
         session = self.client.get(
             "/api/admin/session", headers={"Authorization": f"Bearer {token}"}
@@ -114,6 +145,7 @@ class AdminManagementTests(unittest.TestCase):
                 "name": "مشرف التصدير",
                 "role": "viewer",
                 "permissions": ["read", "export"],
+                "password": "another-strong-password",
             },
         )
 
@@ -122,6 +154,68 @@ class AdminManagementTests(unittest.TestCase):
             self.db.accounts[0]["permissions"],
             ["export", "read"],
         )
+
+    def test_create_admin_rejects_short_password(self):
+        response = self.client.post(
+            "/api/admin/admins",
+            headers={"Authorization": f"Bearer {os.environ['ADMIN_API_TOKEN']}"},
+            json={
+                "name": "مشرف بكلمة ضعيفة",
+                "role": "reviewer",
+                "password": "short",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "bad_admin_password")
+        self.assertEqual(self.db.accounts, [])
+
+    def test_owner_password_reset_revokes_existing_admin_sessions(self):
+        created = self.client.post(
+            "/api/admin/admins",
+            headers={"Authorization": f"Bearer {os.environ['ADMIN_API_TOKEN']}"},
+            json={
+                "name": "مشرف كلمات المرور",
+                "role": "reviewer",
+                "password": "initial-admin-password",
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        account_id = created.json()["item"]["id"]
+        login = self.client.post(
+            "/api/admin/login",
+            json={
+                "name": "مشرف كلمات المرور",
+                "credential": "initial-admin-password",
+            },
+        )
+        old_session = login.json()["token"]
+
+        updated = self.client.put(
+            f"/api/admin/admins/{account_id}",
+            headers={"Authorization": f"Bearer {os.environ['ADMIN_API_TOKEN']}"},
+            json={
+                "role": "reviewer",
+                "permissions": ["read", "review"],
+                "active": True,
+                "password": "replacement-admin-password",
+            },
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(
+            self.client.get(
+                "/api/admin/session",
+                headers={"Authorization": f"Bearer {old_session}"},
+            ).status_code,
+            401,
+        )
+        replacement_login = self.client.post(
+            "/api/admin/login",
+            json={
+                "name": "مشرف كلمات المرور",
+                "credential": "replacement-admin-password",
+            },
+        )
+        self.assertEqual(replacement_login.status_code, 200)
 
     def test_selected_permission_groups_are_enforced_server_side(self):
         token = "limited-admin-token"

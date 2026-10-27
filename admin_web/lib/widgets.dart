@@ -208,7 +208,7 @@ String errMsg(Object e) {
       case 'service_not_found':
         return 'المسار غير موجود على هذه الخدمة. قد تكون الخدمة متوقفة أو لا تستضيف API الإدارة.';
       case 'unauthorized':
-        return 'التوكن غير مقبول — أعد الاتصال';
+        return 'بيانات الدخول غير صحيحة؛ تحقق من التوكن أو اسم المشرف وكلمة المرور';
       case 'forbidden':
         return 'صلاحيات هذا الحساب لا تسمح بهذا الإجراء';
       case 'api_token_configuration_invalid':

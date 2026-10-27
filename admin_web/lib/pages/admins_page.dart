@@ -5,11 +5,7 @@ import '../api.dart';
 import '../widgets.dart';
 
 class AdminsPage extends StatefulWidget {
-  const AdminsPage({
-    super.key,
-    required this.api,
-    this.onUseOwnerToken,
-  });
+  const AdminsPage({super.key, required this.api, this.onUseOwnerToken});
 
   final AdminApi api;
   final ValueChanged<String>? onUseOwnerToken;
@@ -81,12 +77,11 @@ class _AdminsPageState extends State<AdminsPage> {
     if (form == null || !mounted) return;
     setState(() => _busy = true);
     try {
-      final result = await widget.api.post('/api/admin/admins', form);
+      await widget.api.post('/api/admin/admins', form);
       if (!mounted) return;
-      await _showIssuedToken(
-        'رمز دخول المشرف الجديد',
-        result['token']?.toString() ?? '',
-        useInThisBrowser: false,
+      toast(
+        context,
+        'أُنشئ حساب المشرف؛ سجّل الدخول باسمه وكلمة المرور المحددة',
       );
       await _load();
     } catch (error) {
@@ -110,12 +105,14 @@ class _AdminsPageState extends State<AdminsPage> {
           ? ''
           : '$initialAdminId',
     );
+    final password = TextEditingController();
+    final passwordConfirmation = TextEditingController();
     var role = initialRole;
     var permissions = Set<String>.from(
       initialPermissions ?? _rolePermissions[initialRole] ?? const {'read'},
     );
     var active = initialActive;
-    return showDialog<Map<String, dynamic>>(
+    final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -148,6 +145,32 @@ class _AdminsPageState extends State<AdminsPage> {
                       ),
                     ),
                   ],
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: password,
+                    obscureText: true,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    maxLength: 128,
+                    decoration: InputDecoration(
+                      labelText: editing
+                          ? 'كلمة مرور جديدة (اختياري)'
+                          : 'كلمة مرور يختارها المالك',
+                      helperText: '12 حرفًا على الأقل؛ لا تُخزَّن كنص ظاهر',
+                      prefixIcon: const Icon(Icons.lock_outline),
+                    ),
+                  ),
+                  TextField(
+                    controller: passwordConfirmation,
+                    obscureText: true,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                    maxLength: 128,
+                    decoration: const InputDecoration(
+                      labelText: 'تأكيد كلمة المرور',
+                      prefixIcon: Icon(Icons.lock_reset_outlined),
+                    ),
+                  ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     initialValue: role,
@@ -163,17 +186,17 @@ class _AdminsPageState extends State<AdminsPage> {
                         ),
                     ],
                     onChanged: (value) {
-                        if (value != null) {
-                          setDialogState(() {
-                            role = value;
-                            permissions = Set<String>.from(
-                              _rolePermissions[value] ?? const {'read'},
-                            );
-                          });
-                        }
-                      },
-                    ),
-                    const SizedBox(height: 8),
+                      if (value != null) {
+                        setDialogState(() {
+                          role = value;
+                          permissions = Set<String>.from(
+                            _rolePermissions[value] ?? const {'read'},
+                          );
+                        });
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 8),
                   Align(
                     alignment: AlignmentDirectional.centerStart,
                     child: Text(
@@ -231,20 +254,36 @@ class _AdminsPageState extends State<AdminsPage> {
                   toast(context, 'معرّف تيليغرام غير صالح', error: true);
                   return;
                 }
+                final selectedPassword = password.text;
+                if ((!editing || selectedPassword.isNotEmpty) &&
+                    selectedPassword.length < 12) {
+                  toast(
+                    context,
+                    'كلمة المرور يجب ألا تقل عن 12 حرفًا',
+                    error: true,
+                  );
+                  return;
+                }
+                if (selectedPassword != passwordConfirmation.text) {
+                  toast(context, 'تأكيد كلمة المرور غير مطابق', error: true);
+                  return;
+                }
                 Navigator.pop(context, {
                   'name': trimmedName,
                   'admin_id': parsedId,
                   'role': role,
                   'permissions': permissions.toList(),
                   'active': active,
+                  if (selectedPassword.isNotEmpty) 'password': selectedPassword,
                 });
               },
-              child: Text(editing ? 'حفظ الصلاحيات' : 'إنشاء الرمز'),
+              child: Text(editing ? 'حفظ الحساب' : 'إنشاء حساب المشرف'),
             ),
           ],
         ),
       ),
     );
+    return result;
   }
 
   Future<void> _edit(Map<String, dynamic> item) async {
@@ -271,10 +310,16 @@ class _AdminsPageState extends State<AdminsPage> {
           'role': result['role'],
           'permissions': result['permissions'],
           'active': result['active'],
+          if (result['password'] != null) 'password': result['password'],
         },
       );
       if (!mounted) return;
-      toast(context, 'تم تحديث صلاحيات المشرف');
+      toast(
+        context,
+        result['password'] == null
+            ? 'تم تحديث صلاحيات المشرف'
+            : 'تم تحديث الحساب وكلمة المرور؛ سُجل الخروج من الجلسات السابقة',
+      );
       await _load();
     } catch (error) {
       if (mounted) toast(context, _friendlyError(error), error: true);
@@ -295,10 +340,7 @@ class _AdminsPageState extends State<AdminsPage> {
     if (!confirmed || !mounted) return;
     setState(() => _busy = true);
     try {
-      final result = await widget.api.post(
-        '/api/admin/admin-token/rotate',
-        {},
-      );
+      final result = await widget.api.post('/api/admin/admin-token/rotate', {});
       if (!mounted) return;
       await _showIssuedToken(
         'رمز المالك الجديد',
@@ -384,6 +426,8 @@ class _AdminsPageState extends State<AdminsPage> {
         'bad_admin_name' => 'اسم المشرف مطلوب وبحد أقصى 80 حرفاً',
         'bad_admin_role' => 'مستوى الصلاحية غير صالح',
         'bad_admin_id' => 'معرّف تيليغرام غير صالح',
+        'bad_admin_password' => 'كلمة المرور مطلوبة وبطول من 12 إلى 128 حرفًا',
+        'admin_name_exists' => 'اسم الحساب مستخدم بالفعل؛ اختر اسمًا مختلفًا',
         'admin_not_found' => 'تعذر العثور على حساب المشرف',
         _ => errMsg(error),
       };
@@ -410,7 +454,8 @@ class _AdminsPageState extends State<AdminsPage> {
         SectionCard(
           'إدارة الوصول',
           icon: Icons.admin_panel_settings_outlined,
-          subtitle: 'حسابات مستقلة وصلاحيات واضحة؛ لا تُخزَّن الرموز كنص صريح.',
+          subtitle:
+              'حسابات مستقلة وصلاحيات واضحة؛ كلمات المرور تُخزَّن بمشتق آمن.',
           trailing: IconButton(
             tooltip: 'تحديث',
             onPressed: _busy ? null : _load,
@@ -456,7 +501,8 @@ class _AdminsPageState extends State<AdminsPage> {
         SectionCard(
           'المشرفون',
           icon: Icons.groups_2_outlined,
-          subtitle: 'يمكن إيقاف أي حساب أو تغيير مستواه دون كشف رمزه الحالي.',
+          subtitle:
+              'يمكن إيقاف أي حساب أو تغيير مستواه دون كشف كلمة مروره الحالية.',
           child: _items.isEmpty
               ? const Padding(
                   padding: EdgeInsets.all(20),

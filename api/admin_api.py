@@ -28,6 +28,7 @@ import logging
 import mimetypes
 import os
 import secrets
+import time
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -59,6 +60,9 @@ ROLE_PERMISSIONS = {
     "owner": ADMIN_PERMISSIONS,
 }
 FAR_FUTURE = "9999-12-31T00:00:00"
+ADMIN_PASSWORD_ITERATIONS = 600_000
+ADMIN_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
+ADMIN_MAX_SESSIONS = 8
 
 
 # ==================================================================
@@ -100,6 +104,43 @@ def token_ok(got: str, expected: str) -> bool:
 
 def _token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _password_credentials(password: str) -> dict[str, Any]:
+    salt = secrets.token_bytes(16)
+    return {
+        "password_salt": salt.hex(),
+        "password_hash": hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt, ADMIN_PASSWORD_ITERATIONS
+        ).hex(),
+        "password_iterations": ADMIN_PASSWORD_ITERATIONS,
+    }
+
+
+def _password_matches(account: dict[str, Any], password: str) -> bool:
+    salt_hex = account.get("password_salt")
+    digest = account.get("password_hash")
+    iterations = account.get("password_iterations")
+    if (
+        not isinstance(salt_hex, str)
+        or not isinstance(digest, str)
+        or not isinstance(iterations, int)
+        or isinstance(iterations, bool)
+        or not ADMIN_PASSWORD_ITERATIONS <= iterations <= 1_000_000
+    ):
+        return False
+    try:
+        salt = bytes.fromhex(salt_hex)
+    except ValueError:
+        return False
+    if len(salt) != 16:
+        return False
+    actual = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, iterations
+    ).hex()
+    import hmac
+
+    return hmac.compare_digest(actual, digest)
 
 
 def _auth(request):
@@ -178,6 +219,31 @@ def _auth(request):
         and account.get("role") in ("viewer", "reviewer", "operator", "owner")
         and isinstance(account.get("token_hash"), str)
     )
+    now = int(time.time())
+    for account in persisted_accounts:
+        if (
+            account.get("active") is not True
+            or account.get("role") not in ("viewer", "reviewer", "operator", "owner")
+        ):
+            continue
+        sessions = account.get("sessions")
+        if not isinstance(sessions, list):
+            continue
+        for session in sessions:
+            if (
+                isinstance(session, dict)
+                and isinstance(session.get("token_hash"), str)
+                and isinstance(session.get("expires_at"), int)
+                and session["expires_at"] > now
+            ):
+                configured.append({
+                    "token_hash": session["token_hash"],
+                    "role": account["role"],
+                    "permissions": account.get("permissions"),
+                    "admin_id": account.get("admin_id", 0),
+                    "account_id": account.get("id"),
+                    "session": True,
+                })
     if not configured and not expected and not raw:
         return JSONResponse(
             {"ok": False, "error": "api_token_not_configured"}, status_code=503
@@ -252,6 +318,9 @@ def _auth(request):
         request.state.admin_role = principal["role"]
         request.state.admin_id = principal["admin_id"]
         request.state.admin_account_id = principal.get("account_id")
+        request.state.admin_session_hash = (
+            token_hash if principal.get("session") else None
+        )
     except AttributeError:
         pass
     return None
@@ -771,6 +840,121 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
     # ------------------------------------------------------------
     # 0) نظرة عامة
     # ------------------------------------------------------------
+    @app.post("/api/admin/login")
+    async def admin_login(request: Request, body: dict[str, Any]) -> JSONResponse:
+        credential = body.get("credential")
+        if (
+            not isinstance(credential, str)
+            or not credential
+            or len(credential) > 256
+        ):
+            return bad("bad_credentials", 401)
+
+        accounts, bootstrap_disabled = getattr(
+            request.state, "admin_auth_snapshot", ([], False)
+        )
+        expected = expected_token()
+        if expected and not bootstrap_disabled and token_ok(credential, expected):
+            return JSONResponse({"ok": True, "token": credential})
+
+        raw = os.getenv("ADMIN_API_TOKENS_JSON", "").strip()
+        if raw and not bootstrap_disabled:
+            try:
+                configured_tokens = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.error("ADMIN_API_TOKENS_JSON is not valid JSON")
+                return JSONResponse(
+                    {"ok": False, "error": "api_token_configuration_invalid"},
+                    status_code=503,
+                )
+            if not isinstance(configured_tokens, list):
+                return JSONResponse(
+                    {"ok": False, "error": "api_token_configuration_invalid"},
+                    status_code=503,
+                )
+            if any(
+                isinstance(item, dict)
+                and isinstance(item.get("token"), str)
+                and item.get("role") in ("viewer", "reviewer", "operator", "owner")
+                and token_ok(credential, item["token"])
+                for item in configured_tokens
+            ):
+                return JSONResponse({"ok": True, "token": credential})
+
+        credential_hash = _token_digest(credential)
+        account = next(
+            (
+                item
+                for item in accounts
+                if item.get("active") is True
+                and isinstance(item.get("token_hash"), str)
+                and secrets.compare_digest(credential_hash, item["token_hash"])
+            ),
+            None,
+        )
+        if account is not None:
+            return JSONResponse({"ok": True, "token": credential})
+
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return bad("unauthorized", 401)
+        name = name.strip().casefold()
+        account = next(
+            (
+                item
+                for item in accounts
+                if item.get("active") is True
+                and str(item.get("name") or "").strip().casefold() == name
+                and _password_matches(item, credential)
+            ),
+            None,
+        )
+        if account is None:
+            return bad("unauthorized", 401)
+
+        session_token = secrets.token_urlsafe(32)
+        session_hash = _token_digest(session_token)
+        now = int(time.time())
+        account_id = account.get("id")
+
+        def append_session(current_accounts, _bootstrap_disabled):
+            current = next(
+                (
+                    item
+                    for item in current_accounts
+                    if item.get("id") == account_id and item.get("active") is True
+                ),
+                None,
+            )
+            if current is None or not _password_matches(current, credential):
+                return False
+            sessions = current.get("sessions")
+            if not isinstance(sessions, list):
+                sessions = []
+            sessions = [
+                item
+                for item in sessions
+                if isinstance(item, dict)
+                and isinstance(item.get("expires_at"), int)
+                and item["expires_at"] > now
+            ]
+            sessions.append({
+                "token_hash": session_hash,
+                "expires_at": now + ADMIN_SESSION_TTL_SECONDS,
+            })
+            current["sessions"] = sessions[-ADMIN_MAX_SESSIONS:]
+            return True
+
+        db = getattr(request.app.state, "admin_db_provider", lambda: None)()
+        if db is None:
+            return JSONResponse(
+                {"ok": False, "error": "admin_auth_unavailable"}, status_code=503
+            )
+        issued = await asyncio.to_thread(db.mutate_admin_auth_snapshot, append_session)
+        if issued is False:
+            return bad("unauthorized", 401)
+        return JSONResponse({"ok": True, "token": session_token})
+
     @app.get("/api/admin/session")
     async def admin_session(request: Request) -> JSONResponse:
         refuse = _auth(request)
@@ -827,6 +1011,14 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("bad_admin_name")
         if role not in ("viewer", "reviewer", "operator", "owner"):
             return bad("bad_admin_role")
+        password = body.get("password")
+        if (
+            not isinstance(password, str)
+            or len(password) < 12
+            or len(password) > 128
+            or any(ord(char) < 32 for char in password)
+        ):
+            return bad("bad_admin_password")
         if requested_permissions is None:
             requested_permissions = sorted(ROLE_PERMISSIONS[role])
         if (
@@ -851,7 +1043,6 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("bad_admin_id")
         db = db_of()
         accounts, _ = request.state.admin_auth_snapshot
-        token = secrets.token_urlsafe(32)
         account = {
             "id": uuid.uuid4().hex,
             "name": name,
@@ -859,11 +1050,21 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "role": role,
             "permissions": permissions,
             "active": True,
-            "token_hash": _token_digest(token),
+            **_password_credentials(password),
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
 
+        create_outcome = "created"
+
         def append_account(accounts, _bootstrap_disabled):
+            nonlocal create_outcome
+            if any(
+                str(existing.get("name") or "").strip().casefold()
+                == name.casefold()
+                for existing in accounts
+            ):
+                create_outcome = "name_exists"
+                return False
             accounts.append(account)
             return True
 
@@ -877,10 +1078,19 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 f"name={name}; role={role}; by={_admin_account_label(request)}",
             ),
         )
+        if create_outcome == "name_exists":
+            return bad("admin_name_exists", 409)
         return JSONResponse({
             "ok": True,
-            "item": {key: value for key, value in account.items() if key != "token_hash"},
-            "token": token,
+            "item": {
+                "id": account["id"],
+                "name": account["name"],
+                "admin_id": account["admin_id"],
+                "role": account["role"],
+                "permissions": account["permissions"],
+                "active": True,
+                "created_at": account["created_at"],
+            },
         })
 
     @app.put("/api/admin/admins/{account_id}")
@@ -911,6 +1121,14 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("bad_admin_permissions")
         if not isinstance(active, bool):
             return bad("bad_admin_status")
+        password = body.get("password")
+        if password is not None and (
+            not isinstance(password, str)
+            or len(password) < 12
+            or len(password) > 128
+            or any(ord(char) < 32 for char in password)
+        ):
+            return bad("bad_admin_password")
         db = db_of()
         outcome = "updated"
 
@@ -948,6 +1166,12 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 else sorted(set(requested_permissions))
             )
             account["active"] = active
+            if password is not None:
+                account.update(_password_credentials(password))
+                account.pop("token_hash", None)
+                account["sessions"] = []
+            elif not active:
+                account["sessions"] = []
             return True
 
         await asyncio.to_thread(
@@ -957,7 +1181,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 _admin_actor(request),
                 "admin_updated",
                 account_id,
-                f"role={role}; active={active}; by={_admin_account_label(request)}",
+                f"role={role}; active={active}; "
+                f"password_changed={password is not None}; "
+                f"by={_admin_account_label(request)}",
             ),
         )
         if outcome == "missing":
