@@ -6,6 +6,16 @@ import unittest
 
 class ConfigImprovementsTests(unittest.TestCase):
     def setUp(self):
+        self._environment = {
+            key: os.environ.get(key)
+            for key in (
+                "BOT_TOKEN",
+                "ADMIN_IDS",
+                "ALLOW_GROUP_REPORTS",
+                "SAVE_MEDIA_LOCALLY",
+            )
+        }
+        self._config_module = sys.modules.get("config")
         os.environ["BOT_TOKEN"] = "123:TEST_TOKEN"
         os.environ["ADMIN_IDS"] = "1001, 2002;3003, bad"
         os.environ["ALLOW_GROUP_REPORTS"] = "true"
@@ -15,7 +25,15 @@ class ConfigImprovementsTests(unittest.TestCase):
         self.config = importlib.reload(config)
 
     def tearDown(self):
-        sys.modules.pop("config", None)
+        for key, value in self._environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        if self._config_module is None:
+            sys.modules.pop("config", None)
+        else:
+            sys.modules["config"] = self._config_module
 
     def test_parse_admin_ids_handles_common_separators(self):
         self.assertEqual(self.config.parse_admin_ids("1001, 2002;3003, bad"), (1001, 2002, 3003))
