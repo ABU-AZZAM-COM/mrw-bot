@@ -750,6 +750,7 @@ class _ConversationDialogState extends State<_ConversationDialog> {
   bool _sending = false;
   bool _fetching = false;
   bool _canManageMessages = false;
+  final Map<int, Future<Uint8List>> _photoRequests = {};
 
   @override
   void initState() {
@@ -955,6 +956,13 @@ class _ConversationDialogState extends State<_ConversationDialog> {
     }
   }
 
+  Future<Uint8List> _messagePhoto(int messageId) => _photoRequests.putIfAbsent(
+    messageId,
+    () => widget.api.getBytes(
+      '/api/admin/users/${widget.userId}/messages/$messageId/media',
+    ),
+  );
+
   Future<void> _retry(int messageId) async {
     try {
       await widget.api.post(
@@ -985,233 +993,399 @@ class _ConversationDialogState extends State<_ConversationDialog> {
   };
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text('محادثة المستخدم ${widget.userId}'),
-    content: SizedBox(
-      width: 600,
-      height: 480,
-      child: Column(
-        children: [
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null && _items.isEmpty
-                ? Center(child: Text(_error!))
-                : _items.isEmpty
-                ? const Center(child: Text('لا توجد رسائل بعد.'))
-                : ListView.builder(
-                    itemCount: _items.length,
-                    itemBuilder: (context, index) {
-                      final item = _items[index];
-                      final outgoing = item['direction'] == 'out';
-                      return Align(
-                        alignment: outgoing
-                            ? AlignmentDirectional.centerStart
-                            : AlignmentDirectional.centerEnd,
-                        child: Card(
-                          color: outgoing
-                              ? Theme.of(context).colorScheme.primaryContainer
-                              : Theme.of(
-                                  context,
-                                ).colorScheme.surfaceContainerHighest,
-                          child: Padding(
-                            padding: const EdgeInsets.all(10),
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 450),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    item['is_deleted'] == true ||
-                                            item['is_deleted'] == 1
-                                        ? 'تم حذف هذه الرسالة'
-                                        : (item['text']?.toString() ?? ''),
-                                  ),
-                                  if (item['has_media'] == true) ...[
-                                    const SizedBox(height: 4),
-                                    TextButton.icon(
-                                      onPressed: () => _downloadMedia(item),
-                                      icon: const Icon(
-                                        Icons.download_outlined,
-                                        size: 16,
-                                      ),
-                                      label: Text(
-                                        'تنزيل ${item['filename'] ?? item['media_type'] ?? 'الوسيط'}',
-                                      ),
+  Widget build(BuildContext context) {
+    final screen = MediaQuery.sizeOf(context);
+    final dialogWidth = screen.width > 1160 ? 1080.0 : screen.width * .94;
+    final dialogHeight = screen.height > 860 ? 760.0 : screen.height * .88;
+    return Dialog(
+      insetPadding: EdgeInsets.all(screen.width < 500 ? 8 : 20),
+      child: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsetsDirectional.fromSTEB(20, 10, 12, 8),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: Theme.of(
+                      context,
+                    ).colorScheme.primaryContainer,
+                    child: Icon(
+                      Icons.person_outline,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'محادثة المستخدم ${widget.userId}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          'رسائل مباشرة عبر البوت · تحديث تلقائي',
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'تحديث المحادثة',
+                    onPressed: _loading ? null : _load,
+                    icon: const Icon(Icons.refresh),
+                  ),
+                  IconButton(
+                    tooltip: 'إغلاق المحادثة',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: _loading
+                          ? const Center(child: CircularProgressIndicator())
+                          : _error != null && _items.isEmpty
+                          ? Center(child: Text(_error!))
+                          : _items.isEmpty
+                          ? const Center(child: Text('لا توجد رسائل بعد.'))
+                          : ListView.builder(
+                              itemCount: _items.length,
+                              itemBuilder: (context, index) {
+                                final item = _items[index];
+                                final outgoing = item['direction'] == 'out';
+                                return Align(
+                                  alignment: outgoing
+                                      ? AlignmentDirectional.centerStart
+                                      : AlignmentDirectional.centerEnd,
+                                  child: Card(
+                                    elevation: 0,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius:
+                                          BorderRadiusDirectional.only(
+                                            topStart: const Radius.circular(18),
+                                            topEnd: const Radius.circular(18),
+                                            bottomStart: Radius.circular(
+                                              outgoing ? 4 : 18,
+                                            ),
+                                            bottomEnd: Radius.circular(
+                                              outgoing ? 18 : 4,
+                                            ),
+                                          ).resolve(Directionality.of(context)),
                                     ),
-                                  ],
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '${outgoing ? 'الإدارة' : 'المستخدم'} · '
-                                    '${item['created_at'] ?? ''}',
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.labelSmall,
-                                  ),
-                                  if (outgoing &&
-                                      item['delivery_status'] == 'failed') ...[
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      _deliveryError(
-                                        item['error_code']?.toString() ??
-                                            'telegram_send_failed',
-                                      ),
-                                      style: TextStyle(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.error,
-                                      ),
-                                    ),
-                                    Align(
-                                      alignment: AlignmentDirectional.centerEnd,
-                                      child: TextButton.icon(
-                                        onPressed: () =>
-                                            _retry((item['id'] as num).toInt()),
-                                        icon: const Icon(
-                                          Icons.refresh,
-                                          size: 16,
+                                    color: outgoing
+                                        ? Theme.of(
+                                            context,
+                                          ).colorScheme.primaryContainer
+                                        : Theme.of(
+                                            context,
+                                          ).colorScheme.surfaceContainerHighest,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(10),
+                                      child: ConstrainedBox(
+                                        constraints: const BoxConstraints(
+                                          maxWidth: 450,
                                         ),
-                                        label: const Text('إعادة الإرسال'),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            if (item['is_deleted'] == true ||
+                                                item['is_deleted'] == 1)
+                                              const Text('تم حذف هذه الرسالة')
+                                            else if ((item['text']
+                                                        ?.toString() ??
+                                                    '')
+                                                .isNotEmpty)
+                                              SelectableText(
+                                                item['text'].toString(),
+                                              ),
+                                            if (item['has_media'] == true &&
+                                                item['media_type'] == 'photo' &&
+                                                item['is_deleted'] != true &&
+                                                item['is_deleted'] != 1) ...[
+                                              const SizedBox(height: 8),
+                                              ClipRRect(
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                                child: FutureBuilder<Uint8List>(
+                                                  future: _messagePhoto(
+                                                    (item['id'] as num).toInt(),
+                                                  ),
+                                                  builder: (context, snapshot) {
+                                                    if (snapshot.hasData) {
+                                                      return Image.memory(
+                                                        snapshot.data!,
+                                                        width: dialogWidth > 440
+                                                            ? 360
+                                                            : dialogWidth - 80,
+                                                        height:
+                                                            dialogWidth > 440
+                                                            ? 240
+                                                            : dialogWidth * .55,
+                                                        fit: BoxFit.cover,
+                                                      );
+                                                    }
+                                                    if (snapshot.hasError) {
+                                                      return TextButton.icon(
+                                                        onPressed: () =>
+                                                            _downloadMedia(
+                                                              item,
+                                                            ),
+                                                        icon: const Icon(
+                                                          Icons
+                                                              .download_outlined,
+                                                        ),
+                                                        label: const Text(
+                                                          'تعذر عرض الصورة · تنزيل',
+                                                        ),
+                                                      );
+                                                    }
+                                                    return const SizedBox(
+                                                      width: 240,
+                                                      height: 120,
+                                                      child: Center(
+                                                        child:
+                                                            CircularProgressIndicator(),
+                                                      ),
+                                                    );
+                                                  },
+                                                ),
+                                              ),
+                                            ],
+                                            if (item['has_media'] == true) ...[
+                                              const SizedBox(height: 4),
+                                              TextButton.icon(
+                                                onPressed: () =>
+                                                    _downloadMedia(item),
+                                                icon: const Icon(
+                                                  Icons.download_outlined,
+                                                  size: 16,
+                                                ),
+                                                label: Text(
+                                                  'تنزيل ${item['filename'] ?? item['media_type'] ?? 'الوسيط'}',
+                                                ),
+                                              ),
+                                            ],
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              '${outgoing ? 'الإدارة' : 'المستخدم'} · '
+                                              '${item['created_at'] ?? ''}',
+                                              style: Theme.of(
+                                                context,
+                                              ).textTheme.labelSmall,
+                                            ),
+                                            if (outgoing &&
+                                                item['delivery_status'] ==
+                                                    'failed') ...[
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                _deliveryError(
+                                                  item['error_code']
+                                                          ?.toString() ??
+                                                      'telegram_send_failed',
+                                                ),
+                                                style: TextStyle(
+                                                  color: Theme.of(
+                                                    context,
+                                                  ).colorScheme.error,
+                                                ),
+                                              ),
+                                              Align(
+                                                alignment: AlignmentDirectional
+                                                    .centerEnd,
+                                                child: TextButton.icon(
+                                                  onPressed: () => _retry(
+                                                    (item['id'] as num).toInt(),
+                                                  ),
+                                                  icon: const Icon(
+                                                    Icons.refresh,
+                                                    size: 16,
+                                                  ),
+                                                  label: const Text(
+                                                    'إعادة الإرسال',
+                                                  ),
+                                                ),
+                                              ),
+                                            ] else if (outgoing &&
+                                                item['is_deleted'] != true &&
+                                                item['is_deleted'] != 1) ...[
+                                              const SizedBox(height: 3),
+                                              Text(
+                                                item['delivery_status'] ==
+                                                        'delivered'
+                                                    ? 'أُرسل عبر تيليجرام'
+                                                    : 'حالة الإرسال غير معروفة',
+                                                style: Theme.of(
+                                                  context,
+                                                ).textTheme.labelSmall,
+                                              ),
+                                              if (_canManageMessages &&
+                                                  item['telegram_message_id'] !=
+                                                      null)
+                                                Wrap(
+                                                  spacing: 4,
+                                                  children: [
+                                                    TextButton.icon(
+                                                      onPressed: () =>
+                                                          _editMessage(item),
+                                                      icon: const Icon(
+                                                        Icons.edit_outlined,
+                                                        size: 15,
+                                                      ),
+                                                      label: const Text(
+                                                        'تعديل',
+                                                      ),
+                                                    ),
+                                                    TextButton.icon(
+                                                      onPressed: () =>
+                                                          _deleteMessage(item),
+                                                      icon: const Icon(
+                                                        Icons.delete_outline,
+                                                        size: 15,
+                                                      ),
+                                                      label: const Text('حذف'),
+                                                    ),
+                                                  ],
+                                                ),
+                                            ],
+                                          ],
+                                        ),
                                       ),
                                     ),
-                                  ] else if (outgoing &&
-                                      item['is_deleted'] != true &&
-                                      item['is_deleted'] != 1) ...[
-                                    const SizedBox(height: 3),
-                                    Text(
-                                      item['delivery_status'] == 'delivered'
-                                          ? 'أُرسل عبر تيليجرام'
-                                          : 'حالة الإرسال غير معروفة',
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.labelSmall,
-                                    ),
-                                    if (_canManageMessages &&
-                                        item['telegram_message_id'] != null)
-                                      Wrap(
-                                        spacing: 4,
-                                        children: [
-                                          TextButton.icon(
-                                            onPressed: () => _editMessage(item),
-                                            icon: const Icon(
-                                              Icons.edit_outlined,
-                                              size: 15,
-                                            ),
-                                            label: const Text('تعديل'),
-                                          ),
-                                          TextButton.icon(
-                                            onPressed: () =>
-                                                _deleteMessage(item),
-                                            icon: const Icon(
-                                              Icons.delete_outline,
-                                              size: 15,
-                                            ),
-                                            label: const Text('حذف'),
-                                          ),
-                                        ],
-                                      ),
-                                  ],
-                                ],
-                              ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                    if (_error != null && _items.isNotEmpty)
+                      Align(
+                        alignment: AlignmentDirectional.centerStart,
+                        child: Text(
+                          _error!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      alignment: WrapAlignment.spaceBetween,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        TextButton.icon(
+                          onPressed: _sending ? null : _pickMedia,
+                          icon: const Icon(Icons.attach_file),
+                          label: Text(
+                            _filename == null ? 'إرفاق وسيط' : _filename!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        DropdownButton<String>(
+                          value: _mediaType,
+                          onChanged: _sending
+                              ? null
+                              : (value) {
+                                  if (value == null) return;
+                                  setState(() {
+                                    _mediaType = value;
+                                    _mediaBytes = null;
+                                    _filename = null;
+                                  });
+                                },
+                          items: const [
+                            DropdownMenuItem(
+                              value: 'photo',
+                              child: Text('صورة'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'video',
+                              child: Text('فيديو'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'audio',
+                              child: Text('صوت'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'voice',
+                              child: Text('رسالة صوتية'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'document',
+                              child: Text('ملف'),
+                            ),
+                          ],
+                        ),
+                        if (_filename != null)
+                          IconButton(
+                            tooltip: 'إزالة الملف',
+                            onPressed: _sending
+                                ? null
+                                : () => setState(() {
+                                    _mediaBytes = null;
+                                    _filename = null;
+                                  }),
+                            icon: const Icon(Icons.close),
+                          ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _message,
+                            maxLength: 1000,
+                            minLines: 1,
+                            maxLines: 3,
+                            textInputAction: TextInputAction.send,
+                            onSubmitted: (_) {
+                              if (!_sending) _send();
+                            },
+                            decoration: const InputDecoration(
+                              labelText: 'اكتب رسالة',
+                              counterText: '',
                             ),
                           ),
                         ),
-                      );
-                    },
-                  ),
-          ),
-          if (_error != null && _items.isNotEmpty)
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: Text(
-                _error!,
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+                        const SizedBox(width: 8),
+                        IconButton.filled(
+                          onPressed: _sending ? null : _send,
+                          tooltip: 'إرسال',
+                          icon: _sending
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.send),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              TextButton.icon(
-                onPressed: _sending ? null : _pickMedia,
-                icon: const Icon(Icons.attach_file),
-                label: Text(
-                  _filename == null ? 'إرفاق وسيط' : _filename!,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 8),
-              DropdownButton<String>(
-                value: _mediaType,
-                onChanged: _sending
-                    ? null
-                    : (value) {
-                        if (value == null) return;
-                        setState(() {
-                          _mediaType = value;
-                          _mediaBytes = null;
-                          _filename = null;
-                        });
-                      },
-                items: const [
-                  DropdownMenuItem(value: 'photo', child: Text('صورة')),
-                  DropdownMenuItem(value: 'video', child: Text('فيديو')),
-                  DropdownMenuItem(value: 'audio', child: Text('صوت')),
-                  DropdownMenuItem(value: 'voice', child: Text('رسالة صوتية')),
-                  DropdownMenuItem(value: 'document', child: Text('ملف')),
-                ],
-              ),
-              if (_filename != null)
-                IconButton(
-                  tooltip: 'إزالة الملف',
-                  onPressed: _sending
-                      ? null
-                      : () => setState(() {
-                          _mediaBytes = null;
-                          _filename = null;
-                        }),
-                  icon: const Icon(Icons.close),
-                ),
-            ],
-          ),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _message,
-                  maxLength: 1000,
-                  minLines: 1,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: 'اكتب رسالة',
-                    counterText: '',
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton.filled(
-                onPressed: _sending ? null : _send,
-                tooltip: 'إرسال',
-                icon: _sending
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.send),
-              ),
-            ],
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-    actions: [
-      TextButton(onPressed: _load, child: const Text('تحديث')),
-      TextButton(
-        onPressed: () => Navigator.of(context).pop(),
-        child: const Text('إغلاق'),
-      ),
-    ],
-  );
+    );
+  }
 }
 
 // ==================================================================

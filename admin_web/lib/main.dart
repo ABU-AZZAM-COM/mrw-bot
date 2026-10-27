@@ -156,6 +156,7 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _c = TextEditingController();
+  final TextEditingController _adminName = TextEditingController();
   late final TextEditingController _baseUrl;
   bool _busy = false;
   String? _err;
@@ -176,15 +177,17 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void dispose() {
     _c.dispose();
+    _adminName.dispose();
     _baseUrl.dispose();
     super.dispose();
   }
 
   Future<void> _connect() async {
-    final t = _c.text.trim();
+    final credential = _c.text;
+    final adminName = _adminName.text.trim();
     final base = _baseUrl.text.trim().replaceFirst(RegExp(r'/+$'), '');
-    if (t.isEmpty) {
-      setState(() => _err = 'أدخل توكن الإدارة');
+    if (credential.isEmpty) {
+      setState(() => _err = 'أدخل كلمة المرور أو توكن الإدارة');
       return;
     }
     final parsedBase = Uri.tryParse(base);
@@ -202,14 +205,25 @@ class _LoginScreenState extends State<LoginScreen> {
       _busy = true;
       _err = null;
     });
-    final probe = Api(token: t, onUnauthorized: null, baseUrl: base);
+    final probe = Api(token: '', onUnauthorized: null, baseUrl: base);
     try {
-      final result = await probe.get('/api/admin/overview');
+      final session = await probe.post('/api/admin/login', {
+        'name': adminName,
+        'credential': credential,
+      });
+      final token = session['token']?.toString() ?? '';
+      if (token.isEmpty) throw ApiException(502, 'bad_response');
+      final authenticated = Api(
+        token: token,
+        onUnauthorized: null,
+        baseUrl: base,
+      );
+      final result = await authenticated.get('/api/admin/overview');
       if (result['ok'] != true) {
         throw ApiException(502, (result['error'] ?? 'bad_response').toString());
       }
       if (!mounted) return;
-      widget.onConnected(t);
+      widget.onConnected(token);
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -270,14 +284,24 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         const SizedBox(height: 20),
                         TextField(
+                          controller: _adminName,
+                          textInputAction: TextInputAction.next,
+                          autocorrect: false,
+                          decoration: const InputDecoration(
+                            labelText:
+                                'اسم حساب المشرف (اتركه فارغًا للدخول بالتوكن)',
+                            prefixIcon: Icon(Icons.badge_outlined),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
                           controller: _c,
                           obscureText: true,
-                          autofocus: true,
                           autocorrect: false,
                           enableSuggestions: false,
                           onSubmitted: (_) => _connect(),
                           decoration: const InputDecoration(
-                            labelText: 'توكن الإدارة',
+                            labelText: 'كلمة المرور أو توكن الإدارة',
                             prefixIcon: Icon(Icons.key_outlined),
                           ),
                         ),
