@@ -30,7 +30,19 @@ $excludeFiles = @("user_session.session", "user_session.session-journal", "*.pyc
 robocopy $projectRoot $stage /E /XD @excludeDirs /XF @excludeFiles /NFL /NDL /NJH /NJS /NP | Out-Null
 
 # 2) التأكد من وجود ملفات أساسية
-foreach ($f in @("main.py", "config.py", "handlers.py", "admin.py", "database.py", "requirements.txt")) {
+foreach ($f in @(
+    "main.py",
+    "config.py",
+    "handlers.py",
+    "admin.py",
+    "database\__init__.py",
+    "app\main.py",
+    "app\space_app.py",
+    "bot\handlers.py",
+    "api\admin_api.py",
+    "services\archive.py",
+    "requirements.txt"
+)) {
     if (-not (Test-Path (Join-Path $stage $f))) { throw "ملف أساسي مفقود: $f" }
 }
 

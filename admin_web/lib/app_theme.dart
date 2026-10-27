@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 
+import 'design_tokens.dart';
+
 /// ثيمات لوحة الإدارة — أربعة أوضاع داكنة بهوية خضراء موحّدة.
 ///
 /// اللون accent يبقى ثابتًا في كل الأوضاع حتى لا تتعارض العناصر الملوّنة
@@ -69,7 +71,7 @@ abstract final class AdminTheme {
       seedColor: seed,
       brightness: isDark ? Brightness.dark : Brightness.light,
       surface: surface,
-    ).copyWith(primary: seed, surface: surface);
+    ).copyWith(primary: seed, surface: surface, outline: border);
     return ThemeData(
       useMaterial3: true,
       fontFamily: fontFamily.isEmpty ? null : fontFamily,
@@ -78,10 +80,26 @@ abstract final class AdminTheme {
       cardColor: surface,
       dividerColor: border,
       visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
+      cardTheme: CardThemeData(
+        color: surface,
+        elevation: 0,
+        margin: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
+          side: BorderSide(color: border),
+        ),
+      ),
+      dividerTheme: DividerThemeData(color: border, thickness: 1, space: 1),
       appBarTheme: AppBarTheme(
         backgroundColor: background,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
+        titleTextStyle: TextStyle(
+          color: scheme.onSurface,
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+          fontFamily: fontFamily.isEmpty ? null : fontFamily,
+        ),
         iconTheme: IconThemeData(
           color: isDark ? Colors.white70 : const Color(0xFF36433B),
         ),
@@ -89,13 +107,40 @@ abstract final class AdminTheme {
           color: isDark ? Colors.white70 : const Color(0xFF36433B),
         ),
       ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          minimumSize: const Size(40, 40),
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(40, 40),
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
+          ),
+        ),
+      ),
       navigationRailTheme: NavigationRailThemeData(
         backgroundColor: surface,
+        minWidth: 72,
+        minExtendedWidth: 224,
         indicatorColor: seed.withValues(alpha: 0.16),
         selectedIconTheme: IconThemeData(color: seed),
+        unselectedIconTheme: IconThemeData(
+          color: isDark ? Colors.white60 : const Color(0xFF627067),
+        ),
         selectedLabelTextStyle: TextStyle(
           color: seed,
           fontWeight: FontWeight.w700,
+        ),
+        unselectedLabelTextStyle: TextStyle(
+          color: scheme.onSurfaceVariant,
+          fontWeight: FontWeight.w500,
         ),
       ),
       drawerTheme: DrawerThemeData(backgroundColor: surface),
@@ -106,15 +151,15 @@ abstract final class AdminTheme {
         filled: true,
         fillColor: field,
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
           borderSide: BorderSide(color: border),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
           borderSide: BorderSide(color: border),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
           borderSide: BorderSide(color: seed, width: 1.4),
         ),
       ),

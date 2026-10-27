@@ -9,6 +9,8 @@ import 'app_theme.dart';
 import 'pages.dart';
 import 'pages2.dart';
 import 'pages/whats_new_page.dart';
+import 'pages/admins_page.dart';
+import 'design_tokens.dart';
 import 'theme_menu.dart';
 import 'widgets.dart';
 import 'web_api.dart';
@@ -522,7 +524,7 @@ class _MainShellState extends State<MainShell> {
     }
   }
 
-  static const _destinations = <(String, IconData)>[
+  static const _baseDestinations = <(String, IconData)>[
     ('نظرة عامة', Icons.dashboard_outlined),
     ('البلاغات', Icons.report_outlined),
     ('المتبلّغون', Icons.people_outline),
@@ -540,6 +542,11 @@ class _MainShellState extends State<MainShell> {
     ('ما الجديد', Icons.new_releases_outlined),
   ];
 
+  List<(String, IconData)> get _destinations => [
+    ..._baseDestinations,
+    if (_role == 'owner') ('المشرفون والصلاحيات', Icons.manage_accounts_outlined),
+  ];
+
   List<Widget> get _pages => [
     OverviewPage(
       key: ValueKey('overview-$_eventRevision'),
@@ -549,6 +556,8 @@ class _MainShellState extends State<MainShell> {
     ReportsPage(
       key: ValueKey('reports-$_eventRevision-${_pendingReportId ?? 0}'),
       api: widget.api,
+      onOpenConversation: (userId) =>
+          openUserConversation(context, widget.api, userId),
       focusReportId: _pendingReportId,
       onFocusHandled: () {
         if (mounted) setState(() => _pendingReportId = null);
@@ -623,6 +632,14 @@ class _MainShellState extends State<MainShell> {
       },
     ),
     const WhatsNewPage(),
+    if (_role == 'owner')
+      AdminsPage(
+        api: widget.api,
+        onUseOwnerToken: (token) {
+          Api.saveToken(token);
+          html.window.location.reload();
+        },
+      ),
   ];
 
   void _select(int index) {
@@ -640,9 +657,14 @@ class _MainShellState extends State<MainShell> {
             padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
             child: Row(
               children: [
-                const CircleAvatar(
-                  backgroundColor: Color(0xFF183B2B),
-                  child: Icon(Icons.shield_outlined, color: Color(0xFF67D6A6)),
+                CircleAvatar(
+                  backgroundColor: Theme.of(
+                    context,
+                  ).colorScheme.primary.withValues(alpha: 0.14),
+                  child: Icon(
+                    Icons.shield_outlined,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -688,6 +710,7 @@ class _MainShellState extends State<MainShell> {
     return Scaffold(
       drawer: compact ? _drawer() : null,
       appBar: AppBar(
+        backgroundColor: Theme.of(context).colorScheme.surface,
         titleSpacing: 20,
         title: Row(
           children: [
@@ -767,14 +790,26 @@ class _MainShellState extends State<MainShell> {
               extended: extendedRail,
               selectedIndex: _selectedIndex,
               onDestinationSelected: _select,
-              labelType: extendedRail ? null : NavigationRailLabelType.all,
+              labelType: extendedRail ? null : NavigationRailLabelType.selected,
               groupAlignment: -1,
               leading: Padding(
                 padding: const EdgeInsets.fromLTRB(8, 8, 8, 18),
-                child: Icon(
-                  Icons.shield_outlined,
-                  color: Theme.of(context).colorScheme.primary,
-                  size: 28,
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(
+                      AdminTokens.controlRadius,
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.shield_outlined,
+                    color: Theme.of(context).colorScheme.primary,
+                    size: 24,
+                  ),
                 ),
               ),
               destinations: [
