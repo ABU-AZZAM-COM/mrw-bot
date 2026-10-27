@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 
 const Map<String, (Color, IconData)> kStatusStyles = {
@@ -152,7 +153,12 @@ class _OverviewPageState extends State<OverviewPage> {
     return RefreshIndicator(
       onRefresh: () => _load(),
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
+        padding: const EdgeInsets.fromLTRB(
+          AdminTokens.pageInset,
+          18,
+          AdminTokens.pageInset,
+          28,
+        ),
         children: [
           _DashboardHero(
             botReady: botReady,
@@ -171,7 +177,7 @@ class _OverviewPageState extends State<OverviewPage> {
               ],
             ),
           ],
-          const SizedBox(height: 18),
+          const SizedBox(height: AdminTokens.sectionGap),
           LayoutBuilder(
             builder: (context, constraints) {
               final columns = constraints.maxWidth >= 1120
@@ -392,7 +398,7 @@ class _DashboardHero extends StatelessWidget {
               ? const [Color(0xFF3B2028), Color(0xFF1E1822)]
               : const [Color(0xFF12352D), Color(0xFF152535)],
         ),
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(AdminTokens.heroRadius),
         border: Border.all(
           color: (critical ? const Color(0xFFFF7C83) : const Color(0xFF56D6A0))
               .withValues(alpha: 0.32),
@@ -597,15 +603,15 @@ class _MetricCard extends StatelessWidget {
       width: width,
       child: Material(
         color: theme.cardColor,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
         child: InkWell(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
           onTap: onTap,
           child: Container(
             constraints: const BoxConstraints(minHeight: 142),
             padding: const EdgeInsets.all(17),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(18),
+              borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
               border: Border.all(color: theme.dividerColor),
             ),
             child: Column(
@@ -676,58 +682,13 @@ class _Panel extends StatelessWidget {
   final Widget? trailing;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: theme.cardColor,
-        borderRadius: BorderRadius.circular(19),
-        border: Border.all(color: theme.dividerColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withValues(alpha: 0.11),
-                  borderRadius: BorderRadius.circular(11),
-                ),
-                child: Icon(icon, size: 19, color: theme.colorScheme.primary),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: TextStyle(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              ?trailing,
-            ],
-          ),
-          const SizedBox(height: 18),
-          child,
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => SectionCard(
+    title,
+    subtitle: subtitle,
+    icon: icon,
+    trailing: trailing,
+    child: child,
+  );
 }
 
 class _SmallAction extends StatelessWidget {
@@ -851,15 +812,15 @@ class _AttentionCard extends StatelessWidget {
       width: width,
       child: Material(
         color: color.withValues(alpha: 0.055),
-        borderRadius: BorderRadius.circular(15),
+        borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(15),
+          borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
           child: Container(
             constraints: const BoxConstraints(minHeight: 134),
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(15),
+              borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
               border: Border.all(color: color.withValues(alpha: 0.22)),
             ),
             child: Column(

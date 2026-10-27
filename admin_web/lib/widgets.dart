@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'api.dart';
+import 'design_tokens.dart';
 
 const _snackErr = Color(0xFF7F1D1D);
 const _snackOk = Color(0xFF14532D);
@@ -50,7 +51,7 @@ class _StatCardState extends State<StatCard> {
             elevation: _hovered ? 7 : 2,
             color: theme.cardColor,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
               side: BorderSide(color: theme.dividerColor),
             ),
             child: Padding(
@@ -101,41 +102,74 @@ class SectionCard extends StatelessWidget {
     required this.child,
     this.trailing,
     this.icon,
+    this.subtitle,
   });
 
   final String title;
   final Widget child;
   final Widget? trailing;
   final IconData? icon;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final subtitleText = subtitle;
     return Card(
       color: theme.cardColor,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
         side: BorderSide(color: theme.dividerColor),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
                 if (icon != null) ...[
-                  Icon(icon, size: 20),
-                  const SizedBox(width: 6),
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.11),
+                      borderRadius: BorderRadius.circular(
+                        AdminTokens.controlRadius,
+                      ),
+                    ),
+                    child: Icon(
+                      icon,
+                      size: 19,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
                 ],
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      if (subtitleText?.isNotEmpty ?? false) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitleText ?? '',
+                          style: TextStyle(
+                            color: theme.colorScheme.onSurfaceVariant,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-                const Spacer(),
                 if (trailing != null) trailing!,
               ],
             ),
@@ -350,7 +384,7 @@ class StateBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: c.withValues(alpha: outline ? 0 : 0.16),
         border: Border.all(color: c),
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
       ),
       child: Text(
         text,

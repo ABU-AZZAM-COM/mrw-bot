@@ -188,4 +188,34 @@ void main() {
     expect(find.text('حركة البلاغات'), findsOneWidget);
     expect(find.textContaining('بيانات الرسم غير متاحة'), findsOneWidget);
   });
+
+  testWidgets('يحافظ على ترتيب اللوحة على الشاشات الضيقة', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: OverviewPage(api: _OverviewApi())),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('مركز قيادة البلاغات'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('حركة البلاغات'),
+      240,
+      scrollable: find.descendant(
+        of: find.byType(ListView),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    expect(find.text('حركة البلاغات'), findsOneWidget);
+    expect(
+      find.text('اتجاه البلاغات اليومية خلال آخر سبعة أيام'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
 }

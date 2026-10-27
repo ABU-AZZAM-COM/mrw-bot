@@ -3,9 +3,9 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 import 'overview_page.dart' show fmt, kStatusOrder, kStatusStyles;
-import 'messaging_page.dart' show openUserConversation;
 import 'shared_dialogs.dart';
 import 'user_dossier_dialog.dart';
 
@@ -20,11 +20,13 @@ class ReportsPage extends StatefulWidget {
   const ReportsPage({
     super.key,
     required this.api,
+    required this.onOpenConversation,
     this.focusReportId,
     this.onFocusHandled,
   });
 
   final AdminApi api;
+  final ValueChanged<int> onOpenConversation;
   final int? focusReportId;
   final VoidCallback? onFocusHandled;
 
@@ -149,7 +151,7 @@ class _ReportsPageState extends State<ReportsPage> {
       toast(context, 'معرّف المستخدم غير متاح', error: true);
       return;
     }
-    openUserConversation(context, widget.api, userId);
+    widget.onOpenConversation(userId);
   }
 
   void _shiftPage(int d) {
@@ -162,162 +164,191 @@ class _ReportsPageState extends State<ReportsPage> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              DropdownButton<String?>(
-                value: _status,
-                hint: const Text('كل الحالات'),
-                underline: const SizedBox(),
-                items: [
-                  const DropdownMenuItem<String?>(
-                    value: null,
-                    child: Text('كل الحالات'),
-                  ),
-                  for (final s in kStatusOrder)
-                    DropdownMenuItem<String?>(value: s, child: Text(s)),
-                ],
-                onChanged: (v) {
-                  setState(() {
-                    _status = v;
-                    _page = 0;
-                  });
-                  _load();
-                },
-              ),
-              DropdownButton<int?>(
-                value: _assignedFilter,
-                hint: const Text('كل المشرفين'),
-                underline: const SizedBox(),
-                items: [
-                  const DropdownMenuItem<int?>(
-                    value: null,
-                    child: Text('كل المشرفين'),
-                  ),
-                  for (final id in _adminIds)
-                    DropdownMenuItem<int?>(value: id, child: Text('مشرف $id')),
-                ],
-                onChanged: (value) {
-                  setState(() {
-                    _assignedFilter = value;
-                    if (value != null) _unassignedOnly = false;
-                    _page = 0;
-                  });
-                  _load();
-                },
-              ),
-              DropdownButton<String?>(
-                value: _priorityFilter,
-                hint: const Text('كل الأولويات'),
-                underline: const SizedBox(),
-                items: const [
-                  DropdownMenuItem<String?>(
-                    value: null,
-                    child: Text('كل الأولويات'),
-                  ),
-                  DropdownMenuItem<String?>(
-                    value: 'urgent',
-                    child: Text('عاجلة'),
-                  ),
-                  DropdownMenuItem<String?>(
-                    value: 'high',
-                    child: Text('عالية'),
-                  ),
-                  DropdownMenuItem<String?>(
-                    value: 'normal',
-                    child: Text('عادية'),
-                  ),
-                  DropdownMenuItem<String?>(
-                    value: 'low',
-                    child: Text('منخفضة'),
-                  ),
-                ],
-                onChanged: (value) {
-                  setState(() {
-                    _priorityFilter = value;
-                    _page = 0;
-                  });
-                  _load();
-                },
-              ),
-              FilterChip(
-                label: const Text('متأخرة'),
-                selected: _overdueOnly,
-                onSelected: (value) {
-                  setState(() {
-                    _overdueOnly = value;
-                    _page = 0;
-                  });
-                  _load();
-                },
-              ),
-              FilterChip(
-                label: const Text('غير مسندة'),
-                selected: _unassignedOnly,
-                onSelected: (value) {
-                  setState(() {
-                    _unassignedOnly = value;
-                    if (value) _assignedFilter = null;
-                    _page = 0;
-                  });
-                  _load();
-                },
-              ),
-              DropdownButton<String?>(
-                value: _type,
-                hint: const Text('كل التصنيفات'),
-                underline: const SizedBox(),
-                items: [
-                  const DropdownMenuItem<String?>(
-                    value: null,
-                    child: Text('كل التصنيفات'),
-                  ),
-                  for (final t in _types)
-                    DropdownMenuItem<String?>(value: t, child: Text(t)),
-                ],
-                onChanged: (v) {
-                  setState(() {
-                    _type = v;
-                    _page = 0;
-                  });
-                  _load();
-                },
-              ),
-              SizedBox(
-                width: 230,
-                child: TextField(
-                  controller: _q,
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.search, size: 20),
-                    hintText: 'بحث: رقم/اسم/وصف/رابط/معرف',
-                    isDense: true,
-                  ),
-                  onSubmitted: (_) {
-                    setState(() => _page = 0);
-                    _load();
-                  },
+          padding: const EdgeInsets.fromLTRB(
+            AdminTokens.pageInset,
+            12,
+            AdminTokens.pageInset,
+            8,
+          ),
+          child: SectionCard(
+            'تصفية البلاغات',
+            subtitle: 'ابحث وضيّق النتائج حسب الحالة والأولوية والتكليف',
+            icon: Icons.filter_alt_outlined,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                StateBadge(
+                  '$_total نتيجة',
+                  color: Theme.of(context).colorScheme.primary,
                 ),
-              ),
-              IconButton.filledTonal(
-                tooltip: 'بحث/تحديث',
-                onPressed: () {
-                  setState(() => _page = 0);
-                  _load();
-                },
-                icon: const Icon(Icons.search),
-              ),
-              IconButton(
-                tooltip: 'تحديث',
-                onPressed: _load,
-                icon: const Icon(Icons.refresh),
-              ),
-            ],
+                IconButton(
+                  tooltip: 'تحديث النتائج',
+                  onPressed: _load,
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final searchWidth = constraints.maxWidth < 560
+                    ? constraints.maxWidth
+                    : 260.0;
+                return Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    DropdownButton<String?>(
+                      value: _status,
+                      hint: const Text('كل الحالات'),
+                      underline: const SizedBox(),
+                      items: [
+                        const DropdownMenuItem<String?>(
+                          value: null,
+                          child: Text('كل الحالات'),
+                        ),
+                        for (final s in kStatusOrder)
+                          DropdownMenuItem<String?>(value: s, child: Text(s)),
+                      ],
+                      onChanged: (v) {
+                        setState(() {
+                          _status = v;
+                          _page = 0;
+                        });
+                        _load();
+                      },
+                    ),
+                    DropdownButton<int?>(
+                      value: _assignedFilter,
+                      hint: const Text('كل المشرفين'),
+                      underline: const SizedBox(),
+                      items: [
+                        const DropdownMenuItem<int?>(
+                          value: null,
+                          child: Text('كل المشرفين'),
+                        ),
+                        for (final id in _adminIds)
+                          DropdownMenuItem<int?>(
+                            value: id,
+                            child: Text('مشرف $id'),
+                          ),
+                      ],
+                      onChanged: (value) {
+                        setState(() {
+                          _assignedFilter = value;
+                          if (value != null) _unassignedOnly = false;
+                          _page = 0;
+                        });
+                        _load();
+                      },
+                    ),
+                    DropdownButton<String?>(
+                      value: _priorityFilter,
+                      hint: const Text('كل الأولويات'),
+                      underline: const SizedBox(),
+                      items: const [
+                        DropdownMenuItem<String?>(
+                          value: null,
+                          child: Text('كل الأولويات'),
+                        ),
+                        DropdownMenuItem<String?>(
+                          value: 'urgent',
+                          child: Text('عاجلة'),
+                        ),
+                        DropdownMenuItem<String?>(
+                          value: 'high',
+                          child: Text('عالية'),
+                        ),
+                        DropdownMenuItem<String?>(
+                          value: 'normal',
+                          child: Text('عادية'),
+                        ),
+                        DropdownMenuItem<String?>(
+                          value: 'low',
+                          child: Text('منخفضة'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        setState(() {
+                          _priorityFilter = value;
+                          _page = 0;
+                        });
+                        _load();
+                      },
+                    ),
+                    FilterChip(
+                      label: const Text('متأخرة'),
+                      selected: _overdueOnly,
+                      onSelected: (value) {
+                        setState(() {
+                          _overdueOnly = value;
+                          _page = 0;
+                        });
+                        _load();
+                      },
+                    ),
+                    FilterChip(
+                      label: const Text('غير مسندة'),
+                      selected: _unassignedOnly,
+                      onSelected: (value) {
+                        setState(() {
+                          _unassignedOnly = value;
+                          if (value) _assignedFilter = null;
+                          _page = 0;
+                        });
+                        _load();
+                      },
+                    ),
+                    DropdownButton<String?>(
+                      value: _type,
+                      hint: const Text('كل التصنيفات'),
+                      underline: const SizedBox(),
+                      items: [
+                        const DropdownMenuItem<String?>(
+                          value: null,
+                          child: Text('كل التصنيفات'),
+                        ),
+                        for (final t in _types)
+                          DropdownMenuItem<String?>(value: t, child: Text(t)),
+                      ],
+                      onChanged: (v) {
+                        setState(() {
+                          _type = v;
+                          _page = 0;
+                        });
+                        _load();
+                      },
+                    ),
+                    SizedBox(
+                      width: searchWidth,
+                      child: TextField(
+                        controller: _q,
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.search, size: 20),
+                          hintText: 'بحث: رقم/اسم/وصف/رابط/معرف',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        onSubmitted: (_) {
+                          setState(() => _page = 0);
+                          _load();
+                        },
+                      ),
+                    ),
+                    FilledButton.tonalIcon(
+                      onPressed: () {
+                        setState(() => _page = 0);
+                        _load();
+                      },
+                      icon: const Icon(Icons.search),
+                      label: const Text('بحث'),
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
         ),
-        const Divider(height: 1),
         Expanded(child: _body(context)),
         Padding(
           padding: const EdgeInsets.all(10),
@@ -326,18 +357,25 @@ class _ReportsPageState extends State<ReportsPage> {
             children: [
               IconButton(
                 onPressed: _page == 0 ? null : () => _shiftPage(-1),
+                tooltip: 'الصفحة السابقة',
                 icon: const Icon(Icons.chevron_right),
               ),
-              Text(
-                'الصفحة ${_page + 1} — الإجمالي $_total',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+              Flexible(
+                child: Text(
+                  'صفحة ${_page + 1} من ${(_total / _size).ceil().clamp(1, 100000)} · $_total بلاغ',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
               IconButton(
                 onPressed: (_page + 1) * _size >= _total
                     ? null
                     : () => _shiftPage(1),
+                tooltip: 'الصفحة التالية',
                 icon: const Icon(Icons.chevron_left),
               ),
             ],
@@ -351,30 +389,168 @@ class _ReportsPageState extends State<ReportsPage> {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_err != null) return ErrorView(_err!, _load);
     if (_items.isEmpty) return const EmptyView('لا بلاغات مطابقة');
-    return SingleChildScrollView(
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: DataTable(
-          showCheckboxColumn: false,
-          headingRowColor: WidgetStatePropertyAll(
-            Theme.of(context).colorScheme.surfaceContainerHighest,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 760) {
+          return ListView.separated(
+            padding: const EdgeInsets.all(12),
+            itemCount: _items.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 10),
+            itemBuilder: (context, index) =>
+                _reportCard(context, _items[index]),
+          );
+        }
+        return SingleChildScrollView(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              showCheckboxColumn: false,
+              headingRowColor: WidgetStatePropertyAll(
+                Theme.of(context).colorScheme.surfaceContainerHighest,
+              ),
+              columns: const [
+                DataColumn(label: Text('الرقم')),
+                DataColumn(label: Text('الحالة')),
+                DataColumn(label: Text('الاسم')),
+                DataColumn(label: Text('المعرف')),
+                DataColumn(label: Text('التصنيف')),
+                DataColumn(label: Text('الأولوية')),
+                DataColumn(label: Text('نشاط المستخدم')),
+                DataColumn(label: Text('التاريخ')),
+                DataColumn(label: Text('إجراءات')),
+              ],
+              rows: [for (final r in _items) _row(context, r)],
+            ),
           ),
-          columns: const [
-            DataColumn(label: Text('الرقم')),
-            DataColumn(label: Text('الحالة')),
-            DataColumn(label: Text('الاسم')),
-            DataColumn(label: Text('المعرف')),
-            DataColumn(label: Text('التصنيف')),
-            DataColumn(label: Text('الأولوية')),
-            DataColumn(label: Text('نشاط المستخدم')),
-            DataColumn(label: Text('التاريخ')),
-            DataColumn(label: Text('إجراءات')),
-          ],
-          rows: [for (final r in _items) _row(context, r)],
+        );
+      },
+    );
+  }
+
+  Widget _reportCard(BuildContext context, Map<String, dynamic> report) {
+    final theme = Theme.of(context);
+    final status = report['status']?.toString() ?? '-';
+    final style = kStatusStyles[status];
+    final reportId = int.tryParse('${report['id'] ?? ''}');
+    final userId = int.tryParse('${report['user_id'] ?? ''}');
+    final priority = '${report['priority'] ?? 'normal'}';
+    final hasPhoto =
+        report['has_photo'] == true ||
+        (report['photo_file_id'] ?? '').toString().isNotEmpty;
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      color: status == 'جديد'
+          ? theme.colorScheme.surfaceContainerHighest
+          : theme.cardColor,
+      child: InkWell(
+        onTap: () => _detailDialog(context, report),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: SelectableText(
+                      '${report['seq'] ?? '-'}',
+                      textDirection: TextDirection.ltr,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  StateBadge(status, color: style?.$1 ?? Colors.grey),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${report['full_name'] ?? '-'}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  UserActivityIndicator(
+                    lastSeen: report['user_last_at'] as String?,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'معرّف المستخدم ${report['user_id'] ?? '-'}'
+                '  ·  ${fmt((report['created_at'] ?? '') as String)}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textDirection: TextDirection.rtl,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 7,
+                runSpacing: 7,
+                children: [
+                  StateBadge(
+                    '${report['violation_type'] ?? 'بلا تصنيف'}',
+                    color: theme.colorScheme.primary,
+                  ),
+                  StateBadge(
+                    'أولوية ${priorityLabel(priority)}',
+                    color: _priorityColor(theme, priority),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: Wrap(
+                  spacing: 4,
+                  children: [
+                    if (hasPhoto)
+                      IconButton(
+                        tooltip: 'تنزيل صورة البلاغ',
+                        onPressed: reportId == null
+                            ? null
+                            : () => _downloadPhoto(reportId),
+                        icon: const Icon(Icons.download_outlined),
+                      ),
+                    IconButton(
+                      tooltip: 'فتح محادثة مباشرة مع المستخدم',
+                      onPressed: userId == null
+                          ? null
+                          : () => _openConversation(report),
+                      icon: const Icon(Icons.chat_outlined),
+                    ),
+                    TextButton.icon(
+                      onPressed: () => _detailDialog(context, report),
+                      icon: const Icon(Icons.open_in_new, size: 17),
+                      label: const Text('تفاصيل البلاغ'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+
+  Color _priorityColor(ThemeData theme, String priority) => switch (priority) {
+    'urgent' => const Color(0xFFFF7C83),
+    'high' => const Color(0xFFFFC857),
+    'low' => theme.colorScheme.onSurfaceVariant,
+    _ => theme.colorScheme.primary,
+  };
 
   DataRow _row(BuildContext context, Map<String, dynamic> r) {
     final String status = (r['status'] ?? '-') as String;
@@ -459,17 +635,29 @@ class _ReportsPageState extends State<ReportsPage> {
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => Dialog(
-        child: SizedBox(
-          width: 940,
-          height: 680,
-          child: _ReportDetail(
-            api: widget.api,
-            rid: rid,
-            types: _types,
-            onChanged: _load,
-          ),
-        ),
+      builder: (ctx) => LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth < 964
+              ? constraints.maxWidth - 24
+              : 940.0;
+          final height = constraints.maxHeight < 704
+              ? constraints.maxHeight - 24
+              : 680.0;
+          return Dialog(
+            insetPadding: const EdgeInsets.all(12),
+            child: SizedBox(
+              width: width,
+              height: height,
+              child: _ReportDetail(
+                api: widget.api,
+                rid: rid,
+                types: _types,
+                onOpenConversation: widget.onOpenConversation,
+                onChanged: _load,
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -483,12 +671,14 @@ class _ReportDetail extends StatefulWidget {
     required this.api,
     required this.rid,
     required this.types,
+    required this.onOpenConversation,
     required this.onChanged,
   });
 
   final AdminApi api;
   final int rid;
   final List<String> types;
+  final ValueChanged<int> onOpenConversation;
   final VoidCallback onChanged;
 
   @override
@@ -575,6 +765,7 @@ class _ReportDetailState extends State<_ReportDetail> {
       return const Center(child: CircularProgressIndicator());
     }
     final status = (r['status'] ?? '-') as String;
+    final userId = int.tryParse('${r['user_id'] ?? ''}');
     return Column(
       children: [
         Container(
@@ -585,34 +776,29 @@ class _ReportDetailState extends State<_ReportDetail> {
           ),
           child: Row(
             children: [
-              Text(
-                'تفصيل البلاغ ${r['seq'] ?? '-'}',
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 15,
+              Expanded(
+                child: Text(
+                  'تفصيل البلاغ ${r['seq'] ?? '-'}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 15,
+                  ),
                 ),
               ),
-              const Spacer(),
               IconButton(
                 tooltip: 'فتح بطاقة الكشف للمبلّغ',
-                onPressed: int.tryParse('${r['user_id'] ?? ''}') == null
+                onPressed: userId == null
                     ? null
-                    : () => showUserDossier(
-                        context,
-                        widget.api,
-                        int.parse('${r['user_id']}'),
-                      ),
+                    : () => showUserDossier(context, widget.api, userId),
                 icon: const Icon(Icons.manage_search_outlined, size: 20),
               ),
               IconButton(
                 tooltip: 'فتح محادثة مباشرة مع المستخدم',
-                onPressed: int.tryParse('${r['user_id'] ?? ''}') == null
+                onPressed: userId == null
                     ? null
-                    : () => openUserConversation(
-                        context,
-                        widget.api,
-                        int.parse('${r['user_id']}'),
-                      ),
+                    : () => widget.onOpenConversation(userId),
                 icon: const Icon(Icons.chat_outlined, size: 20),
               ),
               IconButton(
@@ -634,19 +820,41 @@ class _ReportDetailState extends State<_ReportDetail> {
         Expanded(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(14),
-            child: Column(
-              children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 700;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _photo(context, r),
-                    const SizedBox(width: 14),
-                    Expanded(child: _info(context, r)),
+                    if (compact) ...[
+                      Align(
+                        alignment: AlignmentDirectional.centerStart,
+                        child: _photo(
+                          context,
+                          r,
+                          availableWidth: constraints.maxWidth,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      _info(context, r),
+                    ] else
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _photo(
+                            context,
+                            r,
+                            availableWidth: constraints.maxWidth,
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(child: _info(context, r)),
+                        ],
+                      ),
+                    const SizedBox(height: 12),
+                    _actions(context, r, status),
                   ],
-                ),
-                const SizedBox(height: 12),
-                _actions(context, r, status),
-              ],
+                );
+              },
             ),
           ),
         ),
@@ -654,13 +862,18 @@ class _ReportDetailState extends State<_ReportDetail> {
     );
   }
 
-  Widget _photo(BuildContext context, Map<String, dynamic> r) {
+  Widget _photo(
+    BuildContext context,
+    Map<String, dynamic> r, {
+    required double availableWidth,
+  }) {
+    final imageWidth = availableWidth < 340 ? availableWidth : 340.0;
     final hasFile =
         r['has_photo'] == true ||
         ((r['photo_file_id'] ?? '') as String).isNotEmpty;
     if (!hasFile) {
       return SizedBox(
-        width: 330,
+        width: imageWidth,
         child: Card(
           color: Theme.of(context).cardColor,
           child: const SizedBox(
@@ -671,7 +884,7 @@ class _ReportDetailState extends State<_ReportDetail> {
       );
     }
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 350),
+      constraints: BoxConstraints(maxWidth: imageWidth),
       child: Card(
         color: Theme.of(context).cardColor,
         child: Column(
@@ -684,7 +897,7 @@ class _ReportDetailState extends State<_ReportDetail> {
                   return Image.memory(
                     snapshot.data!,
                     fit: BoxFit.contain,
-                    width: 340,
+                    width: imageWidth,
                     errorBuilder: (context, error, stackTrace) =>
                         _photoError(context, 'استجابة الخادم ليست صورة صالحة.'),
                   );
@@ -950,30 +1163,40 @@ class _ReportDetailState extends State<_ReportDetail> {
             ],
           ),
           const Divider(height: 22),
-          Row(
-            children: [
-              Expanded(
-                child: DropdownButton<String?>(
-                  value: _typeSel,
-                  isExpanded: true,
-                  hint: const Text('(بلا تصنيف)'),
-                  items: [
-                    const DropdownMenuItem<String?>(
-                      value: '',
-                      child: Text('(بلا تصنيف)'),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final width = constraints.maxWidth < 500
+                  ? constraints.maxWidth
+                  : 320.0;
+              return Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  SizedBox(
+                    width: width,
+                    child: DropdownButton<String?>(
+                      value: _typeSel,
+                      isExpanded: true,
+                      hint: const Text('(بلا تصنيف)'),
+                      items: [
+                        const DropdownMenuItem<String?>(
+                          value: '',
+                          child: Text('(بلا تصنيف)'),
+                        ),
+                        for (final t in widget.types)
+                          DropdownMenuItem<String?>(value: t, child: Text(t)),
+                      ],
+                      onChanged: (v) => setState(() => _typeSel = v),
                     ),
-                    for (final t in widget.types)
-                      DropdownMenuItem<String?>(value: t, child: Text(t)),
-                  ],
-                  onChanged: (v) => setState(() => _typeSel = v),
-                ),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton(
-                onPressed: () => _saveType(context),
-                child: const Text('حفظ التصنيف'),
-              ),
-            ],
+                  ),
+                  OutlinedButton(
+                    onPressed: () => _saveType(context),
+                    child: const Text('حفظ التصنيف'),
+                  ),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 10),
           TextField(
@@ -1017,14 +1240,16 @@ class _ReportDetailState extends State<_ReportDetail> {
                 ],
               ),
             ),
-          Row(
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            alignment: WrapAlignment.spaceBetween,
             children: [
               FilledButton.icon(
                 onPressed: () => _sendReply(context),
                 icon: const Icon(Icons.send),
                 label: const Text('أرسل الرد'),
               ),
-              const Spacer(),
               OutlinedButton.icon(
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Colors.red.shade300,

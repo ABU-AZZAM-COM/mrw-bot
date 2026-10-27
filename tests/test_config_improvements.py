@@ -2,6 +2,7 @@ import importlib
 import os
 import sys
 import unittest
+from pathlib import Path
 
 
 class ConfigImprovementsTests(unittest.TestCase):
@@ -30,6 +31,7 @@ class ConfigImprovementsTests(unittest.TestCase):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+        importlib.reload(self.config)
         if self._config_module is None:
             sys.modules.pop("config", None)
         else:
@@ -50,6 +52,14 @@ class ConfigImprovementsTests(unittest.TestCase):
         self.assertFalse(self.config.SAVE_MEDIA_LOCALLY)
         self.assertEqual(self.config.ADMIN_IDS, (1001, 2002, 3003))
 
+    def test_root_compatibility_import_uses_package_module(self):
+        import app.config as package_config
+
+        self.assertIs(self.config, package_config)
+        self.assertEqual(
+            self.config.BASE_DIR,
+            Path(__file__).resolve().parents[1],
+        )
 
 if __name__ == "__main__":
     unittest.main()
