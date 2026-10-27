@@ -1,5 +1,6 @@
 import hashlib
 import os
+import sqlite3
 import sys
 import tempfile
 import types
@@ -23,6 +24,7 @@ class FakeDB:
         self.accounts = accounts or []
         self.bootstrap_disabled = bootstrap_disabled
         self.audit_entries = []
+        self.fail_audit = False
 
     def admin_auth_snapshot(self):
         return self.accounts, self.bootstrap_disabled
@@ -33,12 +35,17 @@ class FakeDB:
             self.bootstrap_disabled = True
 
     def mutate_admin_auth_snapshot(
-        self, mutation, *, disable_bootstrap=False
+        self, mutation, *, disable_bootstrap=False, audit_event=None
     ):
-        result = mutation(self.accounts, self.bootstrap_disabled)
+        accounts = [dict(account) for account in self.accounts]
+        result = mutation(accounts, self.bootstrap_disabled)
         if result is not False:
+            if audit_event is not None:
+                if self.fail_audit:
+                    raise RuntimeError("simulated audit failure")
+                self.audit_entries.append(audit_event)
             self.save_admin_auth_snapshot(
-                self.accounts,
+                accounts,
                 disable_bootstrap=disable_bootstrap,
             )
         return result
@@ -77,6 +84,7 @@ class AdminManagementTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         token = response.json()["token"]
+        self.assertEqual(self.db.audit_entries[0][1], "admin_created")
         self.assertTrue(token)
         self.assertNotIn(token, repr(self.db.accounts))
         account = self.db.accounts[0]
@@ -152,6 +160,7 @@ class AdminManagementTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(self.db.bootstrap_disabled)
         new_token = response.json()["token"]
+        self.assertEqual(self.db.audit_entries[0][1], "admin_token_rotated")
         self.assertEqual(
             self.client.get(
                 "/api/admin/session",
@@ -165,6 +174,32 @@ class AdminManagementTests(unittest.TestCase):
                 headers={"Authorization": "Bearer bootstrap-owner-token"},
             ).status_code,
             401,
+        )
+
+    def test_owner_token_rotation_keeps_old_access_if_audit_fails(self):
+        token = "bootstrap-owner-token"
+        self.assertEqual(
+            self.client.get(
+                "/api/admin/session",
+                headers={"Authorization": f"Bearer {token}"},
+            ).status_code,
+            200,
+        )
+        self.db.fail_audit = True
+        with TestClient(self.app, raise_server_exceptions=False) as client:
+            response = client.post(
+                "/api/admin/admin-token/rotate",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(self.db.accounts, [])
+        self.assertFalse(self.db.bootstrap_disabled)
+        self.assertEqual(
+            self.client.get(
+                "/api/admin/session",
+                headers={"Authorization": f"Bearer {token}"},
+            ).status_code,
+            200,
         )
 
     def test_last_active_owner_cannot_be_disabled(self):
@@ -217,6 +252,38 @@ class AdminManagementTests(unittest.TestCase):
                 list(pool.map(add_account, range(24)))
 
             self.assertEqual(len(db.admin_auth_snapshot()[0]), 24)
+            db._conn.close()
+
+    def test_admin_auth_update_rolls_back_if_audit_insert_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = Database(Path(temp_dir) / "admin.sqlite", backend="sqlite")
+            owner = {"id": "owner-1", "role": "owner", "active": True}
+            db.save_admin_auth_snapshot([owner])
+            db._conn.execute(
+                """
+                CREATE TRIGGER reject_admin_rotation_audit
+                BEFORE INSERT ON audit_log
+                WHEN NEW.action = 'admin_token_rotated'
+                BEGIN
+                    SELECT RAISE(ABORT, 'simulated audit failure');
+                END
+                """
+            )
+            db._conn.commit()
+
+            def rotate(accounts, _bootstrap_disabled):
+                accounts[0]["active"] = False
+                accounts.append({"id": "owner-2", "role": "owner", "active": True})
+                return True
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                db.mutate_admin_auth_snapshot(
+                    rotate,
+                    disable_bootstrap=True,
+                    audit_event=(1, "admin_token_rotated", "owner-2", None),
+                )
+
+            self.assertEqual(db.admin_auth_snapshot(), ([owner], False))
             db._conn.close()
 
 

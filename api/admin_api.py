@@ -862,6 +862,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "token_hash": _token_digest(token),
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+
         def append_account(accounts, _bootstrap_disabled):
             accounts.append(account)
             return True
@@ -869,12 +870,12 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         await asyncio.to_thread(
             db.mutate_admin_auth_snapshot,
             append_account,
-        )
-        await db.audit(
-            _admin_actor(request),
-            "admin_created",
-            account["id"],
-            f"name={name}; role={role}; by={_admin_account_label(request)}",
+            audit_event=(
+                _admin_actor(request),
+                "admin_created",
+                account["id"],
+                f"name={name}; role={role}; by={_admin_account_label(request)}",
+            ),
         )
         return JSONResponse({
             "ok": True,
@@ -952,17 +953,17 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         await asyncio.to_thread(
             db.mutate_admin_auth_snapshot,
             apply_update,
+            audit_event=(
+                _admin_actor(request),
+                "admin_updated",
+                account_id,
+                f"role={role}; active={active}; by={_admin_account_label(request)}",
+            ),
         )
         if outcome == "missing":
             return bad("admin_not_found", 404)
         if outcome == "last_owner":
             return bad("last_owner_cannot_be_removed", 409)
-        await db.audit(
-            _admin_actor(request),
-            "admin_updated",
-            account_id,
-            f"role={role}; active={active}; by={_admin_account_label(request)}",
-        )
         return JSONResponse({"ok": True})
 
     @app.post("/api/admin/admin-token/rotate")
@@ -996,12 +997,12 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             db.mutate_admin_auth_snapshot,
             rotate_accounts,
             disable_bootstrap=True,
-        )
-        await db.audit(
-            _admin_actor(request),
-            "admin_token_rotated",
-            account["id"],
-            f"by={_admin_account_label(request)}",
+            audit_event=(
+                _admin_actor(request),
+                "admin_token_rotated",
+                account["id"],
+                f"by={_admin_account_label(request)}",
+            ),
         )
         return JSONResponse({"ok": True, "token": token})
 

@@ -975,14 +975,23 @@ class Database:
 
     def _audit(self, actor_id: Optional[int], action: str, target: Optional[str],
                details: Optional[str]) -> None:
-        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO audit_log (ts, actor_id, action, target, details)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (now_iso, actor_id, action, target, details),
-            )
+            self._insert_audit_locked(actor_id, action, target, details)
             self._conn.commit()
+
+    def _insert_audit_locked(
+        self,
+        actor_id: Optional[int],
+        action: str,
+        target: Optional[str],
+        details: Optional[str],
+    ) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self._conn.execute(
+            "INSERT INTO audit_log (ts, actor_id, action, target, details)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (now_iso, actor_id, action, target, details),
+        )
 
     async def audit(self, actor_id: Optional[int], action: str, target: Optional[str] = None,
                     details: Optional[str] = None) -> None:
@@ -1060,29 +1069,59 @@ class Database:
     def save_admin_auth_snapshot(
         self, accounts: list[dict[str, Any]], *, disable_bootstrap: bool = False
     ) -> None:
-        serialized = json.dumps(accounts, ensure_ascii=False, separators=(",", ":"))
         with self._lock:
+            self._save_admin_auth_snapshot_locked(
+                accounts,
+                disable_bootstrap=disable_bootstrap,
+            )
+            self._conn.commit()
+
+    def _save_admin_auth_snapshot_locked(
+        self, accounts: list[dict[str, Any]], *, disable_bootstrap: bool
+    ) -> None:
+        serialized = json.dumps(accounts, ensure_ascii=False, separators=(",", ":"))
+        self._conn.execute(
+            "INSERT INTO system_state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("admin_auth_accounts", serialized),
+        )
+        if disable_bootstrap:
             self._conn.execute(
                 "INSERT INTO system_state (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ("admin_auth_accounts", serialized),
+                ("admin_auth_bootstrap_disabled", "1"),
             )
-            if disable_bootstrap:
-                self._conn.execute(
-                    "INSERT INTO system_state (key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    ("admin_auth_bootstrap_disabled", "1"),
-                )
-            self._conn.commit()
 
     def mutate_admin_auth_snapshot(
         self,
         mutation: Callable[[list[dict[str, Any]], bool], Any],
         *,
         disable_bootstrap: bool = False,
+        audit_event: tuple[
+            Optional[int], str, Optional[str], Optional[str]
+        ] | None = None,
     ) -> Any:
         """Apply one serialized account update while holding the database lock."""
         with self._lock:
+            if audit_event is not None:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    accounts, bootstrap_disabled = self.admin_auth_snapshot()
+                    result = mutation(accounts, bootstrap_disabled)
+                    if result is False:
+                        self._conn.rollback()
+                        return result
+                    self._save_admin_auth_snapshot_locked(
+                        accounts,
+                        disable_bootstrap=disable_bootstrap,
+                    )
+                    self._insert_audit_locked(*audit_event)
+                    self._conn.commit()
+                    return result
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+
             accounts, bootstrap_disabled = self.admin_auth_snapshot()
             result = mutation(accounts, bootstrap_disabled)
             if result is not False:
