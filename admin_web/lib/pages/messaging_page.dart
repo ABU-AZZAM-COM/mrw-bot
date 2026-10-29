@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../widgets.dart';
+import 'message_composer.dart';
 import 'shared_dialogs.dart';
 
 Future<void> openUserConversation(
@@ -884,6 +885,30 @@ class _ConversationDialogState extends State<_ConversationDialog> {
     }
   }
 
+  Widget _buildComposer(double dialogWidth) {
+    return MessageComposer(
+      controller: _message,
+      sending: _sending,
+      mediaBytes: _mediaBytes,
+      filename: _filename,
+      mediaType: _mediaType,
+      width: dialogWidth,
+      onSend: _send,
+      onPickMedia: (type) {
+        setState(() {
+          _mediaType = type;
+          _mediaBytes = null;
+          _filename = null;
+        });
+        unawaited(_pickMedia());
+      },
+      onRemoveMedia: () => setState(() {
+        _mediaBytes = null;
+        _filename = null;
+      }),
+    );
+  }
+
   Future<void> _editMessage(Map<String, dynamic> item) async {
     final controller = TextEditingController(text: item['text']?.toString());
     final value = await showDialog<String>(
@@ -1279,108 +1304,11 @@ class _ConversationDialogState extends State<_ConversationDialog> {
                           ),
                         ),
                       ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      alignment: WrapAlignment.spaceBetween,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: [
-                        TextButton.icon(
-                          onPressed: _sending ? null : _pickMedia,
-                          icon: const Icon(Icons.attach_file),
-                          label: Text(
-                            _filename == null ? 'إرفاق وسيط' : _filename!,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        DropdownButton<String>(
-                          value: _mediaType,
-                          onChanged: _sending
-                              ? null
-                              : (value) {
-                                  if (value == null) return;
-                                  setState(() {
-                                    _mediaType = value;
-                                    _mediaBytes = null;
-                                    _filename = null;
-                                  });
-                                },
-                          items: const [
-                            DropdownMenuItem(
-                              value: 'photo',
-                              child: Text('صورة'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'video',
-                              child: Text('فيديو'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'audio',
-                              child: Text('صوت'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'voice',
-                              child: Text('رسالة صوتية'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'document',
-                              child: Text('ملف'),
-                            ),
-                          ],
-                        ),
-                        if (_filename != null)
-                          IconButton(
-                            tooltip: 'إزالة الملف',
-                            onPressed: _sending
-                                ? null
-                                : () => setState(() {
-                                    _mediaBytes = null;
-                                    _filename = null;
-                                  }),
-                            icon: const Icon(Icons.close),
-                          ),
-                      ],
-                    ),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _message,
-                            maxLength: 1000,
-                            minLines: 1,
-                            maxLines: 3,
-                            textInputAction: TextInputAction.send,
-                            onSubmitted: (_) {
-                              if (!_sending) _send();
-                            },
-                            decoration: const InputDecoration(
-                              labelText: 'اكتب رسالة',
-                              counterText: '',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton.filled(
-                          onPressed: _sending ? null : _send,
-                          tooltip: 'إرسال',
-                          icon: _sending
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.send),
-                        ),
-                      ],
-                    ),
                   ],
                 ),
               ),
             ),
+            _buildComposer(dialogWidth),
           ],
         ),
       ),
