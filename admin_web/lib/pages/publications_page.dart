@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../widgets.dart';
+import 'publication_composer.dart';
 
 class PublicationsPage extends StatefulWidget {
   const PublicationsPage({super.key, required this.api});
@@ -35,6 +36,7 @@ class _PublicationsPageState extends State<PublicationsPage> {
       _job?['status'] == 'running' ||
       _job?['status'] == 'queued' ||
       _job?['status'] == 'cancel_requested';
+  bool get _cancelRequested => _job?['status'] == 'cancel_requested';
 
   @override
   void initState() {
@@ -115,7 +117,9 @@ class _PublicationsPageState extends State<PublicationsPage> {
       return;
     }
     if (bytes.isEmpty) {
-      if (mounted) toast(context, 'الملف المحدد فارغ أو تعذرت قراءته', error: true);
+      if (mounted) {
+        toast(context, 'الملف المحدد فارغ أو تعذرت قراءته', error: true);
+      }
       return;
     }
     if (!mounted) return;
@@ -144,6 +148,14 @@ class _PublicationsPageState extends State<PublicationsPage> {
     }
     if (caption.isEmpty && !_hasMedia) {
       toast(context, 'أضف نصاً أو اختر ملفاً للنشر', error: true);
+      return;
+    }
+    if (!_hasMedia && caption.length < 3) {
+      toast(
+        context,
+        'يجب أن يتكون نص المنشور من 3 أحرف على الأقل',
+        error: true,
+      );
       return;
     }
     if (_hasMedia && _mediaBytes!.isEmpty) {
@@ -261,151 +273,36 @@ class _PublicationsPageState extends State<PublicationsPage> {
           onPressed: _loading ? null : _loadSummary,
           icon: const Icon(Icons.refresh),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              _loading
-                  ? 'جارٍ تحميل عدد المستلمين…'
-                  : _countCapped
-                  ? 'عدد المستلمين تجاوز الحد الآمن (100,000). أوقف النشر حتى المراجعة.'
-                  : 'سيصل المنشور إلى $_recipients مستخدم مسجل.',
-              style: TextStyle(
-                color: _countCapped
-                    ? Theme.of(context).colorScheme.error
-                    : null,
-              ),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: _mediaType,
-              decoration: const InputDecoration(labelText: 'نوع المحتوى'),
-              items: const [
-                DropdownMenuItem(value: 'photo', child: Text('صورة')),
-                DropdownMenuItem(value: 'video', child: Text('فيديو MP4')),
-                DropdownMenuItem(value: 'document', child: Text('ملف')),
-              ],
-              onChanged: _busy
-                  ? null
-                  : (value) {
-                      if (value == null) return;
-                      setState(() {
-                        _mediaType = value;
-                        _mediaBytes = null;
-                        _filename = null;
-                        _previewFileId = null;
-                        _previewSent = false;
-                      });
-                    },
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _caption,
-              enabled: !_busy,
-              maxLength: 900,
-              maxLines: 4,
-              decoration: const InputDecoration(
-                labelText: 'النص أو الوصف (اختياري عند إرفاق ملف)',
-                alignLabelWithHint: true,
-              ),
-              onChanged: (_) {
-                if (_previewSent) {
-                  setState(() {
-                    _previewSent = false;
-                    _previewFileId = null;
-                  });
-                }
-              },
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: _busy ? null : _pickFile,
-                  icon: const Icon(Icons.attach_file),
-                  label: Text(_filename ?? 'اختيار ملف'),
-                ),
-                if (_hasMedia)
-                  IconButton(
-                    tooltip: 'إزالة الملف',
-                    onPressed: _busy ? null : _clearMedia,
-                    icon: const Icon(Icons.close),
-                  ),
-                if (_hasMedia)
-                  Text(
-                    '${(_mediaBytes!.lengthInBytes / (1024 * 1024)).toStringAsFixed(2)} ميغابايت',
-                  ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (_hasMedia)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: SizedBox(
-                  height: 150,
-                  width: double.infinity,
-                  child: _mediaType == 'photo'
-                      ? Image.memory(
-                          _mediaBytes!,
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, _, _) => const Center(
-                            child: Icon(Icons.broken_image_outlined, size: 44),
-                          ),
-                        )
-                      : ColoredBox(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.surfaceContainerHighest,
-                          child: Icon(
-                            _mediaType == 'video'
-                                ? Icons.video_file_outlined
-                                : Icons.insert_drive_file_outlined,
-                            size: 44,
-                          ),
-                        ),
-                ),
-              ),
-            if (_hasMedia) const SizedBox(height: 8),
-            if (_previewSent)
-              const ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.check_circle, color: Colors.green),
-                title: Text('وصلت المعاينة إلى حساب المشرف'),
-                subtitle: Text('تحقق من المحتوى في تيليجرام قبل النشر.'),
-              ),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: _busy ? null : _sendPreview,
-                  icon: const Icon(Icons.visibility_outlined),
-                  label: const Text('إرسال معاينة'),
-                ),
-                FilledButton.icon(
-                  onPressed:
-                      _busy ||
-                          _loading ||
-                          _countCapped ||
-                          _jobActive ||
-                          !_previewSent
-                      ? null
-                      : _publish,
-                  icon: const Icon(Icons.campaign_outlined),
-                  label: const Text('نشر للمستخدمين'),
-                ),
-                if (_jobActive)
-                  OutlinedButton.icon(
-                    onPressed: _cancelJob,
-                    icon: const Icon(Icons.stop_circle_outlined),
-                    label: const Text('إيقاف النشر'),
-                  ),
-              ],
-            ),
-          ],
+        child: PublicationComposer(
+          captionController: _caption,
+          mediaType: _mediaType,
+          mediaBytes: _mediaBytes,
+          filename: _filename,
+          recipients: _recipients,
+          loadingRecipients: _loading,
+          countCapped: _countCapped,
+          busy: _busy,
+          previewSent: _previewSent,
+          jobActive: _jobActive,
+          cancelRequested: _cancelRequested,
+          onCaptionChanged: (_) => setState(() {
+            if (_previewSent) {
+              _previewSent = false;
+              _previewFileId = null;
+            }
+          }),
+          onMediaTypeChanged: (value) => setState(() {
+            _mediaType = value;
+            _mediaBytes = null;
+            _filename = null;
+            _previewFileId = null;
+            _previewSent = false;
+          }),
+          onPickFile: _pickFile,
+          onClearMedia: _clearMedia,
+          onSendPreview: _sendPreview,
+          onPublish: _publish,
+          onCancelJob: _cancelJob,
         ),
       ),
       if (_job != null) ...[

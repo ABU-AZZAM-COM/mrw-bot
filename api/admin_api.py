@@ -514,6 +514,12 @@ def _parse_html():
     return ParseMode.HTML
 
 
+def _publication_delivery_text(caption: str, media_type: str) -> str:
+    if media_type:
+        return f"📨 منشور من الجهة المختصة\n\n{caption}".strip()
+    return texts.BROADCAST_NOTIF.format(text=utils.esc(caption))
+
+
 # ==================================================================
 # إشعار المتبلّغ (نفس آلية التكرار التي تستخدمها لوحة تيليغرام)
 # ==================================================================
@@ -2760,11 +2766,13 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 
         async def _send_preview():
             try:
-                text = "معاينة منشور من لوحة الإدارة"
-                if caption:
-                    text += f"\n\n{caption}"
+                text = _publication_delivery_text(caption, media_type)
                 if not media_type:
-                    await bot.send_message(chat_id=admin_id, text=text)
+                    await bot.send_message(
+                        chat_id=admin_id,
+                        text=text,
+                        parse_mode=_parse_html(),
+                    )
                     return {"file_id": None}
                 media_file = InputFile(media_data, filename=filename)
                 if media_type == "photo":
@@ -2851,11 +2859,11 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("broadcast_in_progress", 409)
 
         async def _send_to_user(user_id: int) -> None:
-            text = f"📨 منشور من الجهة المختصة\n\n{caption}".strip()
+            text = _publication_delivery_text(caption, media_type)
             if not media_type:
                 return await bot.send_message(
                     chat_id=user_id,
-                    text=texts.BROADCAST_NOTIF.format(text=utils.esc(caption)),
+                    text=text,
                     parse_mode=_parse_html(),
                 )
             send_method = {
