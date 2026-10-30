@@ -953,6 +953,15 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
                     label: const Text('حذف الصور والنسخ مع سبب'),
                   ),
                 ),
+              if (item['status'] == 'verified')
+                Align(
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _decide('rejected'),
+                    icon: const Icon(Icons.verified_user_outlined),
+                    label: const Text('إلغاء التحقق'),
+                  ),
+                ),
               _supplementHistory(),
               _activityHistory(),
             ],
