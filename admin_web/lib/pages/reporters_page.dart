@@ -11,12 +11,16 @@ class UsersPage extends StatefulWidget {
     super.key,
     required this.api,
     this.canReviewIdentity = false,
+    this.canViewIdentityDocuments = false,
+    this.canDeleteIdentityDocuments = false,
     this.initialUserId,
     this.onFocusHandled,
   });
 
   final AdminApi api;
   final bool canReviewIdentity;
+  final bool canViewIdentityDocuments;
+  final bool canDeleteIdentityDocuments;
   final int? initialUserId;
   final VoidCallback? onFocusHandled;
 
@@ -174,7 +178,11 @@ class _UsersPageState extends State<UsersPage> {
         child: SizedBox(
           width: 1000,
           height: 760,
-          child: VerifiedReportersPage(api: widget.api),
+          child: VerifiedReportersPage(
+            api: widget.api,
+            canViewDocuments: widget.canViewIdentityDocuments,
+            canDeleteDocuments: widget.canDeleteIdentityDocuments,
+          ),
         ),
       ),
     );

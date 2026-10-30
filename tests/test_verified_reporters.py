@@ -68,7 +68,7 @@ class VerifiedReporterDatabaseTests(unittest.IsolatedAsyncioTestCase):
             b"encrypted-selfie",
         )
 
-    async def test_pending_documents_are_kept_and_decided_documents_expire(self):
+    async def test_documents_and_requests_are_retained_until_admin_deletion(self):
         pending_request = await self._submit(78)
         decided_request = await self._submit(79)
         self.assertTrue(
@@ -95,18 +95,21 @@ class VerifiedReporterDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         deleted = self.db._cleanup_private_data()
 
-        self.assertEqual(deleted["verification_documents_deleted"], 1)
+        self.assertEqual(deleted["verification_documents_deleted"], 0)
+        self.assertEqual(deleted["verification_requests_deleted"], 0)
         self.assertIsNotNone(
             await self.db.verification_document(pending_request, "selfie")
         )
-        self.assertIsNone(
+        self.assertIsNotNone(
             await self.db.verification_document(decided_request, "selfie")
         )
         self.assertIsNotNone(
             await self.db.verification_document(approved_request, "selfie")
         )
-        self.assertIsNone(await self.db.verification_status(79))
-        self.assertIsNone(
+        self.assertEqual(
+            (await self.db.verification_status(79))["status"], "rejected"
+        )
+        self.assertIsNotNone(
             await self.db.verification_request(decided_request)
         )
         self.assertIsNotNone(
@@ -135,6 +138,11 @@ class VerifiedReporterDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             await self.db.verification_document(request_id, "selfie")
         )
+        retained = await self.db.verification_request(request_id)
+        self.assertEqual(retained["status"], "verified")
+        self.assertEqual(retained["documents_deleted_by"], 9001)
+        self.assertEqual(retained["documents_deleted_reason"], "طلب المراسل")
+        self.assertIsNotNone(retained["documents_deleted_at"])
         audit = await self.db.recent_audit(limit=10)
         self.assertEqual(audit[0]["action"], "verified_reporter_documents_deleted")
         self.assertIn("طلب المراسل", audit[0]["details"])
@@ -167,3 +175,64 @@ class VerifiedReporterDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             await self.db.cancel_verification_capture(user_id, ticket)
         )
+
+    async def test_supplement_keeps_request_open_and_preserves_versions(self):
+        request_id = await self._submit(84)
+        request = await self.db.request_verification_supplement(
+            request_id,
+            9001,
+            ["selfie", "id_front"],
+            "أعد إرسال الصور بوضوح أكبر",
+        )
+        self.assertEqual(request["user_id"], 84)
+        status = await self.db.verification_status(84)
+        self.assertEqual(status["status"], "pending")
+        self.assertEqual(status["review_state"], "needs_info")
+        self.assertEqual(status["supplement_message"], "أعد إرسال الصور بوضوح أكبر")
+
+        first = await self.db.save_verification_supplement_upload(
+            request_id, 84, "selfie", b"encrypted-new-selfie"
+        )
+        self.assertFalse(first["completed"])
+        self.assertEqual(first["remaining_documents"], ["id_front"])
+        completed = await self.db.save_verification_supplement_upload(
+            request_id, 84, "id_front", b"encrypted-new-front"
+        )
+        self.assertTrue(completed["completed"])
+        self.assertEqual(
+            len(await self.db.verification_document_versions(request_id, "selfie")),
+            2,
+        )
+        self.assertEqual(
+            await self.db.verification_document(request_id, "selfie"),
+            b"encrypted-new-selfie",
+        )
+        status = await self.db.verification_status(84)
+        self.assertEqual(status["status"], "pending")
+        self.assertEqual(status["review_state"], "pending")
+        history = await self.db.verification_supplement_history(request_id)
+        self.assertIsNotNone(history[0]["response_at"])
+        self.assertIsNone(
+            await self.db.active_verification_supplement(request_id, 84)
+        )
+
+    async def test_search_and_analytics_include_supplement_status(self):
+        await self.db.record_user(85, "sample_user", "اسم تجريبي")
+        request_id = await self._submit(85)
+        await self.db.request_verification_supplement(
+            request_id,
+            9001,
+            ["id_back"],
+            "الصورة غير واضحة",
+        )
+        items, total = await self.db.search_verification_requests(
+            status="needs_info",
+            query="sample_user",
+            page=0,
+            size=10,
+        )
+        self.assertEqual(total, 1)
+        self.assertEqual(items[0]["id"], request_id)
+        analytics = await self.db.verification_analytics(7)
+        self.assertEqual(analytics["counts"]["needs_info"], 1)
+        self.assertEqual(len(analytics["trend"]), 7)

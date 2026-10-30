@@ -13,6 +13,7 @@ import 'pages/bot_management_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/whats_new_page.dart';
 import 'pages/admins_page.dart';
+import 'pages/verified_reporters_page.dart';
 import 'design_tokens.dart';
 import 'theme_menu.dart';
 import 'widgets.dart';
@@ -50,6 +51,7 @@ class _MainShellState extends State<MainShell> {
   int? _pendingReportId;
   int? _pendingBlockedUserId;
   int? _pendingUserId;
+  int? _pendingVerificationId;
   StreamSubscription<Map<String, dynamic>>? _eventsSubscription;
   Timer? _reconnectTimer;
 
@@ -466,6 +468,10 @@ class _MainShellState extends State<MainShell> {
         case 'user_message':
           _pendingUserId = (payload['user_id'] as num?)?.toInt();
           _selectedIndex = 4;
+        case 'verification_supplement_received':
+        case 'verification_supplement_requested':
+          _pendingVerificationId = (payload['request_id'] as num?)?.toInt();
+          _selectedIndex = 12;
         case 'emergency':
         case 'heartbeat_fail':
           _selectedIndex = type == 'heartbeat_fail' ? 9 : 11;
@@ -552,8 +558,14 @@ class _MainShellState extends State<MainShell> {
     Icons.manage_accounts_outlined,
   );
 
+  bool get _canReviewVerification =>
+      _role == 'owner' || _permissions.contains('identity');
+
   List<(String, IconData)> get _destinations => [
-    ..._baseDestinations,
+    ..._baseDestinations.take(12),
+    if (_canReviewVerification)
+      ('توثيق المراسلين', Icons.verified_user_outlined),
+    _baseDestinations.last,
     if (_role == 'owner') _adminsDestination,
   ];
 
@@ -577,6 +589,8 @@ class _MainShellState extends State<MainShell> {
       key: ValueKey('users-$_eventRevision-${_pendingUserId ?? 0}'),
       api: widget.api,
       canReviewIdentity: _role == 'owner' || _permissions.contains('identity'),
+      canViewIdentityDocuments: _permissions.contains('identity_documents'),
+      canDeleteIdentityDocuments: _permissions.contains('identity_delete'),
       initialUserId: _pendingUserId,
       onFocusHandled: () {
         if (mounted) setState(() => _pendingUserId = null);
@@ -641,6 +655,17 @@ class _MainShellState extends State<MainShell> {
                   : 'alert'),
       },
     ),
+    if (_canReviewVerification)
+      VerifiedReportersPage(
+        key: ValueKey('verified-reporters-${_pendingVerificationId ?? 0}'),
+        api: widget.api,
+        initialRequestId: _pendingVerificationId,
+        canViewDocuments: _permissions.contains('identity_documents'),
+        canDeleteDocuments: _permissions.contains('identity_delete'),
+        onFocusHandled: () {
+          if (mounted) setState(() => _pendingVerificationId = null);
+        },
+      ),
     const WhatsNewPage(),
     if (_role == 'owner')
       AdminsPage(

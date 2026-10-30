@@ -56,13 +56,13 @@ DEFAULT_PAGE_SIZE = 20
 MAX_TEXT = 2000
 ADMIN_PERMISSIONS = {
     "read", "review", "users", "operate", "export", "delete", "identity",
-    "identity_documents",
+    "identity_documents", "identity_delete",
 }
 ROLE_PERMISSIONS = {
     "viewer": {"read"},
     "reviewer": {"read", "review"},
     "operator": {"read", "review", "users", "operate", "export"},
-    "owner": ADMIN_PERMISSIONS - {"identity_documents"},
+    "owner": ADMIN_PERMISSIONS - {"identity_documents", "identity_delete"},
 }
 FAR_FUTURE = "9999-12-31T00:00:00"
 ADMIN_PASSWORD_ITERATIONS = 600_000
@@ -288,7 +288,9 @@ def _auth(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
 
     method = getattr(request, "method", "POST").upper()
-    if path.startswith("/api/admin/verified-reporters") and (
+    if path.startswith("/api/admin/verified-reporters/") and path.endswith("/delete"):
+        permission = "identity_delete"
+    elif path.startswith("/api/admin/verified-reporters") and (
         "/documents/" in path or path.endswith("/pdf")
     ):
         permission = "identity_documents"
@@ -328,6 +330,10 @@ def _auth(request):
             "identity_documents" in configured_permissions
         ):
             allowed_permissions.add("identity_documents")
+        if isinstance(configured_permissions, list) and (
+            "identity_delete" in configured_permissions
+        ):
+            allowed_permissions.add("identity_delete")
     if permission not in allowed_permissions:
         return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
     try:
@@ -608,6 +614,54 @@ async def _notify_verification_decision(
         except Exception:
             logger.info(
                 "تعذر إيصال قرار توثيق المراسل إلى المستخدم %s",
+                user_id,
+                exc_info=True,
+            )
+            return False
+
+    return await _on_bot_loop(_sender)
+
+
+async def _notify_user_verification_supplement(
+    user_id: int,
+    requested_documents: list[str],
+    message: str,
+) -> bool:
+    labels = {
+        "selfie": "صورة الوجه",
+        "id_front": "الجهة الأمامية للهوية",
+        "id_back": "الجهة الخلفية للهوية",
+    }
+
+    async def _sender():
+        bot, _loop = _bot_runtime()
+        if bot is None:
+            return False
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        text = (
+            "نحتاج استكمال طلب توثيقك. أرسل الصور التالية فقط في محادثة البوت:\n"
+            + "\n".join(f"• {labels[kind]}" for kind in requested_documents)
+            + f"\n\nملاحظة المشرف: {utils.esc(message)}"
+        )
+        try:
+            await bot.send_message(
+                chat_id=int(user_id),
+                text=text,
+                parse_mode=_parse_html(),
+                reply_markup=InlineKeyboardMarkup(
+                    [[
+                        InlineKeyboardButton(
+                            "إرسال الصور المطلوبة",
+                            callback_data="usr:verify-supplement",
+                        )
+                    ]]
+                ),
+            )
+            return True
+        except Exception:
+            logger.info(
+                "Could not request verification supplement from user %s",
                 user_id,
                 exc_info=True,
             )
@@ -1638,14 +1692,137 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if refuse:
             return refuse
         try:
-            items = await db_of().list_verification_requests(
-                status=request.query_params.get("status", "pending"),
-                limit=int(request.query_params.get("limit", "100")),
+            status = request.query_params.get("status", "pending")
+            page = int(request.query_params.get("page", "0"))
+            size = int(
+                request.query_params.get("size")
+                or request.query_params.get("limit", "25")
             )
-        except ValueError:
+            start_date = request.query_params.get("start_date") or None
+            end_date = request.query_params.get("end_date") or None
+            for value in (start_date, end_date):
+                if value:
+                    datetime.strptime(value, "%Y-%m-%d")
+            items, total = await db_of().search_verification_requests(
+                status=status,
+                query=request.query_params.get("q"),
+                start_date=start_date,
+                end_date=end_date,
+                page=page,
+                size=size,
+            )
+        except (ValueError, TypeError):
             return bad("bad_query")
         return JSONResponse(
-            {"ok": True, "items": items},
+            {"ok": True, "items": items, "total": total, "page": page, "size": size},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/admin/verified-reporters/analytics")
+    async def verified_reporters_analytics(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        try:
+            days = int(request.query_params.get("days", "30"))
+            analytics = await db_of().verification_analytics(days)
+        except (ValueError, TypeError):
+            return bad("bad_query")
+        return JSONResponse(
+            {"ok": True, **analytics},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/admin/verified-reporters/{request_id}")
+    async def verified_reporter_detail(
+        request_id: int, request: Request
+    ) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        item = await db.verification_detail(request_id)
+        if not item:
+            return bad("verification_request_not_found", 404)
+        history = await db.verification_supplement_history(request_id)
+        versions = {
+            kind: await db.verification_document_versions(request_id, kind)
+            for kind in sorted(verified_reporters.DOCUMENT_KINDS)
+        }
+        return JSONResponse(
+            {"ok": True, "item": item, "supplements": history, "versions": versions},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/admin/verified-reporters/{request_id}/supplement")
+    async def verified_reporter_supplement(
+        request_id: int, request: Request
+    ) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        try:
+            body = await request.json()
+        except Exception:
+            return bad("bad_json")
+        requested_documents = (
+            body.get("requested_documents") if isinstance(body, dict) else None
+        )
+        message = body.get("message") if isinstance(body, dict) else None
+        if (
+            not isinstance(requested_documents, list)
+            or any(not isinstance(kind, str) for kind in requested_documents)
+            or not isinstance(message, str)
+        ):
+            return bad("bad_supplement_request")
+        db = db_of()
+        try:
+            result = await db.request_verification_supplement(
+                request_id,
+                _admin_actor(request),
+                requested_documents,
+                message,
+            )
+        except ValueError as exc:
+            return bad(str(exc))
+        if not result:
+            return bad("verification_request_not_pending_or_documents_missing", 409)
+
+        notification_created = False
+        try:
+            await db.create_notification(
+                "verification_supplement_requested",
+                {
+                    "request_id": request_id,
+                    "user_id": result["user_id"],
+                    "dashboard_path": f"/verification/{request_id}",
+                },
+            )
+            notification_created = True
+        except Exception:
+            logger.exception(
+                "Could not create dashboard notification for verification supplement"
+            )
+        user_notified = await _notify_user_verification_supplement(
+            int(result["user_id"]),
+            result["requested_documents"],
+            result["message"],
+        )
+        await db.audit(
+            _admin_actor(request),
+            "verified_reporter_supplement_requested",
+            str(request_id),
+            "requested_documents="
+            + ",".join(result["requested_documents"])
+            + f"; notification_created={notification_created}; "
+            + f"user_notified={user_notified}",
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "notification_created": notification_created,
+                "user_notified": user_notified,
+            },
             headers={"Cache-Control": "no-store"},
         )
 
@@ -1660,7 +1837,23 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return refuse
         if kind not in verified_reporters.DOCUMENT_KINDS:
             return bad("not_found", 404)
-        ciphertext = await db_of().verification_document(request_id, kind)
+        version_value = request.query_params.get("version_id")
+        if version_value is None:
+            ciphertext = await db_of().verification_document(request_id, kind)
+            operation = "viewed"
+        else:
+            try:
+                version_id = int(version_value)
+            except ValueError:
+                return bad("bad_query")
+            ciphertext = await db_of().verification_document_version(
+                request_id, kind, version_id
+            )
+            operation = (
+                "downloaded"
+                if request.query_params.get("download") == "true"
+                else "viewed"
+            )
         if not ciphertext:
             return bad("document_not_available", 404)
         try:
@@ -1673,9 +1866,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("document_unavailable", 503)
         await db_of().audit(
             _admin_actor(request),
-            "verified_reporter_document_viewed",
+            f"verified_reporter_document_{operation}",
             str(request_id),
-            f"kind={kind}",
+            f"kind={kind}; version_id={version_value or 'current'}",
         )
         return Response(
             content=content,
@@ -1886,7 +2079,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         permissions = set(
             getattr(request.state, "admin_permissions", [])
         )
-        if not {"identity_documents", "delete"}.issubset(permissions):
+        if "identity_delete" not in permissions:
             return bad("forbidden", 403)
         try:
             body = await request.json()
@@ -1901,7 +2094,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             reason.strip(),
         )
         if not deleted:
-            return bad("verified_reporter_not_found_or_not_approved", 409)
+            return bad("verified_reporter_not_found_or_documents_not_deletable", 409)
         return JSONResponse({"ok": True})
 
     @app.get("/api/admin/users/{uid}")
