@@ -24,6 +24,7 @@ import logging
 import mimetypes
 import secrets
 import tempfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,7 +35,7 @@ from telegram import (
     ReplyKeyboardRemove,
     Update,
 )
-from telegram.constants import ParseMode
+from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (
     CallbackQueryHandler,
@@ -77,6 +78,34 @@ from bot.keyboards import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _typing_while_processing(bot, chat_id: int):
+    """Keep Telegram's native typing animation visible during slow work."""
+    stopped = asyncio.Event()
+
+    async def pulse() -> None:
+        while not stopped.is_set():
+            try:
+                await bot.send_chat_action(
+                    chat_id=chat_id,
+                    action=ChatAction.TYPING,
+                )
+            except TelegramError:
+                logger.info("تعذر إرسال مؤشر الكتابة للمستخدم %s", chat_id, exc_info=True)
+            try:
+                await asyncio.wait_for(stopped.wait(), timeout=4)
+            except asyncio.TimeoutError:
+                continue
+
+    task = asyncio.create_task(pulse())
+    try:
+        yield
+    finally:
+        stopped.set()
+        await task
+
 
 # مراحل المحادثة
 (
@@ -1847,9 +1876,10 @@ async def receive_verification_phone(
     await _send_clean_prompt(
         update,
         context,
-        "تم استلام رقمك السوري. أرسل الآن صورة وجه واضحة كملف من قائمة الإرفاق، "
-        "وليس كصورة مضغوطة. لا يمكن للبوت التأكد من أن الصورة التُقطت بالكاميرا "
-        "أو أنها حيّة؛ سيجري فحص محلي أولي ثم يراجع المشرف الطلب يدويًا.",
+        "تم استلام رقمك السوري. أرسل الآن صورة وجه واضحة من المعرض أو الكاميرا "
+        "كصورة عادية في المحادثة، ولا ترسلها كملف. يجب أن يظهر وجه واحد بوضوح. "
+        "ستُفحص صورة الوجه عبر Sightengine للتأكد من خلوها من المحتوى غير اللائق؛ "
+        "ولا تُرسل صور الهوية إلى هذه الخدمة.",
         reply_markup=ReplyKeyboardRemove(),
     )
     return ASK_VERIFICATION_SELFIE
@@ -1872,17 +1902,17 @@ def _verification_image_error_message(code: str) -> str:
         "image_format_invalid": "أرسل ملف صورة بصيغة JPEG أو PNG.",
         "image_dimensions_invalid": "دقة الصورة منخفضة. أعد الإرسال بصورة أكبر وأوضح.",
         "image_blurry": "الصورة غير واضحة بما يكفي. أعد تصويرها بإضاءة جيدة وثبّت الهاتف.",
-        "image_unreadable": "تعذّر فتح الصورة. أعد إرسالها كملف صورة أصلي.",
-        "identity_markers_missing": (
-            "لم يتمكن الفحص المحلي من قراءة علامات كافية على هذه الجهة من الهوية. "
-            "أعد إرسال صورة كاملة وواضحة للجهة المطلوبة."
-        ),
+        "image_unreadable": "تعذّر فتح الصورة. أعد إرسالها كصورة واضحة من المعرض.",
         "face_not_found": "لم يُعثر على وجه واضح في الصورة. أعد إرسال صورة شخصية يظهر فيها وجه واحد.",
         "face_multiple": "يجب أن يظهر وجه واحد فقط. أعد إرسال صورة شخصية منفردة.",
         "face_unclear": "الوجه صغير أو غير واضح. أعد إرسال صورة أقرب وأوضح.",
         "inspection_unavailable": (
-            "الفحص المحلي غير متاح حاليًا، لذلك لم تُقبل الصورة ولم تُحفظ. "
-            "حاول مرة أخرى لاحقًا."
+            "تعذّر التحقق من وضوح الصورة أو الوجه الآن. لم تُحفظ الصورة؛ "
+            "حاول مرة أخرى بعد قليل."
+        ),
+        "inappropriate_content": (
+            "لم تُقبل الصورة لأن فحص المحتوى رصد مادة غير مناسبة. "
+            "أرسل صورة أخرى مناسبة وواضحة."
         ),
     }
     return messages.get(
@@ -1921,55 +1951,94 @@ async def _receive_verification_image(
             reply_markup=main_menu_kb(),
         )
         return ConversationHandler.END
-
-    document = message.document
-    if document is None:
+    try:
+        _, current_consent_version = await _verification_consent(_db(context))
+    except Exception:
+        logger.exception("Could not verify consent version for user %s", user.id)
         await message.reply_text(
-            "أرسل الصورة كملف من قائمة الإرفاق، وليس كصورة مضغوطة. "
-            "يمكنك الإلغاء في أي وقت.",
+            "تعذّر التحقق من إفصاح الخصوصية الآن. لم تُعالج الصورة؛ حاول مجددًا."
         )
         return _verification_state_for_kind(kind)
-    if document.file_size is not None and (
-        document.file_size <= 0
-        or document.file_size > identity_image_checks.MAX_IMAGE_BYTES
+    if context.user_data.get("verification_consent_version") != current_consent_version:
+        await _discard_verification_capture(context, user.id)
+        context.user_data.pop("verification_consent_at", None)
+        context.user_data.pop("verification_consent_version", None)
+        await _send_clean_prompt(
+            update,
+            context,
+            "تم تحديث إفصاح الخصوصية. ابدأ طلب التوثيق من جديد وراجع الإفصاح "
+            "المحدّث قبل إرسال الصور.",
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    if not message.photo:
+        await message.reply_text(
+            "أرسل الصورة من المعرض أو الكاميرا كصورة عادية في المحادثة، "
+            "ولا ترسلها كملف. يمكنك الإلغاء في أي وقت.",
+        )
+        return _verification_state_for_kind(kind)
+    media = message.photo[-1]
+    if media.file_size is not None and (
+        media.file_size <= 0
+        or media.file_size > identity_image_checks.MAX_IMAGE_BYTES
     ):
         await message.reply_text(_verification_image_error_message("image_size_invalid"))
         return _verification_state_for_kind(kind)
-    if document.mime_type not in {"image/jpeg", "image/png"}:
-        await message.reply_text(_verification_image_error_message("image_format_invalid"))
-        return _verification_state_for_kind(kind)
 
     try:
-        telegram_file = await context.bot.get_file(document.file_id)
-        buffer = bytearray()
-        await telegram_file.download_as_bytearray(buffer)
-        image_bytes = bytes(buffer)
-    except Exception:
-        logger.exception("تعذّر تنزيل صورة توثيق للمستخدم %s", user.id)
-        await message.reply_text(
-            "تعذّر استلام الملف الآن. لم تُحفظ الصورة؛ أعد إرسالها بعد قليل."
-        )
-        return _verification_state_for_kind(kind)
-
-    try:
-        await asyncio.to_thread(
-            identity_image_checks.validate_identity_image,
-            kind,
-            image_bytes,
-        )
-        encrypted = await asyncio.to_thread(
-            verified_reporters.encrypt_document,
-            kind,
-            image_bytes,
-        )
-    except identity_image_checks.IdentityImageCheckError as exc:
-        if exc.args and exc.args[0] == "inspection_unavailable":
-            logger.exception(
-                "Local identity-image inspection is unavailable for user %s",
-                user.id,
+        async with _typing_while_processing(context.bot, user.id):
+            telegram_file = await context.bot.get_file(media.file_id)
+            buffer = bytearray()
+            await telegram_file.download_as_bytearray(buffer)
+            image_bytes = bytes(buffer)
+            await asyncio.to_thread(
+                identity_image_checks.validate_identity_image,
+                kind,
+                image_bytes,
             )
+            if kind == "selfie":
+                if not sightengine_moderation.credentials():
+                    raise sightengine_moderation.SightengineError(
+                        "Sightengine credentials are not configured"
+                    )
+                with tempfile.NamedTemporaryFile(
+                    prefix="mrw-verification-", suffix=".jpg", delete=False
+                ) as handle:
+                    inspection_path = Path(handle.name)
+                try:
+                    inspection_path.write_bytes(image_bytes)
+                    scores = await sightengine_moderation.inspect_image(
+                        inspection_path
+                    )
+                finally:
+                    try:
+                        inspection_path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.exception(
+                            "Could not remove temporary verification image for user %s",
+                            user.id,
+                        )
+                if scores.is_restricted:
+                    raise identity_image_checks.IdentityImageCheckError(
+                        "inappropriate_content"
+                    )
+            encrypted = await asyncio.to_thread(
+                verified_reporters.encrypt_document,
+                kind,
+                image_bytes,
+            )
+    except identity_image_checks.IdentityImageCheckError as exc:
+        await message.reply_text(_verification_image_error_message(str(exc)))
+        return _verification_state_for_kind(kind)
+    except sightengine_moderation.SightengineError:
+        logger.exception(
+            "Sightengine could not screen verification selfie for user %s",
+            user.id,
+        )
         await message.reply_text(
-            _verification_image_error_message(str(exc))
+            "تعذّر فحص صورة الوجه للتأكد من خلوها من المحتوى غير اللائق. "
+            "لم تُحفظ الصورة؛ حاول مجددًا بعد قليل."
         )
         return _verification_state_for_kind(kind)
     except verified_reporters.VerificationUnavailable:
@@ -1983,9 +2052,12 @@ async def _receive_verification_image(
         )
         return ConversationHandler.END
     except Exception:
-        logger.exception("Unexpected local identity-image check failure")
+        logger.exception(
+            "Unexpected verification image processing failure for user %s",
+            user.id,
+        )
         await message.reply_text(
-            "تعذّر فحص الصورة محليًا، لذلك لم تُقبل. حاول مرة أخرى لاحقًا."
+            "تعذّر إكمال فحص الصورة الآن، ولم تُحفظ. حاول مرة أخرى بعد قليل."
         )
         return _verification_state_for_kind(kind)
 
@@ -2025,12 +2097,12 @@ async def _receive_verification_image(
         context.user_data[VERIFICATION_STEP_KEY] = next_kind
         prompts = {
             "id_front": (
-                "اجتزت الصورة الفحص الأولي. أرسل الآن الجهة الأمامية للهوية "
-                "كملف صورة كامل وواضح."
+                "اجتازت صورة الوجه فحص الوضوح والوجه والمحتوى. أرسل الآن "
+                "الجهة الأمامية للهوية كصورة واضحة من المعرض أو الكاميرا."
             ),
             "id_back": (
-                "اجتزت الصورة الفحص الأولي. أرسل الآن الجهة الخلفية للهوية "
-                "كملف صورة كامل وواضح."
+                "اجتازت الصورة السابقة الفحص الأولي. أرسل الآن الجهة الخلفية "
+                "للهوية كصورة واضحة من المعرض أو الكاميرا."
             ),
         }
         await _send_clean_prompt(update, context, prompts[next_kind])
@@ -2082,8 +2154,8 @@ async def _receive_verification_image(
     await _send_clean_prompt(
         update,
         context,
-        "✅ اكتمل إرسال طلبك للمراجعة البشرية. الفحص المحلي لا يثبت أصالة الهوية "
-        "أو أن الصورة حيّة. سنبلغك عند صدور القرار.",
+        "✅ اكتمل إرسال طلبك للمراجعة البشرية. فحص وضوح الوجه والمحتوى لا يثبت "
+        "أصالة الهوية أو أن الصورة حيّة. سنبلغك عند صدور القرار.",
         reply_markup=main_menu_kb(),
     )
     return ConversationHandler.END
