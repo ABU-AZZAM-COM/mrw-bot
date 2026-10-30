@@ -1974,7 +1974,7 @@ class Database:
                 UPDATE verified_reporters
                 SET status = ?, decided_at = ?, reviewed_by = ?,
                     rejection_reason = ?, review_state = 'pending'
-                WHERE id = ? AND status = 'pending'
+                WHERE id = ? AND status IN ('pending', 'verified')
                 """,
                 (
                     decision, now, reviewer_id,
