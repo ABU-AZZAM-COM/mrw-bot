@@ -130,7 +130,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             _cb("📞 التواصل مع الإدارة", f"{USR_PREFIX}contact"),
         ],
     ]
-    if config.VERIFICATION_WEBAPP_URL and verified_reporters.is_configured():
+    if verified_reporters.is_configured():
         rows.insert(
             1,
             [_cb("🪪 التسجيل كمراسل موثوق", f"{USR_PREFIX}verify")],

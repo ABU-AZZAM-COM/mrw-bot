@@ -41,7 +41,7 @@ from pathlib import Path
 # إيقاف خادم الصحة قبل استيراد main (نفس المنفذ سيخدم التطبيق)
 os.environ["DISABLE_HEALTH_SERVER"] = "1"
 
-from fastapi import FastAPI, File, Form, Request, UploadFile  # noqa: E402
+from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import HTMLResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
@@ -62,7 +62,6 @@ except ImportError:  # pragma: no cover - بيئة محلية بدون Hugging F
 from app import config, main as bot_main  # noqa: E402
 from api import admin_api, admin_dashboard  # noqa: E402
 from bot import texts  # noqa: E402
-from services import verified_reporters  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
 logger = logging.getLogger("space")
 
@@ -75,7 +74,6 @@ WEBAPP_DIR = BASE_DIR / "webapp"
 
 # مهلة قبول بيانات التطبيق (تيليغرام يوقّع initData بتاريخ إصدار)
 INIT_DATA_MAX_AGE = 24 * 60 * 60
-VERIFICATION_INIT_DATA_MAX_AGE = 10 * 60
 BOT_STARTUP_GRACE_SECONDS = 240
 BOT_HEALTH_CHECK_INTERVAL_SECONDS = 30
 BOT_HEALTH_FAILURE_SECONDS = 180
@@ -466,131 +464,6 @@ def build_app() -> FastAPI:
         if not _inject_app_update(user_id, payload, tg_user):
             return JSONResponse({"ok": False, "error": "bot_not_ready"}, status_code=503)
         return JSONResponse({"ok": True})
-
-    @app.post("/api/verification/submit")
-    async def verification_submit(
-        request: Request,
-        init_data: str = Form(...),
-        ticket: str = Form(...),
-        selfie: UploadFile = File(...),
-        id_front: UploadFile = File(...),
-        id_back: UploadFile = File(...),
-    ) -> JSONResponse:
-        if not verified_reporters.is_configured():
-            return JSONResponse(
-                {"ok": False, "error": "verification_unavailable"},
-                status_code=503,
-                headers={"Cache-Control": "no-store"},
-            )
-        configured_url = config.VERIFICATION_WEBAPP_URL
-        expected_host = urllib.parse.urlsplit(configured_url).netloc.lower()
-        expected_origin = f"https://{expected_host}" if expected_host else ""
-        if (
-            not expected_origin
-            or request.headers.get("origin", "").rstrip("/").lower()
-            != expected_origin
-        ):
-            return JSONResponse(
-                {"ok": False, "error": "invalid_origin"},
-                status_code=403,
-                headers={"Cache-Control": "no-store"},
-            )
-
-        tg_user = _verify_init_data(
-            init_data,
-            BOT_TOKEN,
-            max_age=VERIFICATION_INIT_DATA_MAX_AGE,
-        )
-        user_id = tg_user.get("id") if tg_user else None
-        if not isinstance(user_id, int) or user_id <= 0:
-            return JSONResponse(
-                {"ok": False, "error": "invalid_init_data"},
-                status_code=403,
-                headers={"Cache-Control": "no-store"},
-            )
-        if len(ticket) < 32 or len(ticket) > 128:
-            return JSONResponse(
-                {"ok": False, "error": "invalid_ticket"},
-                status_code=400,
-                headers={"Cache-Control": "no-store"},
-            )
-
-        uploads = {
-            "selfie": selfie,
-            "id_front": id_front,
-            "id_back": id_back,
-        }
-        captures: dict[str, bytes] = {}
-        try:
-            for kind, upload in uploads.items():
-                if upload.content_type != "image/jpeg":
-                    return JSONResponse(
-                        {"ok": False, "error": "jpeg_capture_required"},
-                        status_code=415,
-                        headers={"Cache-Control": "no-store"},
-                    )
-                data = await upload.read(verified_reporters.MAX_CAPTURE_BYTES + 1)
-                if not data or len(data) > verified_reporters.MAX_CAPTURE_BYTES:
-                    return JSONResponse(
-                        {"ok": False, "error": "capture_too_large"},
-                        status_code=413,
-                        headers={"Cache-Control": "no-store"},
-                    )
-                captures[kind] = data
-            encrypted = verified_reporters.encrypt_captures(captures)
-        except ValueError as exc:
-            return JSONResponse(
-                {"ok": False, "error": str(exc)},
-                status_code=400,
-                headers={"Cache-Control": "no-store"},
-            )
-        finally:
-            for upload in uploads.values():
-                await upload.close()
-
-        application = getattr(bot_main, "app", None)
-        database = (
-            application.bot_data.get("db")
-            if application is not None
-            else None
-        )
-        if database is None:
-            return JSONResponse(
-                {"ok": False, "error": "bot_not_ready"},
-                status_code=503,
-                headers={"Cache-Control": "no-store"},
-            )
-        try:
-            request_id = await database.submit_verification_documents(
-                user_id,
-                verified_reporters.hash_ticket(ticket),
-                encrypted,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to store encrypted identity submission for user %s",
-                user_id,
-            )
-            return JSONResponse(
-                {"ok": False, "error": "submission_unavailable"},
-                status_code=503,
-                headers={"Cache-Control": "no-store"},
-            )
-        if request_id is None:
-            return JSONResponse(
-                {"ok": False, "error": "ticket_expired_or_used"},
-                status_code=409,
-                headers={"Cache-Control": "no-store"},
-            )
-        logger.info(
-            "Received encrypted verified-reporter request %s from user %s",
-            request_id,
-            user_id,
-        )
-        return JSONResponse(
-            {"ok": True, "status": "pending"},
-            headers={"Cache-Control": "no-store"},
-        )
 
     @app.get("/api/public/vtypes")
     async def public_vtypes() -> JSONResponse:

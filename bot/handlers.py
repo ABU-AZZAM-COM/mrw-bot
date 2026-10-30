@@ -25,7 +25,6 @@ import secrets
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 from telegram import (
     InlineKeyboardMarkup,
@@ -33,7 +32,6 @@ from telegram import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
-    WebAppInfo,
 )
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
@@ -52,6 +50,7 @@ from services import (
     archive,
     guards,
     hub_backup,
+    identity_image_checks,
     image_moderation,
     sightengine_moderation,
     utils,
@@ -78,8 +77,27 @@ from bot.keyboards import (
 logger = logging.getLogger(__name__)
 
 # مراحل المحادثة
-ASK_CATEGORY, ASK_PLATFORM, ASK_DESC, ASK_PHOTO, ASK_LINK, ASK_LOCATION, ASK_CONTACT, CONFIRM, ASK_FOLLOWUP, ASK_SUPPORT, ASK_VERIFICATION_PHONE = range(11)
+(
+    ASK_CATEGORY,
+    ASK_PLATFORM,
+    ASK_DESC,
+    ASK_PHOTO,
+    ASK_LINK,
+    ASK_LOCATION,
+    ASK_CONTACT,
+    CONFIRM,
+    ASK_FOLLOWUP,
+    ASK_SUPPORT,
+    ASK_VERIFICATION_PHONE,
+    ASK_VERIFICATION_SELFIE,
+    ASK_VERIFICATION_ID_FRONT,
+    ASK_VERIFICATION_ID_BACK,
+) = range(14)
 SUPPORT_MAX_LENGTH = 1000
+VERIFICATION_TICKET_KEY = "verification_ticket_hash"
+VERIFICATION_CAPTURES_KEY = "verification_captures"
+VERIFICATION_STEP_KEY = "verification_step"
+VERIFICATION_TICKET_MINUTES = 30
 
 # نصوص الأزرار (أنماط regex) لإلغاء العملية وتأكيد الحفظ
 CANCEL_RE = r"^\s*❌\s*إلغاء\s*$"
@@ -309,6 +327,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await db.log_event(user.id, "start")
 
+    await _discard_verification_capture(context, user.id)
     active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
     context.user_data.clear()
     if active_prompt:
@@ -1626,11 +1645,11 @@ async def receive_verification_phone(
             reply_markup=main_menu_kb(),
         )
         return ConversationHandler.END
-    if not verified_reporters.is_configured() or not config.VERIFICATION_WEBAPP_URL:
+    if not verified_reporters.is_configured():
         await _send_clean_prompt(
             update,
             context,
-            "ميزة التوثيق غير مفعّلة حاليًا لأن إعدادات الحماية لم تكتمل.",
+            "ميزة التوثيق غير مفعّلة حاليًا لأن إعداد التشفير الآمن لم يكتمل.",
             reply_markup=main_menu_kb(),
         )
         context.user_data.clear()
@@ -1647,25 +1666,29 @@ async def receive_verification_phone(
         )
         return ASK_VERIFICATION_PHONE
 
-    digits = "".join(character for character in contact.phone_number if character.isdigit())
-    if not 7 <= len(digits) <= 15:
+    try:
+        normalized_phone = identity_image_checks.normalize_syrian_phone(
+            contact.phone_number
+        )
+    except ValueError:
         await _send_clean_prompt(
             update,
             context,
-            "تعذّر التحقق من صيغة رقم الهاتف. أعد مشاركته من تيليجرام.",
+            "نقبل أرقام الهاتف السورية فقط. أعد مشاركة رقمك السوري من تيليجرام.",
             reply_markup=keyboards.verification_contact_kb(),
         )
         return ASK_VERIFICATION_PHONE
 
-    ticket = secrets.token_urlsafe(32)
+    ticket_hash = verified_reporters.hash_ticket(secrets.token_urlsafe(32))
     expires_at = (
-        datetime.now(timezone.utc) + timedelta(minutes=10)
+        datetime.now(timezone.utc)
+        + timedelta(minutes=VERIFICATION_TICKET_MINUTES)
     ).isoformat(timespec="seconds")
     try:
         request_id = await _db(context).create_verification_ticket(
             user.id,
-            verified_reporters.hash_ticket(ticket),
-            verified_reporters.encrypt_phone(contact.phone_number),
+            ticket_hash,
+            verified_reporters.encrypt_phone(normalized_phone),
             expires_at,
         )
     except verified_reporters.VerificationUnavailable:
@@ -1699,31 +1722,285 @@ async def receive_verification_phone(
         )
         return ConversationHandler.END
 
-    base_url = config.VERIFICATION_WEBAPP_URL.split("#", 1)[0].split("?", 1)[0]
-    capture_url = f"{base_url}#ticket={quote(ticket, safe='')}"
+    context.user_data[VERIFICATION_TICKET_KEY] = ticket_hash
+    context.user_data[VERIFICATION_CAPTURES_KEY] = {}
+    context.user_data[VERIFICATION_STEP_KEY] = "selfie"
+    await _send_clean_prompt(
+        update,
+        context,
+        "تم استلام رقمك السوري. أرسل الآن صورة وجه واضحة كملف من قائمة الإرفاق، "
+        "وليس كصورة مضغوطة. لا يمكن للبوت التأكد من أن الصورة التُقطت بالكاميرا "
+        "أو أنها حيّة؛ سيجري فحص محلي أولي ثم يراجع المشرف الطلب يدويًا.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return ASK_VERIFICATION_SELFIE
+
+
+async def _discard_verification_capture(
+    context: ContextTypes.DEFAULT_TYPE, user_id: int | None
+) -> None:
+    ticket_hash = context.user_data.get(VERIFICATION_TICKET_KEY)
+    context.user_data.pop(VERIFICATION_TICKET_KEY, None)
+    context.user_data.pop(VERIFICATION_CAPTURES_KEY, None)
+    context.user_data.pop(VERIFICATION_STEP_KEY, None)
+    if user_id and isinstance(ticket_hash, str):
+        await _db(context).cancel_verification_capture(user_id, ticket_hash)
+
+
+def _verification_image_error_message(code: str) -> str:
+    messages = {
+        "image_size_invalid": "حجم الملف غير مناسب. أرسل صورة أصغر من 10 ميغابايت.",
+        "image_format_invalid": "أرسل ملف صورة بصيغة JPEG أو PNG.",
+        "image_dimensions_invalid": "دقة الصورة منخفضة. أعد الإرسال بصورة أكبر وأوضح.",
+        "image_blurry": "الصورة غير واضحة بما يكفي. أعد تصويرها بإضاءة جيدة وثبّت الهاتف.",
+        "image_unreadable": "تعذّر فتح الصورة. أعد إرسالها كملف صورة أصلي.",
+        "identity_markers_missing": (
+            "لم يتمكن الفحص المحلي من قراءة علامات كافية على هذه الجهة من الهوية. "
+            "أعد إرسال صورة كاملة وواضحة للجهة المطلوبة."
+        ),
+        "face_not_found": "لم يُعثر على وجه واضح في الصورة. أعد إرسال صورة شخصية يظهر فيها وجه واحد.",
+        "face_multiple": "يجب أن يظهر وجه واحد فقط. أعد إرسال صورة شخصية منفردة.",
+        "face_unclear": "الوجه صغير أو غير واضح. أعد إرسال صورة أقرب وأوضح.",
+        "inspection_unavailable": (
+            "الفحص المحلي غير متاح حاليًا، لذلك لم تُقبل الصورة ولم تُحفظ. "
+            "حاول مرة أخرى لاحقًا."
+        ),
+    }
+    return messages.get(
+        code,
+        "لم تجتز الصورة الفحص الأولي. أعد إرسال صورة واضحة للخطوة الحالية.",
+    )
+
+
+def _verification_state_for_kind(kind: str) -> int:
+    return {
+        "selfie": ASK_VERIFICATION_SELFIE,
+        "id_front": ASK_VERIFICATION_ID_FRONT,
+        "id_back": ASK_VERIFICATION_ID_BACK,
+    }[kind]
+
+
+async def _receive_verification_image(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    kind: str,
+    next_state: int | None,
+) -> int:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not message or not user or not chat or chat.type != "private":
+        return ConversationHandler.END
+
+    ticket_hash = context.user_data.get(VERIFICATION_TICKET_KEY)
+    captures = context.user_data.get(VERIFICATION_CAPTURES_KEY)
+    if not isinstance(ticket_hash, str) or not isinstance(captures, dict):
+        await _send_clean_prompt(
+            update,
+            context,
+            "انتهت جلسة التوثيق. ابدأ طلبًا جديدًا من القائمة الرئيسية.",
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    document = message.document
+    if document is None:
+        await message.reply_text(
+            "أرسل الصورة كملف من قائمة الإرفاق، وليس كصورة مضغوطة. "
+            "يمكنك الإلغاء في أي وقت.",
+        )
+        return _verification_state_for_kind(kind)
+    if document.file_size is not None and (
+        document.file_size <= 0
+        or document.file_size > identity_image_checks.MAX_IMAGE_BYTES
+    ):
+        await message.reply_text(_verification_image_error_message("image_size_invalid"))
+        return _verification_state_for_kind(kind)
+    if document.mime_type not in {"image/jpeg", "image/png"}:
+        await message.reply_text(_verification_image_error_message("image_format_invalid"))
+        return _verification_state_for_kind(kind)
+
+    try:
+        telegram_file = await context.bot.get_file(document.file_id)
+        buffer = bytearray()
+        await telegram_file.download_as_bytearray(buffer)
+        image_bytes = bytes(buffer)
+    except Exception:
+        logger.exception("تعذّر تنزيل صورة توثيق للمستخدم %s", user.id)
+        await message.reply_text(
+            "تعذّر استلام الملف الآن. لم تُحفظ الصورة؛ أعد إرسالها بعد قليل."
+        )
+        return _verification_state_for_kind(kind)
+
+    try:
+        await asyncio.to_thread(
+            identity_image_checks.validate_identity_image,
+            kind,
+            image_bytes,
+        )
+        encrypted = await asyncio.to_thread(
+            verified_reporters.encrypt_document,
+            kind,
+            image_bytes,
+        )
+    except identity_image_checks.IdentityImageCheckError as exc:
+        if exc.args and exc.args[0] == "inspection_unavailable":
+            logger.exception(
+                "Local identity-image inspection is unavailable for user %s",
+                user.id,
+            )
+        await message.reply_text(
+            _verification_image_error_message(str(exc))
+        )
+        return _verification_state_for_kind(kind)
+    except verified_reporters.VerificationUnavailable:
+        logger.exception("Identity verification encryption became unavailable")
+        await _discard_verification_capture(context, user.id)
+        await _send_clean_prompt(
+            update,
+            context,
+            "تعذّر التشفير الآمن، لذلك لم تُحفظ الصورة. ابدأ طلبًا جديدًا لاحقًا.",
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+    except Exception:
+        logger.exception("Unexpected local identity-image check failure")
+        await message.reply_text(
+            "تعذّر فحص الصورة محليًا، لذلك لم تُقبل. حاول مرة أخرى لاحقًا."
+        )
+        return _verification_state_for_kind(kind)
+
+    expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(minutes=VERIFICATION_TICKET_MINUTES)
+    ).isoformat(timespec="seconds")
+    try:
+        ticket_extended = await _db(context).extend_verification_ticket(
+            user.id, ticket_hash, expires_at
+        )
+    except Exception:
+        logger.exception("Could not extend verified-reporter ticket for user %s", user.id)
+        context.user_data.pop(VERIFICATION_TICKET_KEY, None)
+        context.user_data.pop(VERIFICATION_CAPTURES_KEY, None)
+        context.user_data.pop(VERIFICATION_STEP_KEY, None)
+        await message.reply_text(
+            "تعذّر متابعة التوثيق بسبب مشكلة مؤقتة في الحفظ. لم تُرسل الصور للمراجعة."
+        )
+        return ConversationHandler.END
+    if not ticket_extended:
+        await _discard_verification_capture(context, user.id)
+        await _send_clean_prompt(
+            update,
+            context,
+            "انتهت جلسة التوثيق. ابدأ طلبًا جديدًا من القائمة الرئيسية.",
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    captures[kind] = encrypted
+    context.user_data[VERIFICATION_CAPTURES_KEY] = captures
+    if next_state is not None:
+        next_kind = (
+            "id_front" if next_state == ASK_VERIFICATION_ID_FRONT else "id_back"
+        )
+        context.user_data[VERIFICATION_STEP_KEY] = next_kind
+        prompts = {
+            "id_front": (
+                "اجتزت الصورة الفحص الأولي. أرسل الآن الجهة الأمامية للهوية "
+                "كملف صورة كامل وواضح."
+            ),
+            "id_back": (
+                "اجتزت الصورة الفحص الأولي. أرسل الآن الجهة الخلفية للهوية "
+                "كملف صورة كامل وواضح."
+            ),
+        }
+        await _send_clean_prompt(update, context, prompts[next_kind])
+        return next_state
+
+    if set(captures) != verified_reporters.DOCUMENT_KINDS:
+        logger.error("Incomplete verified-reporter image sequence for user %s", user.id)
+        await _discard_verification_capture(context, user.id)
+        await _send_clean_prompt(
+            update,
+            context,
+            "لم يكتمل ترتيب الصور، لذلك لم يُرسل الطلب. ابدأه من جديد.",
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+    try:
+        request_id = await _db(context).submit_verification_documents(
+            user.id,
+            ticket_hash,
+            captures,
+        )
+    except Exception:
+        logger.exception(
+            "Could not save encrypted verified-reporter request for user %s",
+            user.id,
+        )
+        await _discard_verification_capture(context, user.id)
+        await _send_clean_prompt(
+            update,
+            context,
+            "تعذّر حفظ الطلب بأمان، ولم يُرسل للمراجعة. ابدأ طلبًا جديدًا لاحقًا.",
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+    if request_id is None:
+        await _discard_verification_capture(context, user.id)
+        await _send_clean_prompt(
+            update,
+            context,
+            "انتهت جلسة التوثيق قبل اكتمال الإرسال. ابدأ طلبًا جديدًا.",
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+
     active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
     context.user_data.clear()
     if active_prompt:
         context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
-    context.user_data["verification_flow"] = True
     await _send_clean_prompt(
         update,
         context,
-        "تم استلام رقمك المشترك عبر تيليجرام. افتح صفحة الكاميرا خلال 10 دقائق "
-        "لالتقاط صورة الوجه والهوية من الجهتين. لا تختَر صورًا من الاستوديو. "
-        "إرسال الطلب اختياري، ولن يؤثر عدم التوثيق على حقك في تقديم شكوى.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    "📷 فتح الكاميرا والتقاط الهوية",
-                    web_app=WebAppInfo(url=capture_url),
-                )
-            ]]
-        ),
+        "✅ اكتمل إرسال طلبك للمراجعة البشرية. الفحص المحلي لا يثبت أصالة الهوية "
+        "أو أن الصورة حيّة. سنبلغك عند صدور القرار.",
+        reply_markup=main_menu_kb(),
     )
-    context.user_data.pop("verification_flow", None)
     return ConversationHandler.END
+
+
+async def receive_verification_selfie(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    return await _receive_verification_image(
+        update,
+        context,
+        "selfie",
+        ASK_VERIFICATION_ID_FRONT,
+    )
+
+
+async def receive_verification_id_front(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    return await _receive_verification_image(
+        update,
+        context,
+        "id_front",
+        ASK_VERIFICATION_ID_BACK,
+    )
+
+
+async def receive_verification_id_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    return await _receive_verification_image(
+        update,
+        context,
+        "id_back",
+        None,
+    )
 
 
 async def receive_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1821,6 +2098,10 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # إلغاء العملية (أمر أو زر)
 # ==================================================================
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _discard_verification_capture(
+        context,
+        update.effective_user.id if update.effective_user else None,
+    )
     active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
     context.user_data.clear()
     if active_prompt:
@@ -1859,6 +2140,8 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     db = _db(context)
     data = query.data or ""
+    if data != f"{USR_PREFIX}verify-status":
+        await _discard_verification_capture(context, query.from_user.id)
 
     if data == f"{USR_PREFIX}contact" and any(
         key in context.user_data
@@ -2055,6 +2338,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             message_text = "لم تقدّم طلب توثيق. يمكنك التقديم اختياريًا من القائمة الرئيسية."
         elif status["status"] == "verified":
             message_text = "✅ حسابك موثّق كمراسل. هذه الشارة لا تعني اعتماد أي بلاغ تلقائيًا."
+        elif status["status"] == "capturing":
+            message_text = (
+                "طلب التوثيق غير مكتمل بعد. الصور لا تُحفظ للمراجعة حتى تنتهي "
+                "من إرسال الصور الثلاث واجتيازها الفحص المحلي."
+            )
         elif status["status"] == "pending" and status.get("has_documents"):
             message_text = "⏳ طلب التوثيق قيد المراجعة الإدارية."
         elif status["status"] == "pending":
@@ -2071,6 +2359,12 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             reply_markup=back_to_menu_kb(),
         )
         _remember_user_prompt(context, query.message)
+        if context.user_data.get(VERIFICATION_STEP_KEY) in {
+            "selfie", "id_front", "id_back",
+        }:
+            return _verification_state_for_kind(
+                context.user_data[VERIFICATION_STEP_KEY]
+            )
         return context.user_data.get("report_state")
 
     if parts[1] == "verify":
@@ -2086,15 +2380,13 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 show_alert=True,
             )
             return context.user_data.get("report_state")
-        if (
-            not verified_reporters.is_configured()
-            or not config.VERIFICATION_WEBAPP_URL
-        ):
+        if not verified_reporters.is_configured():
             await query.answer(
                 "التوثيق غير مفعّل بعد؛ إعداد التشفير الآمن غير مكتمل.",
                 show_alert=True,
             )
             return ConversationHandler.END
+        await db.cancel_verification_capture(query.from_user.id)
         active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
         context.user_data.clear()
         if active_prompt:
@@ -2103,9 +2395,12 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _send_clean_prompt(
             update,
             context,
-            "التوثيق اختياري ولا يؤثر على حقك في تقديم شكوى. شارك رقمك أنت عبر زر تيليجرام، "
-            "ثم التقط صورة الوجه والهوية الأمامية والخلفية بالكاميرا. "
-            "يُراجع الطلب يدويًا، والتصوير لا يثبت وحده أصالة الهوية أو حيوية الصورة.",
+            "التوثيق اختياري ولا يؤثر على حقك في تقديم شكوى. نطلب رقمًا سوريًا "
+            "وصورة الوجه والهوية من الجهتين كملفات داخل هذه المحادثة. "
+            "تُفحص الصور محليًا وتُحفظ مشفّرة للمراجعة البشرية، ثم تُحذف بعد "
+            "30 يومًا من القرار. لا يثبت الفحص "
+            "أصالة الهوية أو أن الصورة حيّة، ولا يستطيع البوت إثبات أن الصورة "
+            "التُقطت بالكاميرا. لن تُرسل الصور إلى خدمة فحص خارجية.",
             parse_mode=ParseMode.HTML,
             reply_markup=keyboards.verification_contact_kb(),
         )
@@ -2319,6 +2614,10 @@ async def unmatched(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def exit_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """فتح لوحة المشرف حتى أثناء محادثة البلاغ (تُنهي المحادثة)."""
+    await _discard_verification_capture(
+        context,
+        update.effective_user.id if update.effective_user else None,
+    )
     await admin.cmd_admin(update, context)
     return ConversationHandler.END
 
@@ -2427,6 +2726,30 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(
                     (filters.CONTACT | filters.TEXT) & ~filters.COMMAND,
                     receive_verification_phone,
+                ),
+                MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
+            ],
+            ASK_VERIFICATION_SELFIE: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(
+                    filters.Document.ALL | filters.PHOTO,
+                    receive_verification_selfie,
+                ),
+                MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
+            ],
+            ASK_VERIFICATION_ID_FRONT: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(
+                    filters.Document.ALL | filters.PHOTO,
+                    receive_verification_id_front,
+                ),
+                MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
+            ],
+            ASK_VERIFICATION_ID_BACK: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(
+                    filters.Document.ALL | filters.PHOTO,
+                    receive_verification_id_back,
                 ),
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],

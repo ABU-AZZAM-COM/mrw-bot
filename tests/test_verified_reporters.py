@@ -91,3 +91,30 @@ class VerifiedReporterDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             await self.db.verification_document(decided_request, "selfie")
         )
+
+    async def test_capture_ticket_can_be_extended_and_cancelled(self):
+        user_id = 80
+        ticket = "capture-ticket"
+        now = datetime.now(timezone.utc)
+        request_id = await self.db.create_verification_ticket(
+            user_id,
+            ticket,
+            b"encrypted-phone",
+            (now + timedelta(minutes=5)).isoformat(timespec="seconds"),
+        )
+        self.assertIsNotNone(request_id)
+
+        self.assertTrue(
+            await self.db.extend_verification_ticket(
+                user_id,
+                ticket,
+                (now + timedelta(minutes=30)).isoformat(timespec="seconds"),
+            )
+        )
+        self.assertTrue(
+            await self.db.cancel_verification_capture(user_id, ticket)
+        )
+        self.assertIsNone(await self.db.verification_status(user_id))
+        self.assertFalse(
+            await self.db.cancel_verification_capture(user_id, ticket)
+        )
