@@ -254,6 +254,16 @@ class AdminManagementTests(unittest.TestCase):
             ),
             ("GET", "/api/admin/verified-reporters/1/pdf", "identity_documents"),
             (
+                "GET",
+                "/api/admin/verified-reporters/1/documents/selfie?version_id=2",
+                "identity_documents",
+            ),
+            (
+                "POST",
+                "/api/admin/verified-reporters/1/delete",
+                "identity_delete",
+            ),
+            (
                 "POST",
                 "/api/admin/verified-reporters/1/decision",
                 "identity",
@@ -296,6 +306,23 @@ class AdminManagementTests(unittest.TestCase):
         self.assertEqual(_auth(document_request).status_code, 403)
         account["permissions"] = ["read", "identity", "identity_documents"]
         self.assertIsNone(_auth(document_request))
+        account["permissions"] = ["read", "identity"]
+        delete_request = Request({
+            "type": "http",
+            "app": self.app,
+            "method": "POST",
+            "path": "/api/admin/verified-reporters/1/delete",
+            "headers": request.scope["headers"],
+            "query_string": b"",
+            "scheme": "http",
+            "server": ("test", 80),
+            "client": ("test", 1),
+            "http_version": "1.1",
+        })
+        delete_request.state.admin_auth_snapshot = ([account], True)
+        self.assertEqual(_auth(delete_request).status_code, 403)
+        account["permissions"] = ["read", "identity_delete"]
+        self.assertIsNone(_auth(delete_request))
 
     def test_rotating_owner_token_disables_old_environment_tokens(self):
         response = self.client.post(

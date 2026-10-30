@@ -125,6 +125,7 @@ async def _typing_while_processing(bot, chat_id: int):
     ASK_VERIFICATION_ID_BACK,
     ASK_REPORT_APPEAL,
 ) = range(15)
+ASK_VERIFICATION_SUPPLEMENT = 15
 SUPPORT_MAX_LENGTH = 1000
 SUPPORT_MAX_WORDS = 100
 SUPPORT_MAX_PER_10_MINUTES = 3
@@ -1940,7 +1941,6 @@ async def _receive_verification_image(
     chat = update.effective_chat
     if not message or not user or not chat or chat.type != "private":
         return ConversationHandler.END
-
     ticket_hash = context.user_data.get(VERIFICATION_TICKET_KEY)
     captures = context.user_data.get(VERIFICATION_CAPTURES_KEY)
     if not isinstance(ticket_hash, str) or not isinstance(captures, dict):
@@ -2160,6 +2160,257 @@ async def _receive_verification_image(
     )
     return ConversationHandler.END
 
+async def _receive_verification_supplement_image(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not message or not user or not chat or chat.type != "private":
+        return ConversationHandler.END
+    request_id = context.user_data.get("verification_supplement_request_id")
+    if not isinstance(request_id, int):
+        await message.reply_text("ابدأ الاستكمال من زر طلب التوثيق الذي وصلك.")
+        return ConversationHandler.END
+    if not message.photo:
+        await message.reply_text("أرسل الصورة المطلوبة كصورة في محادثة البوت.")
+        return ASK_VERIFICATION_SUPPLEMENT
+    try:
+        supplement = await _db(context).active_verification_supplement(
+            request_id, user.id
+        )
+    except Exception:
+        logger.exception("Could not load verification supplement for user %s", user.id)
+        await message.reply_text("تعذّر تحميل طلب الاستكمال الآن. حاول مجددًا لاحقًا.")
+        return ASK_VERIFICATION_SUPPLEMENT
+    if not supplement:
+        context.user_data.pop("verification_supplement_request_id", None)
+        await message.reply_text(
+            "لا يوجد طلب استكمال نشط. أعد فتح حالة التوثيق من القائمة الرئيسية."
+        )
+        return ConversationHandler.END
+    requested = supplement["requested_documents"]
+    uploaded = set(supplement["uploaded_documents"])
+    remaining = [kind for kind in requested if kind not in uploaded]
+    if not remaining:
+        context.user_data.pop("verification_supplement_request_id", None)
+        return ConversationHandler.END
+    kind = remaining[0]
+    media = message.photo[-1]
+    if media.file_size is not None and (
+        media.file_size <= 0 or media.file_size > identity_image_checks.MAX_IMAGE_BYTES
+    ):
+        await message.reply_text(_verification_image_error_message("image_size_invalid"))
+        return ASK_VERIFICATION_SUPPLEMENT
+    try:
+        async with _typing_while_processing(context.bot, user.id):
+            telegram_file = await context.bot.get_file(media.file_id)
+            buffer = bytearray()
+            await telegram_file.download_as_bytearray(buffer)
+            image_bytes = bytes(buffer)
+            await asyncio.to_thread(
+                identity_image_checks.validate_identity_image,
+                kind,
+                image_bytes,
+            )
+            if kind == "selfie":
+                if not sightengine_moderation.credentials():
+                    raise sightengine_moderation.SightengineError(
+                        "Sightengine credentials are not configured"
+                    )
+                with tempfile.NamedTemporaryFile(
+                    prefix="mrw-verification-supplement-", suffix=".jpg",
+                    delete=False,
+                ) as handle:
+                    inspection_path = Path(handle.name)
+                try:
+                    inspection_path.write_bytes(image_bytes)
+                    scores = await sightengine_moderation.inspect_image(
+                        inspection_path
+                    )
+                finally:
+                    inspection_path.unlink(missing_ok=True)
+                if scores.is_restricted:
+                    raise identity_image_checks.IdentityImageCheckError(
+                        "inappropriate_content"
+                    )
+            encrypted = await asyncio.to_thread(
+                verified_reporters.encrypt_document,
+                kind,
+                image_bytes,
+            )
+        saved = await _db(context).save_verification_supplement_upload(
+            request_id,
+            user.id,
+            kind,
+            encrypted,
+        )
+    except identity_image_checks.IdentityImageCheckError as exc:
+        await message.reply_text(_verification_image_error_message(str(exc)))
+        return ASK_VERIFICATION_SUPPLEMENT
+    except sightengine_moderation.SightengineError:
+        logger.exception(
+            "Sightengine could not screen supplement selfie for user %s", user.id
+        )
+        await message.reply_text(
+            "تعذّر فحص صورة الوجه الآن، ولم تُحفظ. حاول مرة أخرى لاحقًا."
+        )
+        return ASK_VERIFICATION_SUPPLEMENT
+    except verified_reporters.VerificationUnavailable:
+        logger.exception("Could not encrypt identity supplement for user %s", user.id)
+        await message.reply_text("تعذّر حفظ الصورة بأمان. لم تُحفظ؛ أعد المحاولة لاحقًا.")
+        return ASK_VERIFICATION_SUPPLEMENT
+    except ValueError as exc:
+        logger.info("Rejected verification supplement for user %s: %s", user.id, exc)
+        await message.reply_text("هذه الصورة غير مطلوبة في طلب الاستكمال الحالي.")
+        return ASK_VERIFICATION_SUPPLEMENT
+    except Exception:
+        logger.exception("Could not save verification supplement for user %s", user.id)
+        await message.reply_text("تعذّر حفظ الصورة الآن. لم تُرسل للمراجعة؛ حاول مجددًا.")
+        return ASK_VERIFICATION_SUPPLEMENT
+    if not saved:
+        await message.reply_text(
+            "لم يعد طلب الاستكمال نشطًا، لذلك لم تُحفظ الصورة."
+        )
+        return ConversationHandler.END
+    if not saved["completed"]:
+        next_kind = saved["remaining_documents"][0]
+        await message.reply_text(
+            "تم استلام الصورة المطلوبة. أرسل الآن فقط: "
+            + {
+                "selfie": "صورة الوجه",
+                "id_front": "الجهة الأمامية للهوية",
+                "id_back": "الجهة الخلفية للهوية",
+            }[next_kind]
+        )
+        return ASK_VERIFICATION_SUPPLEMENT
+
+    context.user_data.pop("verification_supplement_request_id", None)
+    db = _db(context)
+    dashboard_notified = False
+    try:
+        await db.create_notification(
+            "verification_supplement_received",
+            {
+                "request_id": request_id,
+                "user_id": user.id,
+                "dashboard_path": f"/verification/{request_id}",
+            },
+        )
+        dashboard_notified = True
+    except Exception:
+        logger.exception(
+            "Could not create dashboard notification for supplement %s",
+            request_id,
+        )
+    await _notify_verification_supplement_reviewers(
+        context, request_id, user.id, saved["requested_documents"]
+    )
+    await db.audit(
+        user.id,
+        "verified_reporter_supplement_received",
+        str(request_id),
+        f"documents={','.join(saved['requested_documents'])}; "
+        f"dashboard_notification={dashboard_notified}",
+    )
+    await message.reply_text(
+        "اكتمل إرسال الصور المطلوبة. بقي طلب التوثيق مفتوحًا للمراجعة، "
+        "وسنبلغك عند صدور القرار."
+    )
+    return ConversationHandler.END
+
+
+async def _notify_verification_supplement_reviewers(
+    context: ContextTypes.DEFAULT_TYPE,
+    request_id: int,
+    user_id: int,
+    kinds: list[str],
+) -> bool:
+    db = _db(context)
+    try:
+        accounts, _ = await asyncio.to_thread(db.admin_auth_snapshot)
+    except Exception:
+        logger.exception("Could not resolve permitted identity reviewers")
+        return False
+    recipients: set[int] = set()
+    fallback_permissions = {
+        "viewer": {"read"},
+        "reviewer": {"read", "review"},
+        "operator": {"read", "review", "users", "operate", "export"},
+        "owner": {
+            "read", "review", "users", "operate", "export", "delete", "identity",
+        },
+    }
+
+    for account in accounts:
+        if not isinstance(account, dict) or account.get("active") is not True:
+            continue
+        admin_id = account.get("admin_id")
+        if not isinstance(admin_id, int) or admin_id <= 0:
+            continue
+        permissions = account.get("permissions")
+        if permissions is None:
+            permissions = fallback_permissions.get(account.get("role"), set())
+        if (
+            isinstance(permissions, (list, tuple, set))
+            and "identity_documents" in permissions
+        ):
+            recipients.add(admin_id)
+    if not recipients:
+        return False
+    documents: list[tuple[str, bytes]] = []
+    try:
+        for kind in kinds:
+            ciphertext = await db.verification_document(request_id, kind)
+            if not ciphertext:
+                return False
+            documents.append(
+                (kind, verified_reporters.decrypt_document(ciphertext))
+            )
+    except verified_reporters.VerificationUnavailable:
+        logger.exception("Could not decrypt received identity supplement")
+        return False
+    delivered = False
+    import io
+
+    for recipient in sorted(recipients):
+        complete = True
+        for kind, content in documents:
+            try:
+                await context.bot.send_photo(
+                    chat_id=recipient,
+                    photo=io.BytesIO(content),
+                    caption=(
+                        f"وصلت صور الاستكمال لطلب توثيق المراسل #{request_id} "
+                        f"(المستخدم {user_id}، {kind}). راجع الطلب في لوحة التوثيق."
+                    ),
+                )
+            except Exception:
+                logger.info(
+                    "Could not send supplement to authorized reviewer %s",
+                    recipient,
+                    exc_info=True,
+                )
+                complete = False
+                break
+        if not complete:
+            try:
+                await context.bot.send_message(
+                    chat_id=recipient,
+                    text=(
+                        f"وصل استكمال طلب التوثيق #{request_id}، "
+                        "لكن تعذر إرفاق الصور. افتح إشعار لوحة الإدارة "
+                        "للوصول إلى تفاصيل الطلب المحمية."
+                    ),
+                )
+            except Exception:
+                logger.info(
+                    "Could not send protected-link fallback to reviewer %s",
+                    recipient,
+                    exc_info=True,
+                )
+        delivered = delivered or complete
+    return delivered
 
 async def receive_verification_selfie(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -2393,7 +2644,10 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     db = _db(context)
     data = query.data or ""
-    if data != f"{USR_PREFIX}verify-status":
+    if data not in {
+        f"{USR_PREFIX}verify-status",
+        f"{USR_PREFIX}verify-supplement",
+    }:
         await _discard_verification_capture(context, query.from_user.id)
 
     if data == f"{USR_PREFIX}contact" and any(
@@ -2638,6 +2892,49 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         _remember_user_prompt(context, query.message)
         return ASK_SUPPORT
 
+    if parts[1] == "verify-supplement":
+        status = await db.verification_status(query.from_user.id)
+        request_id = (
+            int(status["id"])
+            if status
+            and status.get("status") == "pending"
+            and status.get("review_state") == "needs_info"
+            else None
+        )
+        supplement = (
+            await db.active_verification_supplement(request_id, query.from_user.id)
+            if request_id is not None
+            else None
+        )
+        if not supplement:
+            await query.edit_message_text(
+                "لا يوجد طلب استكمال نشط. راجع حالة توثيق الحساب من القائمة الرئيسية.",
+                reply_markup=back_to_menu_kb(),
+            )
+            _remember_user_prompt(context, query.message)
+            return ConversationHandler.END
+        context.user_data["verification_supplement_request_id"] = request_id
+        kind = next(
+            (
+                item for item in supplement["requested_documents"]
+                if item not in supplement["uploaded_documents"]
+            ),
+            None,
+        )
+        labels = {
+            "selfie": "صورة الوجه",
+            "id_front": "الجهة الأمامية للهوية",
+            "id_back": "الجهة الخلفية للهوية",
+        }
+        await query.edit_message_text(
+            "أرسل فقط الصورة المطلوبة التالية كصورة في هذه المحادثة:\n"
+            f"{labels[kind]}\n\n"
+            "تبقى بقية صور الهوية محفوظة للمراجعة؛ لن تحتاج إلى إعادة إرسالها.",
+            reply_markup=cancel_inline_kb(),
+        )
+        _remember_user_prompt(context, query.message)
+        return ASK_VERIFICATION_SUPPLEMENT
+
     if parts[1] == "verify-status":
         status = await db.verification_status(query.from_user.id)
         if not status:
@@ -2648,6 +2945,25 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             message_text = (
                 "طلب التوثيق غير مكتمل بعد. الصور لا تُحفظ للمراجعة حتى تنتهي "
                 "من إرسال الصور الثلاث واجتيازها الفحص المحلي."
+            )
+        elif (
+            status["status"] == "pending"
+            and status.get("review_state") == "needs_info"
+        ):
+            required = status.get("supplement_requested_documents") or "[]"
+            try:
+                kinds = json.loads(required)
+            except (TypeError, json.JSONDecodeError):
+                kinds = []
+            labels = {
+                "selfie": "صورة الوجه",
+                "id_front": "الجهة الأمامية للهوية",
+                "id_back": "الجهة الخلفية للهوية",
+            }
+            message_text = (
+                "طلب التوثيق مفتوح وينتظر الصور التالية فقط:\n"
+                + "\n".join(f"• {labels[kind]}" for kind in kinds if kind in labels)
+                + f"\n\nملاحظة المشرف: {status.get('supplement_message') or ''}"
             )
         elif status["status"] == "pending" and status.get("has_documents"):
             message_text = "⏳ طلب التوثيق قيد المراجعة الإدارية."
@@ -3121,6 +3437,11 @@ def build_conversation() -> ConversationHandler:
                     filters.Document.ALL | filters.PHOTO,
                     receive_verification_id_back,
                 ),
+                MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
+            ],
+            ASK_VERIFICATION_SUPPLEMENT: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(filters.PHOTO, _receive_verification_supplement_image),
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],
             ASK_SUPPORT: [
