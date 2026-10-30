@@ -1591,7 +1591,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         )
         return Response(
             content=content,
-            media_type="image/jpeg",
+            media_type=verified_reporters.image_media_type(content)
+            or "application/octet-stream",
             headers={
                 "Cache-Control": "no-store, private, max-age=0",
                 "Pragma": "no-cache",

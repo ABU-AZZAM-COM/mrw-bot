@@ -14,7 +14,8 @@ WORKDIR /app
 
 # المنطقة الزمنية وشهادات الجذر (للاتصال الآمن بواجهة تلغرام)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata ca-certificates \
+    && apt-get install -y --no-install-recommends \
+        tzdata ca-certificates tesseract-ocr tesseract-ocr-ara \
     && rm -rf /var/lib/apt/lists/*
 
 # تثبيت المكتبات أولًا (طبقة منفصلة لإعادة البناء بسرعة عند تغيير الكود فقط)

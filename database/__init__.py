@@ -932,6 +932,87 @@ class Database:
             expires_at,
         )
 
+    def _extend_verification_ticket(
+        self, user_id: int, ticket_hash: str, expires_at: str
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE verification_tickets SET expires_at = ?
+                WHERE user_id = ? AND ticket_hash = ? AND expires_at > ?
+                """,
+                (expires_at, user_id, ticket_hash, now),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    async def extend_verification_ticket(
+        self, user_id: int, ticket_hash: str, expires_at: str
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._extend_verification_ticket,
+            user_id,
+            ticket_hash,
+            expires_at,
+        )
+
+    def _cancel_verification_capture(
+        self, user_id: int, ticket_hash: str | None = None
+    ) -> bool:
+        with self._lock:
+            if ticket_hash is None:
+                ticket = self._conn.execute(
+                    "SELECT request_id FROM verification_tickets WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+            else:
+                ticket = self._conn.execute(
+                    """
+                    SELECT request_id FROM verification_tickets
+                    WHERE user_id = ? AND ticket_hash = ?
+                    """,
+                    (user_id, ticket_hash),
+                ).fetchone()
+            if ticket:
+                request_id = int(ticket["request_id"])
+                self._conn.execute(
+                    "DELETE FROM verification_tickets WHERE user_id = ?",
+                    (user_id,),
+                )
+            elif ticket_hash is None:
+                capturing = self._conn.execute(
+                    """
+                    SELECT id FROM verified_reporters
+                    WHERE user_id = ? AND status = 'capturing'
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (user_id,),
+                ).fetchone()
+                if not capturing:
+                    return False
+                request_id = int(capturing["id"])
+            else:
+                return False
+            cursor = self._conn.execute(
+                """
+                DELETE FROM verified_reporters
+                WHERE id = ? AND user_id = ? AND status = 'capturing'
+                """,
+                (request_id, user_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    async def cancel_verification_capture(
+        self, user_id: int, ticket_hash: str | None = None
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._cancel_verification_capture,
+            user_id,
+            ticket_hash,
+        )
+
     def _submit_verification_documents(
         self,
         user_id: int,
