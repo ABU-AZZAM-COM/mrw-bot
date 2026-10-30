@@ -13,7 +13,7 @@ class VerifiedReportersPage extends StatefulWidget {
     required this.api,
     this.initialRequestId,
     this.onFocusHandled,
-    this.canViewDocuments = false,
+    this.canViewDocuments = true,
     this.canDeleteDocuments = false,
   });
 
