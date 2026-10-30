@@ -207,6 +207,11 @@ class VerifiedReporterDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await self.db.verification_document(request_id, "selfie"),
             b"encrypted-new-selfie",
         )
+        activity = await self.db.verification_audit_history(request_id)
+        self.assertIn(
+            "verified_reporter_supplement_received",
+            {event["action"] for event in activity},
+        )
         status = await self.db.verification_status(84)
         self.assertEqual(status["status"], "pending")
         self.assertEqual(status["review_state"], "pending")
@@ -236,3 +241,56 @@ class VerifiedReporterDatabaseTests(unittest.IsolatedAsyncioTestCase):
         analytics = await self.db.verification_analytics(7)
         self.assertEqual(analytics["counts"]["needs_info"], 1)
         self.assertEqual(len(analytics["trend"]), 7)
+
+    async def test_verification_search_filters_documents_sorts_and_reads_activity(self):
+        requests = [await self._submit(user_id) for user_id in (86, 87, 88)]
+        submitted_at = [
+            "2025-01-03T00:00:00+00:00",
+            "2025-01-01T00:00:00+00:00",
+            "2025-01-02T00:00:00+00:00",
+        ]
+        self.db._conn.executemany(
+            "UPDATE verified_reporters SET submitted_at = ? WHERE id = ?",
+            list(zip(submitted_at, requests)),
+        )
+        self.db._conn.commit()
+        self.assertTrue(
+            await self.db.decide_verification(requests[1], 9001, "verified")
+        )
+        self.assertIsNotNone(
+            await self.db.delete_verified_reporter(
+                requests[1], 9001, "اختبار حذف المستندات"
+            )
+        )
+
+        available, available_total = await self.db.search_verification_requests(
+            status="all",
+            documents="available",
+            sort="oldest",
+        )
+        missing, missing_total = await self.db.search_verification_requests(
+            status="all",
+            documents="missing",
+            sort="newest",
+        )
+        self.assertEqual(available_total, 2)
+        self.assertEqual([item["id"] for item in available], [requests[2], requests[0]])
+        self.assertEqual(missing_total, 1)
+        self.assertEqual(missing[0]["id"], requests[1])
+
+        await self.db.audit(
+            9001,
+            "verified_reporter_notification_retried",
+            str(requests[0]),
+            "notification_sent=false",
+        )
+        await self.db.audit(
+            9001,
+            "verified_reporter_notification_retried",
+            str(requests[0]),
+            "notification_sent=true",
+        )
+        activity = await self.db.verification_audit_history(requests[0])
+        self.assertEqual(len(activity), 3)
+        self.assertEqual(activity[0]["details"], "notification_sent=true")
+        self.assertEqual(activity[-1]["action"], "verified_reporter_submitted")

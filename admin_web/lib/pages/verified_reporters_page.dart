@@ -29,18 +29,21 @@ class VerifiedReportersPage extends StatefulWidget {
 
 class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
   final _search = TextEditingController();
-  final _startDate = TextEditingController();
-  final _endDate = TextEditingController();
   Timer? _searchTimer;
   List<Map<String, dynamic>> _items = [];
   Map<String, dynamic> _analytics = const {};
   Map<String, dynamic>? _detail;
   Map<String, dynamic> _versions = const {};
   List<Map<String, dynamic>> _supplements = [];
+  List<Map<String, dynamic>> _activity = [];
   Uint8List? _image;
   String? _imageKind;
   int? _imageVersionId;
   String _status = 'pending';
+  String _documents = 'all';
+  String _sort = 'waiting';
+  DateTimeRange? _dateRange;
+  int _analyticsDays = 30;
   bool _loading = true;
   bool _detailLoading = false;
   bool _analyticsLoading = true;
@@ -65,8 +68,6 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
   void dispose() {
     _searchTimer?.cancel();
     _search.dispose();
-    _startDate.dispose();
-    _endDate.dispose();
     super.dispose();
   }
 
@@ -80,10 +81,11 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
         'status': _status,
         'page': '$_page',
         'size': '$_pageSize',
+        'documents': _documents,
+        'sort': _sort,
         if (_search.text.trim().isNotEmpty) 'q': _search.text.trim(),
-        if (_startDate.text.trim().isNotEmpty)
-          'start_date': _startDate.text.trim(),
-        if (_endDate.text.trim().isNotEmpty) 'end_date': _endDate.text.trim(),
+        if (_dateRange != null) 'start_date': _day(_dateRange!.start),
+        if (_dateRange != null) 'end_date': _day(_dateRange!.end),
       };
       final result = await widget.api.get(
         '/api/admin/verified-reporters',
@@ -112,7 +114,7 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
     try {
       final result = await widget.api.get(
         '/api/admin/verified-reporters/analytics',
-        const {'days': '30'},
+        {'days': '$_analyticsDays'},
       );
       if (!mounted) return;
       setState(() {
@@ -135,6 +137,45 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
     });
   }
 
+  Future<void> _chooseDateRange() async {
+    final now = DateTime.now();
+    final selected = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2000),
+      lastDate: now,
+      initialDateRange:
+          _dateRange ??
+          DateTimeRange(
+            start: now.subtract(const Duration(days: 29)),
+            end: now,
+          ),
+      helpText: 'تصفية طلبات التوثيق حسب تاريخ التقديم',
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _dateRange = selected;
+      _page = 0;
+    });
+    await _load();
+  }
+
+  String _day(DateTime date) =>
+      '${date.year.toString().padLeft(4, '0')}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+
+  Future<void> _clearFilters() async {
+    setState(() {
+      _search.clear();
+      _status = 'pending';
+      _documents = 'all';
+      _sort = 'waiting';
+      _dateRange = null;
+      _page = 0;
+    });
+    await _load();
+  }
+
   Future<void> _openDetail(int id) async {
     setState(() {
       _detailLoading = true;
@@ -150,6 +191,9 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
           result['versions'] as Map? ?? const {},
         );
         _supplements = (result['supplements'] as List<dynamic>? ?? const [])
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
+        _activity = (result['activity'] as List<dynamic>? ?? const [])
             .map((item) => Map<String, dynamic>.from(item as Map))
             .toList();
         _detailLoading = false;
@@ -413,6 +457,28 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
     }
   }
 
+  Future<void> _retryNotification() async {
+    final id = (_detail?['id'] as num?)?.toInt();
+    if (id == null || _detail?['notification_retryable'] != true) return;
+    try {
+      final result = await widget.api.post(
+        '/api/admin/verified-reporters/$id/retry-notification',
+        const {},
+      );
+      if (!mounted) return;
+      final sent = result['notification_sent'] == true;
+      toast(
+        context,
+        sent ? 'أُعيد إرسال الإشعار' : 'تعذّر إرسال الإشعار مجددًا',
+        error: !sent,
+      );
+      await _openDetail(id);
+      await _load();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) =>
       _detail == null ? _dashboard() : _detailPage();
@@ -452,17 +518,33 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
   Widget _analyticsCards() {
     final counts = _analytics['counts'] as Map<String, dynamic>? ?? const {};
     final waiting = _analytics['waiting'] as Map<String, dynamic>? ?? const {};
-    final values = <(String, String, IconData)>[
-      ('بانتظار المراجعة', '${counts['pending'] ?? 0}', Icons.hourglass_top),
-      ('بانتظار الاستكمال', '${counts['needs_info'] ?? 0}', Icons.more_time),
-      ('معتمد', '${counts['verified'] ?? 0}', Icons.verified_outlined),
-      ('مرفوض', '${counts['rejected'] ?? 0}', Icons.block_outlined),
+    final values = <(String, String, IconData, String?)>[
+      (
+        'بانتظار المراجعة',
+        '${counts['pending'] ?? 0}',
+        Icons.hourglass_top,
+        'pending',
+      ),
+      (
+        'بانتظار الاستكمال',
+        '${counts['needs_info'] ?? 0}',
+        Icons.more_time,
+        'needs_info',
+      ),
+      (
+        'معتمد',
+        '${counts['verified'] ?? 0}',
+        Icons.verified_outlined,
+        'verified',
+      ),
+      ('مرفوض', '${counts['rejected'] ?? 0}', Icons.block_outlined, 'rejected'),
       (
         'متوسط الانتظار',
         waiting['average_wait_hours'] == null
             ? '—'
             : '${waiting['average_wait_hours']} س',
         Icons.schedule,
+        null,
       ),
     ];
     return Wrap(
@@ -473,25 +555,37 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
           SizedBox(
             width: 170,
             child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Row(
-                  children: [
-                    Icon(item.$3),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(item.$1, style: const TextStyle(fontSize: 12)),
-                          Text(
-                            _analyticsLoading ? '…' : item.$2,
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                        ],
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: item.$4 == null
+                    ? null
+                    : () {
+                        setState(() {
+                          _status = item.$4!;
+                          _page = 0;
+                        });
+                        _load();
+                      },
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      Icon(item.$3),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(item.$1, style: const TextStyle(fontSize: 12)),
+                            Text(
+                              _analyticsLoading ? '…' : item.$2,
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -511,9 +605,36 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              'اتجاه الطلبات — آخر 30 يومًا',
-              style: TextStyle(fontWeight: FontWeight.w700),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'اتجاه الطلبات',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                SizedBox(
+                  width: 130,
+                  child: DropdownButtonFormField<int>(
+                    initialValue: _analyticsDays,
+                    isDense: true,
+                    decoration: const InputDecoration(
+                      labelText: 'الفترة',
+                      border: InputBorder.none,
+                    ),
+                    items: const [
+                      DropdownMenuItem(value: 7, child: Text('7 أيام')),
+                      DropdownMenuItem(value: 30, child: Text('30 يومًا')),
+                      DropdownMenuItem(value: 90, child: Text('90 يومًا')),
+                    ],
+                    onChanged: (days) {
+                      if (days == null) return;
+                      setState(() => _analyticsDays = days);
+                      _loadAnalytics();
+                    },
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             SizedBox(
@@ -580,31 +701,64 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
         ),
       ),
       SizedBox(
-        width: 145,
-        child: TextField(
-          controller: _startDate,
-          onSubmitted: (_) => _load(),
+        width: 170,
+        child: DropdownButtonFormField<String>(
+          initialValue: _documents,
           decoration: const InputDecoration(
-            labelText: 'من تاريخ YYYY-MM-DD',
+            labelText: 'الوثائق',
             isDense: true,
           ),
+          items: const [
+            DropdownMenuItem(value: 'all', child: Text('كل الطلبات')),
+            DropdownMenuItem(value: 'available', child: Text('لديها وثائق')),
+            DropdownMenuItem(value: 'missing', child: Text('بلا وثائق')),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            setState(() {
+              _documents = value;
+              _page = 0;
+            });
+            _load();
+          },
         ),
       ),
       SizedBox(
-        width: 145,
-        child: TextField(
-          controller: _endDate,
-          onSubmitted: (_) => _load(),
+        width: 170,
+        child: DropdownButtonFormField<String>(
+          initialValue: _sort,
           decoration: const InputDecoration(
-            labelText: 'إلى تاريخ YYYY-MM-DD',
+            labelText: 'الترتيب',
             isDense: true,
           ),
+          items: const [
+            DropdownMenuItem(value: 'waiting', child: Text('الأقدم انتظارًا')),
+            DropdownMenuItem(value: 'oldest', child: Text('الأقدم تقديمًا')),
+            DropdownMenuItem(value: 'newest', child: Text('الأحدث تقديمًا')),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            setState(() {
+              _sort = value;
+              _page = 0;
+            });
+            _load();
+          },
         ),
       ),
       OutlinedButton.icon(
-        onPressed: _load,
-        icon: const Icon(Icons.filter_alt_outlined),
-        label: const Text('تطبيق'),
+        onPressed: _chooseDateRange,
+        icon: const Icon(Icons.date_range_outlined),
+        label: Text(
+          _dateRange == null
+              ? 'التاريخ'
+              : '${_day(_dateRange!.start)} – ${_day(_dateRange!.end)}',
+        ),
+      ),
+      OutlinedButton.icon(
+        onPressed: _clearFilters,
+        icon: const Icon(Icons.filter_alt_off_outlined),
+        label: const Text('مسح المرشحات'),
       ),
     ],
   );
@@ -778,6 +932,15 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
                     ),
                   ],
                 ),
+              if (item['notification_retryable'] == true)
+                Align(
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: OutlinedButton.icon(
+                    onPressed: _retryNotification,
+                    icon: const Icon(Icons.notifications_active_outlined),
+                    label: const Text('إعادة إرسال الإشعار الفاشل'),
+                  ),
+                ),
               if (widget.canDeleteDocuments &&
                   hasDocuments &&
                   (item['status'] == 'verified' ||
@@ -791,6 +954,7 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
                   ),
                 ),
               _supplementHistory(),
+              _activityHistory(),
             ],
           ),
         ),
@@ -867,6 +1031,38 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
       ],
     ),
   );
+
+  Widget _activityHistory() {
+    String actionLabel(String action) => switch (action) {
+      'verified_reporter_submitted' => 'تقديم طلب توثيق',
+      'verified_reporter_supplement_requested' => 'طلب استكمال',
+      'verified_reporter_supplement_received' => 'استلام الاستكمال',
+      'verified_reporter_decided' => 'اتخاذ قرار',
+      'verified_reporter_documents_deleted' => 'حذف وثائق',
+      'verified_reporter_notification_retried' => 'إعادة محاولة إشعار',
+      _ => action,
+    };
+
+    return Card(
+      child: ExpansionTile(
+        title: Text('سجل النشاط والتدقيق (${_activity.length})'),
+        children: [
+          if (_activity.isEmpty)
+            const ListTile(title: Text('لا توجد أحداث تدقيق لهذا الطلب')),
+          for (final event in _activity)
+            ListTile(
+              leading: const Icon(Icons.history),
+              title: Text(actionLabel('${event['action'] ?? ''}')),
+              subtitle: Text(
+                '${fmt('${event['ts'] ?? ''}')} · المشرف ${event['actor_id'] ?? '—'}'
+                '${event['details'] == null || '${event['details']}'.isEmpty ? '' : '\n${event['details']}'}',
+              ),
+              isThreeLine: true,
+            ),
+        ],
+      ),
+    );
+  }
 
   static const _documentKinds = <String, String>{
     'selfie': 'صورة الوجه',

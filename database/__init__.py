@@ -1190,6 +1190,12 @@ class Database:
                 "DELETE FROM verification_tickets WHERE user_id = ?",
                 (user_id,),
             )
+            self._insert_audit_locked(
+                user_id,
+                "verified_reporter_submitted",
+                str(request_id),
+                f"documents={','.join(sorted(captures))}",
+            )
             self._conn.commit()
             return request_id
 
@@ -1397,11 +1403,17 @@ class Database:
         query: str | None,
         start_date: str | None,
         end_date: str | None,
-        page: int,
-        size: int,
+        documents: str = "all",
+        sort: str = "waiting",
+        page: int = 0,
+        size: int = 25,
     ) -> tuple[list[dict[str, Any]], int]:
         if status not in {"pending", "needs_info", "verified", "rejected", "all"}:
             raise ValueError("invalid_verification_status")
+        if documents not in {"all", "available", "missing"}:
+            raise ValueError("invalid_verification_documents_filter")
+        if sort not in {"waiting", "oldest", "newest"}:
+            raise ValueError("invalid_verification_sort")
         page = max(0, int(page))
         size = max(1, min(int(size), 100))
         clauses: list[str] = []
@@ -1426,14 +1438,29 @@ class Database:
         if end_date:
             clauses.append("substr(r.submitted_at, 1, 10) <= ?")
             params.append(end_date)
+        if documents == "available":
+            clauses.append("p.request_id IS NOT NULL")
+        elif documents == "missing":
+            clauses.append("p.request_id IS NULL")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         offset = page * size
+        order_by = {
+            "waiting": (
+                "CASE "
+                "WHEN r.status = 'pending' AND r.review_state = 'pending' THEN 0 "
+                "WHEN r.status = 'pending' AND r.review_state = 'needs_info' THEN 1 "
+                "ELSE 2 END, r.submitted_at ASC, r.id ASC"
+            ),
+            "oldest": "r.submitted_at ASC, r.id ASC",
+            "newest": "r.submitted_at DESC, r.id DESC",
+        }[sort]
         with self._lock:
             total = int(
                 self._conn.execute(
                     f"""
                     SELECT COUNT(*) AS count
                     FROM verified_reporters r
+                    LEFT JOIN verified_reporter_private p ON p.request_id = r.id
                     LEFT JOIN bot_users u ON u.user_id = r.user_id
                     {where}
                     """,
@@ -1454,11 +1481,7 @@ class Database:
                 LEFT JOIN verified_reporter_private p ON p.request_id = r.id
                 LEFT JOIN bot_users u ON u.user_id = r.user_id
                 {where}
-                ORDER BY CASE
-                    WHEN r.status = 'pending' AND r.review_state = 'pending' THEN 0
-                    WHEN r.status = 'pending' AND r.review_state = 'needs_info' THEN 1
-                    ELSE 2
-                END, r.submitted_at ASC, r.id ASC
+                ORDER BY {order_by}
                 LIMIT ? OFFSET ?
                 """,
                 (*params, size, offset),
@@ -1472,6 +1495,8 @@ class Database:
         query: str | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
+        documents: str = "all",
+        sort: str = "waiting",
         page: int = 0,
         size: int = 25,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -1481,6 +1506,8 @@ class Database:
             query=query,
             start_date=start_date,
             end_date=end_date,
+            documents=documents,
+            sort=sort,
             page=page,
             size=size,
         )
@@ -1578,6 +1605,30 @@ class Database:
     ) -> list[dict[str, Any]]:
         return await asyncio.to_thread(
             self._verification_supplement_history, request_id
+        )
+
+    def _verification_audit_history(
+        self, request_id: int, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, ts, actor_id, action, target, details
+                FROM audit_log
+                WHERE target = ? AND action LIKE 'verified_reporter_%'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (str(request_id), limit),
+            ).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    async def verification_audit_history(
+        self, request_id: int, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._verification_audit_history, request_id, limit
         )
 
     def _verification_document_versions(
@@ -1775,6 +1826,12 @@ class Database:
             uploads = {str(row["kind"]): row for row in rows}
             remaining = [doc for doc in requested if doc not in uploads]
             completed = not remaining
+            self._insert_audit_locked(
+                user_id,
+                "verified_reporter_supplement_received",
+                str(request_id),
+                f"document={kind}; completed={str(completed).lower()}",
+            )
             if completed:
                 for doc in requested:
                     row = uploads[doc]

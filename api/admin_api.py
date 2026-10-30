@@ -1700,6 +1700,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             )
             start_date = request.query_params.get("start_date") or None
             end_date = request.query_params.get("end_date") or None
+            documents = request.query_params.get("documents", "all")
+            sort = request.query_params.get("sort", "waiting")
             for value in (start_date, end_date):
                 if value:
                     datetime.strptime(value, "%Y-%m-%d")
@@ -1708,6 +1710,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 query=request.query_params.get("q"),
                 start_date=start_date,
                 end_date=end_date,
+                documents=documents,
+                sort=sort,
                 page=page,
                 size=size,
             )
@@ -1745,12 +1749,140 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if not item:
             return bad("verification_request_not_found", 404)
         history = await db.verification_supplement_history(request_id)
+        activity = await db.verification_audit_history(request_id)
         versions = {
             kind: await db.verification_document_versions(request_id, kind)
             for kind in sorted(verified_reporters.DOCUMENT_KINDS)
         }
+        request_status = str(item.get("status") or "")
+        review_state = str(item.get("review_state") or "")
+        if request_status == "pending" and review_state == "needs_info":
+            notification_action = "verified_reporter_supplement_requested"
+            notification_marker = "user_notified=false"
+        elif request_status in {"verified", "rejected"}:
+            notification_action = "verified_reporter_decided"
+            notification_marker = "notification_sent=false"
+        else:
+            notification_action = ""
+            notification_marker = ""
+        last_delivery = next(
+            (
+                event
+                for event in activity
+                if event.get("action") == notification_action
+            ),
+            None,
+        )
+        last_retry = next(
+            (
+                event
+                for event in activity
+                if event.get("action") == "verified_reporter_notification_retried"
+            ),
+            None,
+        )
+        retry_succeeded_after_failure = bool(
+            last_delivery
+            and last_retry
+            and int(last_retry["id"]) > int(last_delivery["id"])
+            and "notification_sent=true"
+            in str(last_retry.get("details") or "").lower()
+        )
+        item["notification_retryable"] = bool(
+            last_delivery
+            and notification_marker in str(last_delivery.get("details") or "").lower()
+            and not retry_succeeded_after_failure
+        )
         return JSONResponse(
-            {"ok": True, "item": item, "supplements": history, "versions": versions},
+            {
+                "ok": True,
+                "item": item,
+                "supplements": history,
+                "versions": versions,
+                "activity": activity,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post(
+        "/api/admin/verified-reporters/{request_id}/retry-notification"
+    )
+    async def verified_reporter_retry_notification(
+        request_id: int, request: Request
+    ) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        item = await db.verification_request(request_id)
+        if not item:
+            return bad("verification_request_not_found", 404)
+        activity = await db.verification_audit_history(request_id)
+        status = str(item.get("status") or "")
+        review_state = str(item.get("review_state") or "")
+        if status == "pending" and review_state == "needs_info":
+            expected_action = "verified_reporter_supplement_requested"
+            failed_marker = "user_notified=false"
+        elif status in {"verified", "rejected"}:
+            expected_action = "verified_reporter_decided"
+            failed_marker = "notification_sent=false"
+        else:
+            return bad("verification_notification_not_retryable", 409)
+
+        last_delivery = next(
+            (event for event in activity if event.get("action") == expected_action),
+            None,
+        )
+        last_retry = next(
+            (
+                event
+                for event in activity
+                if event.get("action") == "verified_reporter_notification_retried"
+            ),
+            None,
+        )
+        retry_succeeded_after_failure = bool(
+            last_delivery
+            and last_retry
+            and int(last_retry["id"]) > int(last_delivery["id"])
+            and "notification_sent=true"
+            in str(last_retry.get("details") or "").lower()
+        )
+        if (
+            last_delivery is None
+            or failed_marker not in str(last_delivery.get("details") or "").lower()
+            or retry_succeeded_after_failure
+        ):
+            return bad("verification_notification_not_failed", 409)
+
+        if expected_action == "verified_reporter_supplement_requested":
+            history = await db.verification_supplement_history(request_id)
+            if not history or history[-1].get("response_at") is not None:
+                return bad("verification_notification_not_retryable", 409)
+            supplement = history[-1]
+            notified = await _notify_user_verification_supplement(
+                int(item["user_id"]),
+                supplement["requested_documents"],
+                str(supplement["message"]),
+            )
+        else:
+            notified = await _notify_verification_decision(
+                int(item["user_id"]),
+                status,
+                (
+                    str(item["rejection_reason"])
+                    if item.get("rejection_reason")
+                    else None
+                ),
+            )
+        await db.audit(
+            _admin_actor(request),
+            "verified_reporter_notification_retried",
+            str(request_id),
+            f"notification_sent={notified}; action={expected_action}",
+        )
+        return JSONResponse(
+            {"ok": True, "notification_sent": notified},
             headers={"Cache-Control": "no-store"},
         )
 

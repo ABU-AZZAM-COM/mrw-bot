@@ -7,7 +7,7 @@ import types
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -25,6 +25,8 @@ class FakeDB:
         self.bootstrap_disabled = bootstrap_disabled
         self.audit_entries = []
         self.fail_audit = False
+        self.verification_item = None
+        self.verification_events = []
 
     def admin_auth_snapshot(self):
         return self.accounts, self.bootstrap_disabled
@@ -52,6 +54,31 @@ class FakeDB:
 
     async def audit(self, actor_id, action, target=None, details=None):
         self.audit_entries.append((actor_id, action, target, details))
+        if action == "verified_reporter_notification_retried":
+            self.verification_events.insert(
+                0,
+                {
+                    "id": max(
+                        (
+                            int(event.get("id", 0))
+                            for event in self.verification_events
+                        ),
+                        default=0,
+                    )
+                    + 1,
+                    "action": action,
+                    "details": details,
+                },
+            )
+
+    async def verification_request(self, _request_id):
+        return self.verification_item
+
+    async def verification_audit_history(self, _request_id):
+        return list(self.verification_events)
+
+    async def verification_supplement_history(self, _request_id):
+        return []
 
 
 class AdminManagementTests(unittest.TestCase):
@@ -82,6 +109,43 @@ class AdminManagementTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["token"], "bootstrap-owner-token")
+
+    def test_verification_notification_retry_requires_recorded_delivery_failure(self):
+        db = self.db
+        db.verification_item = {
+            "id": 77,
+            "user_id": 456,
+            "status": "rejected",
+            "rejection_reason": "سبب تجريبي",
+        }
+        db.verification_events = [
+            {
+                "id": 10,
+                "action": "verified_reporter_decided",
+                "details": "decision=rejected; notification_sent=False",
+            }
+        ]
+        notify = AsyncMock(return_value=True)
+        with patch("api.admin_api._notify_verification_decision", notify):
+            response = self.client.post(
+                "/api/admin/verified-reporters/77/retry-notification",
+                headers={"Authorization": "Bearer bootstrap-owner-token"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["notification_sent"])
+        notify.assert_awaited_once_with(456, "rejected", "سبب تجريبي")
+        self.assertEqual(
+            db.audit_entries[0][1],
+            "verified_reporter_notification_retried",
+        )
+
+        with patch("api.admin_api._notify_verification_decision", notify):
+            duplicate = self.client.post(
+                "/api/admin/verified-reporters/77/retry-notification",
+                headers={"Authorization": "Bearer bootstrap-owner-token"},
+            )
+        self.assertEqual(duplicate.status_code, 409)
 
     def test_create_admin_stores_password_hash_and_login_issues_session(self):
         response = self.client.post(
