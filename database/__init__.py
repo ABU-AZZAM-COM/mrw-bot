@@ -105,6 +105,36 @@ CREATE TABLE IF NOT EXISTS bot_users (
 );
 CREATE INDEX IF NOT EXISTS idx_bot_users_last_seen ON bot_users(last_seen_at);
 
+CREATE TABLE IF NOT EXISTS verified_reporters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('capturing', 'pending', 'verified', 'rejected')),
+    submitted_at TEXT,
+    decided_at TEXT,
+    reviewed_by INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_verified_reporters_status
+    ON verified_reporters(status, submitted_at);
+CREATE INDEX IF NOT EXISTS idx_verified_reporters_user
+    ON verified_reporters(user_id, id);
+
+CREATE TABLE IF NOT EXISTS verification_tickets (
+    user_id INTEGER PRIMARY KEY,
+    request_id INTEGER NOT NULL,
+    ticket_hash TEXT NOT NULL UNIQUE,
+    phone_ciphertext BLOB NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS verified_reporter_private (
+    request_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    phone_ciphertext BLOB NOT NULL,
+    selfie_ciphertext BLOB NOT NULL,
+    id_front_ciphertext BLOB NOT NULL,
+    id_back_ciphertext BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS user_limit_resets (
     user_id  INTEGER PRIMARY KEY,
     reset_at TEXT NOT NULL
@@ -264,6 +294,11 @@ CREATE INDEX IF NOT EXISTS idx_fp_text ON report_fingerprints(text_hash);
 CREATE INDEX IF NOT EXISTS idx_fp_photo ON report_fingerprints(photo_hash);
 """
 
+_IDENTITY_PRIVATE_TABLES = (
+    "verification_tickets",
+    "verified_reporter_private",
+)
+
 
 class _DatabaseRow(dict[str, Any]):
     def __init__(self, values: dict[str, Any], ordered_values: tuple[Any, ...]) -> None:
@@ -359,6 +394,9 @@ class Database:
             try:
                 with self._lock:
                     self._conn.backup(destination)
+                for table in _IDENTITY_PRIVATE_TABLES:
+                    destination.execute(f'DROP TABLE IF EXISTS "{table}"')
+                destination.commit()
             finally:
                 destination.close()
             return
@@ -381,6 +419,8 @@ class Database:
                     ).fetchall()
                 ]
                 for table in tables:
+                    if table in _IDENTITY_PRIVATE_TABLES:
+                        continue
                     rows = self._conn.execute(f'SELECT * FROM "{table}"').fetchall()
                     if not rows:
                         continue
@@ -812,6 +852,260 @@ class Database:
         self, user_id: int, username: str | None, full_name: str | None
     ) -> None:
         await asyncio.to_thread(self._record_user, user_id, username, full_name)
+
+    def _create_verification_ticket(
+        self,
+        user_id: int,
+        ticket_hash: str,
+        phone_ciphertext: bytes,
+        expires_at: str,
+    ) -> int | None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            latest = self._conn.execute(
+                "SELECT id, status FROM verified_reporters "
+                "WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if latest:
+                status = latest["status"]
+                if status == "verified":
+                    return None
+                if status == "capturing":
+                    ticket = self._conn.execute(
+                        "SELECT expires_at FROM verification_tickets "
+                        "WHERE user_id = ?",
+                        (user_id,),
+                    ).fetchone()
+                    if ticket and ticket["expires_at"] > now:
+                        return None
+                    self._conn.execute(
+                        "DELETE FROM verification_tickets WHERE user_id = ?",
+                        (user_id,),
+                    )
+                    self._conn.execute(
+                        "DELETE FROM verified_reporters "
+                        "WHERE id = ? AND status = 'capturing'",
+                        (latest["id"],),
+                    )
+                elif status == "pending":
+                    documents = self._conn.execute(
+                        "SELECT 1 FROM verified_reporter_private WHERE request_id = ?",
+                        (latest["id"],),
+                    ).fetchone()
+                    if documents:
+                        return None
+            cursor = self._conn.execute(
+                "INSERT INTO verified_reporters(user_id, status) "
+                "VALUES (?, 'capturing')",
+                (user_id,),
+            )
+            request_id = int(cursor.lastrowid)
+            self._conn.execute(
+                """
+                INSERT INTO verification_tickets
+                    (user_id, request_id, ticket_hash, phone_ciphertext, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    request_id = excluded.request_id,
+                    ticket_hash = excluded.ticket_hash,
+                    phone_ciphertext = excluded.phone_ciphertext,
+                    expires_at = excluded.expires_at
+                """,
+                (user_id, request_id, ticket_hash, phone_ciphertext, expires_at),
+            )
+            self._conn.commit()
+            return request_id
+
+    async def create_verification_ticket(
+        self,
+        user_id: int,
+        ticket_hash: str,
+        phone_ciphertext: bytes,
+        expires_at: str,
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self._create_verification_ticket,
+            user_id,
+            ticket_hash,
+            phone_ciphertext,
+            expires_at,
+        )
+
+    def _submit_verification_documents(
+        self,
+        user_id: int,
+        ticket_hash: str,
+        captures: dict[str, bytes],
+    ) -> int | None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            ticket = self._conn.execute(
+                """
+                SELECT request_id, phone_ciphertext FROM verification_tickets
+                WHERE user_id = ? AND ticket_hash = ? AND expires_at > ?
+                """,
+                (user_id, ticket_hash, now),
+            ).fetchone()
+            if not ticket:
+                return None
+            request_id = int(ticket["request_id"])
+            columns = {
+                "selfie": "selfie_ciphertext",
+                "id_front": "id_front_ciphertext",
+                "id_back": "id_back_ciphertext",
+            }
+            if set(captures) != set(columns):
+                raise ValueError("verification_documents_incomplete")
+            self._conn.execute(
+                """
+                INSERT INTO verified_reporter_private
+                    (request_id, user_id, phone_ciphertext, selfie_ciphertext,
+                     id_front_ciphertext, id_back_ciphertext)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    user_id,
+                    ticket["phone_ciphertext"],
+                    captures["selfie"],
+                    captures["id_front"],
+                    captures["id_back"],
+                ),
+            )
+            self._conn.execute(
+                "UPDATE verified_reporters SET status = 'pending', submitted_at = ? "
+                "WHERE id = ? AND user_id = ? AND status = 'capturing'",
+                (now, request_id, user_id),
+            )
+            self._conn.execute(
+                "DELETE FROM verification_tickets WHERE user_id = ?",
+                (user_id,),
+            )
+            self._conn.commit()
+            return request_id
+
+    async def submit_verification_documents(
+        self, user_id: int, ticket_hash: str, captures: dict[str, bytes]
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self._submit_verification_documents,
+            user_id,
+            ticket_hash,
+            captures,
+        )
+
+    def _verification_status(self, user_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT r.id, r.status, r.submitted_at, r.decided_at,
+                       CASE WHEN p.request_id IS NULL THEN 0 ELSE 1 END AS has_documents
+                FROM verified_reporters r
+                LEFT JOIN verified_reporter_private p ON p.request_id = r.id
+                WHERE r.user_id = ?
+                ORDER BY r.id DESC LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+
+    async def verification_status(self, user_id: int) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._verification_status, user_id)
+
+    def _list_verification_requests(
+        self, status: str = "pending", limit: int = 100
+    ) -> list[dict[str, Any]]:
+        if status not in {"pending", "verified", "rejected", "all"}:
+            raise ValueError("invalid_verification_status")
+        limit = max(1, min(int(limit), 200))
+        clause = "" if status == "all" else "WHERE r.status = ?"
+        params: tuple[Any, ...] = (limit,) if status == "all" else (status, limit)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT r.id, r.user_id, r.status, r.submitted_at,
+                       r.decided_at, r.reviewed_by,
+                       CASE WHEN p.request_id IS NULL THEN 0 ELSE 1 END AS has_documents,
+                       u.full_name, u.username
+                FROM verified_reporters r
+                LEFT JOIN verified_reporter_private p ON p.request_id = r.id
+                LEFT JOIN bot_users u ON u.user_id = r.user_id
+                {clause}
+                ORDER BY CASE r.status WHEN 'pending' THEN 0 ELSE 1 END,
+                         r.submitted_at DESC, r.id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    async def list_verification_requests(
+        self, status: str = "pending", limit: int = 100
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._list_verification_requests, status, limit
+        )
+
+    def _verification_document(
+        self, request_id: int, kind: str
+    ) -> bytes | None:
+        columns = {
+            "selfie": "selfie_ciphertext",
+            "id_front": "id_front_ciphertext",
+            "id_back": "id_back_ciphertext",
+        }
+        column = columns.get(kind)
+        if column is None:
+            raise ValueError("invalid_verification_document_kind")
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {column} AS document FROM verified_reporter_private "
+                "WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            return bytes(row["document"]) if row else None
+
+    async def verification_document(
+        self, request_id: int, kind: str
+    ) -> bytes | None:
+        return await asyncio.to_thread(
+            self._verification_document, request_id, kind
+        )
+
+    def _decide_verification(
+        self, request_id: int, reviewer_id: int, decision: str
+    ) -> bool:
+        if decision not in {"verified", "rejected"}:
+            raise ValueError("invalid_verification_decision")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            docs = self._conn.execute(
+                "SELECT 1 FROM verified_reporter_private WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            if not docs:
+                return False
+            cursor = self._conn.execute(
+                """
+                UPDATE verified_reporters
+                SET status = ?, decided_at = ?, reviewed_by = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (decision, now, reviewer_id, request_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    async def decide_verification(
+        self, request_id: int, reviewer_id: int, decision: str
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._decide_verification,
+            request_id,
+            reviewer_id,
+            decision,
+        )
 
     def _count_events(self, since_iso: str, user_id: Optional[int] = None,
                       kind: Optional[str] = None) -> int:
@@ -1806,6 +2100,7 @@ class Database:
         now: datetime | None = None,
         audit_retention_days: int = 365,
         message_retention_days: int = 90,
+        verification_document_retention_days: int = 30,
     ) -> dict[str, int]:
         current = now or datetime.now(timezone.utc)
         audit_cutoff = (
@@ -1814,6 +2109,10 @@ class Database:
         message_cutoff = (
             current - timedelta(days=message_retention_days)
         ).isoformat(timespec="seconds")
+        verification_cutoff = (
+            current - timedelta(days=verification_document_retention_days)
+        ).isoformat(timespec="seconds")
+        now_iso = current.isoformat(timespec="seconds")
         with self._lock:
             audit = self._conn.execute(
                 "DELETE FROM audit_log WHERE ts < ?", (audit_cutoff,)
@@ -1845,6 +2144,33 @@ class Database:
                 """,
                 (message_cutoff,),
             )
+            expired_tickets = self._conn.execute(
+                "SELECT user_id, request_id FROM verification_tickets "
+                "WHERE expires_at <= ?",
+                (now_iso,),
+            ).fetchall()
+            for ticket in expired_tickets:
+                self._conn.execute(
+                    "DELETE FROM verification_tickets WHERE user_id = ?",
+                    (ticket["user_id"],),
+                )
+                self._conn.execute(
+                    "DELETE FROM verified_reporters "
+                    "WHERE id = ? AND status = 'capturing'",
+                    (ticket["request_id"],),
+                )
+            verification_tickets_deleted = len(expired_tickets)
+            verification_documents = self._conn.execute(
+                """
+                DELETE FROM verified_reporter_private
+                WHERE request_id IN (
+                    SELECT id FROM verified_reporters
+                    WHERE status IN ('verified', 'rejected')
+                      AND decided_at IS NOT NULL AND decided_at < ?
+                )
+                """,
+                (verification_cutoff,),
+            )
             self._conn.commit()
             return {
                 "audit_deleted": int(audit.rowcount),
@@ -1853,18 +2179,24 @@ class Database:
                 "broadcast_edit_jobs_deleted": int(edits.rowcount),
                 "broadcast_delete_jobs_deleted": int(deletions.rowcount),
                 "broadcast_jobs_deleted": int(broadcasts.rowcount),
+                "verification_tickets_deleted": verification_tickets_deleted,
+                "verification_documents_deleted": int(
+                    verification_documents.rowcount
+                ),
             }
 
     async def cleanup_private_data(
         self,
         audit_retention_days: int = 365,
         message_retention_days: int = 90,
+        verification_document_retention_days: int = 30,
     ) -> dict[str, int]:
         return await asyncio.to_thread(
             self._cleanup_private_data,
             None,
             audit_retention_days,
             message_retention_days,
+            verification_document_retention_days,
         )
 
     def _list_users(
@@ -1891,7 +2223,8 @@ class Database:
                    u.last_seen_at AS last_at,
                    b.frozen_until AS frozen_until,
                    b.reason AS block_reason,
-                   COALESCE(c.enabled, 1) AS contact_enabled
+                   COALESCE(c.enabled, 1) AS contact_enabled,
+                   COALESCE(vr.status, 'unverified') AS verification_status
             FROM bot_users u
             LEFT JOIN (
                 SELECT user_id, COUNT(*) AS reports_count
@@ -1899,6 +2232,10 @@ class Database:
             ) r ON r.user_id = u.user_id
             LEFT JOIN user_blocks b ON b.user_id = u.user_id
             LEFT JOIN user_contact_settings c ON c.user_id = u.user_id
+            LEFT JOIN verified_reporters vr ON vr.id = (
+                SELECT MAX(vr2.id) FROM verified_reporters vr2
+                WHERE vr2.user_id = u.user_id
+            )
             {where}
             ORDER BY u.last_seen_at DESC
             LIMIT ? OFFSET ?

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import 'bot_button_map_page.dart';
 import 'bot_profile_page.dart';
 import 'types_page.dart';
 
@@ -11,7 +12,7 @@ class BotManagementPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => DefaultTabController(
-    length: 2,
+    length: 3,
     child: Column(
       children: [
         Material(
@@ -20,6 +21,10 @@ class BotManagementPage extends StatelessWidget {
             tabs: [
               Tab(icon: Icon(Icons.badge_outlined), text: 'هوية البوت'),
               Tab(icon: Icon(Icons.category_outlined), text: 'التصنيفات'),
+              Tab(
+                icon: Icon(Icons.account_tree_outlined),
+                text: 'خريطة الأزرار',
+              ),
             ],
           ),
         ),
@@ -28,6 +33,7 @@ class BotManagementPage extends StatelessWidget {
             children: [
               BotProfilePage(api: api),
               TypesPage(api: api),
+              const BotButtonMapPage(),
             ],
           ),
         ),

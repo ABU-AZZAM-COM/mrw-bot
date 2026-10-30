@@ -38,7 +38,7 @@ from fastapi import Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse  # noqa: E402
 
 from bot import texts  # noqa: E402
-from services import utils  # noqa: E402
+from services import utils, verified_reporters  # noqa: E402
 from database import (
     STATUS_APPROVED,
     STATUS_CODES,
@@ -52,7 +52,9 @@ logger = logging.getLogger(__name__)
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 20
 MAX_TEXT = 2000
-ADMIN_PERMISSIONS = {"read", "review", "users", "operate", "export", "delete"}
+ADMIN_PERMISSIONS = {
+    "read", "review", "users", "operate", "export", "delete", "identity"
+}
 ROLE_PERMISSIONS = {
     "viewer": {"read"},
     "reviewer": {"read", "review"},
@@ -257,6 +259,7 @@ def _auth(request):
     )
     file_endpoint = (
         path.startswith("/api/admin/photo/")
+        or path.startswith("/api/admin/verified-reporters/")
         or path.startswith("/api/admin/export/")
         or path == "/api/admin/backup/download"
     )
@@ -282,7 +285,9 @@ def _auth(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
 
     method = getattr(request, "method", "POST").upper()
-    if path.startswith("/api/admin/notifications") or path == "/api/admin/events/stream":
+    if path.startswith("/api/admin/verified-reporters"):
+        permission = "identity"
+    elif path.startswith("/api/admin/notifications") or path == "/api/admin/events/stream":
         permission = "read"
     elif path.startswith("/api/admin/export/") or path.startswith("/api/admin/backup/"):
         permission = "export"
@@ -317,6 +322,7 @@ def _auth(request):
     try:
         request.state.admin_role = principal["role"]
         request.state.admin_id = principal["admin_id"]
+        request.state.admin_permissions = sorted(allowed_permissions)
         request.state.admin_account_id = principal.get("account_id")
         request.state.admin_session_hash = (
             token_hash if principal.get("session") else None
@@ -971,6 +977,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "ok": True,
             "role": role,
             "admin_id": _admin_actor(request),
+            "permissions": getattr(request.state, "admin_permissions", []),
         })
 
     @app.get("/api/admin/admins")
@@ -1536,6 +1543,92 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         except ValueError:
             return bad("bad_query")
         return JSONResponse({"ok": True, "total": total, "items": rows})
+
+    @app.get("/api/admin/verified-reporters")
+    async def verified_reporters_list(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        try:
+            items = await db_of().list_verification_requests(
+                status=request.query_params.get("status", "pending"),
+                limit=int(request.query_params.get("limit", "100")),
+            )
+        except ValueError:
+            return bad("bad_query")
+        return JSONResponse(
+            {"ok": True, "items": items},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get(
+        "/api/admin/verified-reporters/{request_id}/documents/{kind}"
+    )
+    async def verified_reporter_document(
+        request_id: int, kind: str, request: Request
+    ) -> Response:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        if kind not in verified_reporters.DOCUMENT_KINDS:
+            return bad("not_found", 404)
+        ciphertext = await db_of().verification_document(request_id, kind)
+        if not ciphertext:
+            return bad("document_not_available", 404)
+        try:
+            content = verified_reporters.decrypt_document(ciphertext)
+        except verified_reporters.VerificationUnavailable:
+            logger.exception(
+                "Unable to decrypt verification document request %s",
+                request_id,
+            )
+            return bad("document_unavailable", 503)
+        await db_of().audit(
+            _admin_actor(request),
+            "verified_reporter_document_viewed",
+            str(request_id),
+            f"kind={kind}",
+        )
+        return Response(
+            content=content,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store, private, max-age=0",
+                "Pragma": "no-cache",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": "inline",
+            },
+        )
+
+    @app.post("/api/admin/verified-reporters/{request_id}/decision")
+    async def verified_reporter_decision(
+        request_id: int, request: Request
+    ) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        try:
+            body = await request.json()
+        except Exception:
+            return bad("bad_json")
+        decision = body.get("decision") if isinstance(body, dict) else None
+        if decision not in {"verified", "rejected"}:
+            return bad("bad_decision")
+        changed = await db_of().decide_verification(
+            request_id, _admin_actor(request), decision
+        )
+        if not changed:
+            return bad("request_not_pending_or_documents_missing", 409)
+        await db_of().audit(
+            _admin_actor(request),
+            "verified_reporter_decided",
+            str(request_id),
+            f"decision={decision}",
+        )
+        return JSONResponse(
+            {"ok": True, "decision": decision},
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/api/admin/users/{uid}")
     async def user_detail(uid: int, request: Request) -> JSONResponse:

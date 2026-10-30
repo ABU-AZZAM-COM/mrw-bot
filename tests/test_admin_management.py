@@ -245,6 +245,30 @@ class AdminManagementTests(unittest.TestCase):
         account["permissions"] = ["read", "review"]
         self.assertIsNone(_auth(request))
 
+        for method, path in (
+            ("GET", "/api/admin/verified-reporters"),
+            ("GET", "/api/admin/verified-reporters/1/documents/selfie"),
+            ("POST", "/api/admin/verified-reporters/1/decision"),
+        ):
+            identity_request = Request({
+                "type": "http",
+                "app": self.app,
+                "method": method,
+                "path": path,
+                "headers": request.scope["headers"],
+                "query_string": b"",
+                "scheme": "http",
+                "server": ("test", 80),
+                "client": ("test", 1),
+                "http_version": "1.1",
+            })
+            identity_request.state.admin_auth_snapshot = ([account], True)
+            account["permissions"] = ["read"]
+            self.assertEqual(_auth(identity_request).status_code, 403, path)
+
+            account["permissions"] = ["read", "identity"]
+            self.assertIsNone(_auth(identity_request), path)
+
     def test_rotating_owner_token_disables_old_environment_tokens(self):
         response = self.client.post(
             "/api/admin/admin-token/rotate",

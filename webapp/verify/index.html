@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10231b">
+  <title>طلب توثيق المراسل</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #10231b; color: #eef6f1; }
+    main { max-width: 620px; margin: auto; padding: 20px 16px 40px; }
+    .card { background: #18372a; border: 1px solid #2d5943; border-radius: 18px; padding: 18px; margin: 12px 0; }
+    h1 { font-size: 1.35rem; margin: 8px 0; }
+    h2 { font-size: 1.05rem; margin: 0 0 8px; }
+    p { line-height: 1.75; color: #c3d6ca; }
+    .notice { border-inline-start: 4px solid #e8bb67; padding: 10px 12px; background: #263a2d; border-radius: 8px; }
+    video { width: 100%; max-height: 55vh; background: #07110c; border-radius: 12px; object-fit: cover; }
+    button { border: 0; border-radius: 11px; padding: 13px 16px; font-size: 1rem; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .48; cursor: not-allowed; }
+    .primary { color: #10231b; background: #e8bb67; width: 100%; }
+    .secondary { color: #eef6f1; background: #315640; width: 100%; margin-top: 8px; }
+    .step { color: #e8bb67; font-size: .9rem; }
+    #status { min-height: 1.5em; color: #e8bb67; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <header class="card">
+    <div class="step">خدمة اختيارية — لا تؤثر على حقك في تقديم شكوى</div>
+    <h1>طلب توثيق المراسل</h1>
+    <p>تم استلام رقم هاتفك عبر مشاركة جهة الاتصال في تيليجرام. أكمل الالتقاط بالكاميرا للوجه والوجهين الأمامي والخلفي للهوية.</p>
+    <p class="notice">الصور مشفّرة عند الحفظ، ولا تُرسل إلى مزوّد تحقق خارجي أو تُرفق بتنبيهات الشكاوى. يطّلع عليها مشرف مخوّل للمراجعة اليدوية. التصوير بالكاميرا لا يثبت وحده أصالة الهوية أو أن المشهد حيّ، ولا يعني أن أي شكوى صحيحة. تبقى الصور حتى يراجعها المشرف، ثم تُحذف بعد 30 يومًا من القرار.</p>
+    <p>يمكنك إغلاق الصفحة دون إرسال؛ لن يُنشأ طلب توثيق حتى ترسل الصور الثلاث.</p>
+  </header>
+
+  <section class="card" id="capture-card" hidden>
+    <div class="step" id="step-label"></div>
+    <h2 id="capture-title"></h2>
+    <p id="capture-help"></p>
+    <video id="camera" autoplay playsinline muted hidden></video>
+    <canvas id="canvas" hidden></canvas>
+    <button class="primary" id="start-camera" type="button">تشغيل الكاميرا</button>
+    <button class="secondary" id="capture" type="button" hidden>التقاط الصورة</button>
+    <button class="secondary" id="retake" type="button" hidden>إعادة الالتقاط</button>
+    <button class="secondary" id="next" type="button" hidden>حفظ والانتقال للخطوة التالية</button>
+    <p id="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="card" id="submit-card" hidden>
+    <h2>مراجعة قبل الإرسال</h2>
+    <p id="capture-count"></p>
+    <button class="primary" id="submit" type="button">إرسال طلب التوثيق للمراجعة</button>
+    <p id="submit-status" role="status" aria-live="polite"></p>
+  </section>
+</main>
+<script>
+(() => {
+  "use strict";
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const steps = [
+    { key: "selfie", title: "صورة الوجه", help: "وجّه الكاميرا الأمامية نحو وجهك بإضاءة واضحة." },
+    { key: "id_front", title: "الوجه الأمامي للهوية", help: "استخدم الكاميرا الخلفية واجعل كامل الوجه الأمامي مقروءًا داخل الإطار." },
+    { key: "id_back", title: "الوجه الخلفي للهوية", help: "اقلب الهوية وصوّر الوجه الخلفي كاملًا وواضحًا." }
+  ];
+  const captured = {};
+  let stepIndex = 0;
+  let stream = null;
+  let previewBlob = null;
+  const $ = (id) => document.getElementById(id);
+  const camera = $("camera");
+  const canvas = $("canvas");
+
+  if (tg) { tg.ready(); tg.expand(); }
+  const ticket = new URLSearchParams(location.hash.slice(1)).get("ticket") || "";
+  history.replaceState(null, "", location.pathname + location.search);
+  const validSession = tg && typeof tg.initData === "string" && tg.initData.length > 0;
+  if (!ticket || !validSession) {
+    $("status").textContent = "افتح صفحة التوثيق من الزر داخل محادثة البوت.";
+    $("capture-card").hidden = false;
+    $("start-camera").disabled = true;
+    return;
+  }
+
+  $("capture-card").hidden = false;
+  function stopCamera() {
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+    stream = null;
+    camera.srcObject = null;
+  }
+  function renderStep() {
+    const step = steps[stepIndex];
+    $("step-label").textContent = "الخطوة " + (stepIndex + 1) + " من " + steps.length;
+    $("capture-title").textContent = step.title;
+    $("capture-help").textContent = step.help;
+    $("status").textContent = "";
+    $("start-camera").hidden = false;
+    $("start-camera").disabled = false;
+    $("capture").hidden = true;
+    $("retake").hidden = true;
+    camera.hidden = true;
+    previewBlob = null;
+  }
+  async function beginCapture() {
+    stopCamera();
+    $("status").textContent = "بانتظار إذن الكاميرا…";
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: stepIndex === 0 ? "user" : "environment", width: { ideal: 1280 }, height: { ideal: 960 } }
+      });
+      camera.srcObject = stream;
+      camera.hidden = false;
+      $("start-camera").hidden = true;
+      $("capture").hidden = false;
+      $("next").hidden = true;
+      $("retake").hidden = true;
+      $("status").textContent = "الكاميرا جاهزة. التقط الصورة عند وضوحها.";
+    } catch (error) {
+      $("status").textContent = "تعذّر فتح الكاميرا. اسمح باستخدامها في إعدادات المتصفح ثم أعد المحاولة.";
+    }
+  }
+  async function makeJpeg() {
+    const maxSide = 1280;
+    const scale = Math.min(1, maxSide / Math.max(camera.videoWidth, camera.videoHeight));
+    canvas.width = Math.round(camera.videoWidth * scale);
+    canvas.height = Math.round(camera.videoHeight * scale);
+    const context = canvas.getContext("2d", { alpha: false });
+    context.drawImage(camera, 0, 0, canvas.width, canvas.height);
+    let quality = 0.82;
+    let blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+    while (blob && blob.size > 900000 && quality > 0.5) {
+      quality -= 0.08;
+      blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+    }
+    if (!blob || blob.size > 1000000) throw new Error("capture_too_large");
+    return blob;
+  }
+  async function capture() {
+    try {
+      previewBlob = await makeJpeg();
+      stopCamera();
+      $("capture").hidden = true;
+      $("retake").hidden = false;
+      $("next").hidden = false;
+      $("status").textContent = "تم التقاط الصورة. يمكنك إعادة الالتقاط أو المتابعة.";
+    } catch (_) {
+      $("status").textContent = "تعذّر تجهيز الصورة بالحجم المطلوب؛ أعد المحاولة.";
+    }
+  }
+  $("start-camera").addEventListener("click", beginCapture);
+  $("capture").addEventListener("click", capture);
+  $("retake").addEventListener("click", () => {
+    previewBlob = null;
+    $("retake").hidden = true;
+    $("next").hidden = true;
+    beginCapture();
+  });
+  $("next").addEventListener("click", () => {
+    if (!previewBlob) return;
+    captured[steps[stepIndex].key] = previewBlob;
+    stepIndex += 1;
+    if (stepIndex < steps.length) renderStep();
+    else {
+      stopCamera();
+      $("capture-card").hidden = true;
+      $("submit-card").hidden = false;
+      $("capture-count").textContent = "التقطت الصور الثلاث بالكاميرا. لم تُرسل بعد.";
+    }
+  });
+  $("submit").addEventListener("click", async () => {
+    const button = $("submit");
+    button.disabled = true;
+    $("submit-status").textContent = "جارٍ إرسال الطلب المشفّر…";
+    const form = new FormData();
+    form.append("init_data", tg.initData);
+    form.append("ticket", ticket);
+    for (const step of steps) {
+      form.append(step.key, captured[step.key], step.key + ".jpg");
+    }
+    try {
+      const response = await fetch("/api/verification/submit", {
+        method: "POST",
+        body: form,
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      const result = await response.json();
+      if (!response.ok || result.ok !== true) throw new Error(result.error || "submit_failed");
+      $("submit-status").textContent = "تم استلام طلبك للمراجعة الإدارية. يمكنك العودة إلى محادثة البوت.";
+      $("capture-count").textContent = "";
+      button.textContent = "تم إرسال الطلب";
+      if (tg && tg.close) setTimeout(() => tg.close(), 2500);
+    } catch (error) {
+      button.disabled = false;
+      $("submit-status").textContent = error.message === "ticket_expired_or_used"
+        ? "انتهت صلاحية جلسة الالتقاط. ابدأ طلبًا جديدًا من البوت."
+        : "تعذّر إرسال الطلب. الصور لم تُقبل؛ ابدأ من جديد وحاول لاحقًا.";
+    }
+  });
+  window.addEventListener("pagehide", stopCamera);
+  renderStep();
+})();
+</script>
+</body>
+</html>

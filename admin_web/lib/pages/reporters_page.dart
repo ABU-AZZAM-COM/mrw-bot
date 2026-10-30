@@ -4,16 +4,19 @@ import '../api.dart';
 import '../widgets.dart';
 import 'messaging_page.dart' show openUserConversation;
 import 'overview_page.dart' show fmt;
+import 'verified_reporters_page.dart';
 
 class UsersPage extends StatefulWidget {
   const UsersPage({
     super.key,
     required this.api,
+    this.canReviewIdentity = false,
     this.initialUserId,
     this.onFocusHandled,
   });
 
   final AdminApi api;
+  final bool canReviewIdentity;
   final int? initialUserId;
   final VoidCallback? onFocusHandled;
 
@@ -113,6 +116,14 @@ class _UsersPageState extends State<UsersPage> {
                 onPressed: _load,
                 icon: const Icon(Icons.refresh),
               ),
+              if (widget.canReviewIdentity) ...[
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _openVerificationRequests,
+                  icon: const Icon(Icons.verified_user_outlined),
+                  label: const Text('طلبات التوثيق'),
+                ),
+              ],
             ],
           ),
         ),
@@ -156,6 +167,20 @@ class _UsersPageState extends State<UsersPage> {
     );
   }
 
+  Future<void> _openVerificationRequests() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => Dialog(
+        child: SizedBox(
+          width: 1000,
+          height: 760,
+          child: VerifiedReportersPage(api: widget.api),
+        ),
+      ),
+    );
+    if (mounted) _load();
+  }
+
   Widget _body(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_err != null) return ErrorView(_err!, _load);
@@ -174,6 +199,7 @@ class _UsersPageState extends State<UsersPage> {
             DataColumn(label: Text('حساب تلغرام')),
             DataColumn(label: Text('البلاغات')),
             DataColumn(label: Text('الحالة')),
+            DataColumn(label: Text('التوثيق')),
             DataColumn(label: Text('نشاط البوت')),
             DataColumn(label: Text('آخر ظهور')),
             DataColumn(label: Text('التواصل')),
@@ -207,6 +233,7 @@ class _UsersPageState extends State<UsersPage> {
               ? const StateBadge('محجوب', color: Color(0xFFE06C75))
               : const StateBadge('نشط'),
         ),
+        DataCell(_verificationBadge(u['verification_status']?.toString())),
         DataCell(UserActivityIndicator(lastSeen: u['last_at'] as String?)),
         DataCell(
           Text(
@@ -229,6 +256,15 @@ class _UsersPageState extends State<UsersPage> {
           ? null
           : (_) => _cardDialog(context, userId),
     );
+  }
+
+  Widget _verificationBadge(String? status) {
+    return switch (status) {
+      'verified' => const StateBadge('مراسل موثوق', color: Color(0xFF3FA66B)),
+      'pending' => const StateBadge('قيد التحقق', color: Color(0xFFE8BB67)),
+      'rejected' => const StateBadge('غير معتمد', color: Color(0xFFE06C75)),
+      _ => const StateBadge('غير موثّق'),
+    };
   }
 
   Future<void> _cardDialog(BuildContext context, int uid) async {

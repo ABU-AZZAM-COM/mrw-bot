@@ -28,12 +28,21 @@ class _AdminsPageState extends State<AdminsPage> {
     'operate': 'إجراءات التشغيل والرسائل والتصنيفات',
     'export': 'التصدير والنسخ الاحتياطية',
     'delete': 'حذف البلاغات',
+    'identity': 'مراجعة المراسلين والوصول إلى وثائق الهوية (حساس)',
   };
   static const _rolePermissions = <String, Set<String>>{
     'viewer': {'read'},
     'reviewer': {'read', 'review'},
     'operator': {'read', 'review', 'users', 'operate', 'export'},
-    'owner': {'read', 'review', 'users', 'operate', 'export', 'delete'},
+    'owner': {
+      'read',
+      'review',
+      'users',
+      'operate',
+      'export',
+      'delete',
+      'identity',
+    },
   };
 
   List<Map<String, dynamic>> _items = [];

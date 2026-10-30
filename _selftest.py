@@ -61,6 +61,7 @@ assert asyncio.run(
     )
 ) is None
 start_reply = AsyncMock()
+start_reply.return_value = SimpleNamespace(chat_id=222222222, message_id=1)
 start_photo_reply = AsyncMock()
 start_db = SimpleNamespace(
     record_user=AsyncMock(),
@@ -75,6 +76,10 @@ start_update = SimpleNamespace(
     effective_message=SimpleNamespace(text="/start", reply_text=start_reply),
 )
 start_context = SimpleNamespace(
+    bot=SimpleNamespace(
+        delete_message=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+    ),
     bot_data={
         "db": start_db,
         "welcome_photo": {
@@ -92,7 +97,13 @@ assert asyncio.run(handlers.cmd_start(start_update, start_context)) is (
 start_reply.assert_awaited_once()
 start_photo_reply.assert_awaited_once_with(photo=b"\xff\xd8\xffwelcome")
 assert start_reply.await_args.args[0] == texts.WELCOME
-assert start_context.user_data == {}
+assert start_context.user_data == {
+    handlers.ACTIVE_PROMPT_KEY: {
+        "chat_id": 222222222,
+        "message_id": 1,
+        "keyboard_kind": "inline",
+    }
+}
 print("/start command builds and sends the welcome response")
 
 report_command_photo = AsyncMock()
@@ -124,19 +135,20 @@ assert "ستراجعها الجهة المختصة" in texts.MY_REPORT_OPEN.form
     status_detail="ستراجعها الجهة المختصة",
     desc="TEST",
 )
-prompt_edits = AsyncMock()
+prompt_deletes = AsyncMock()
 prompt_context = SimpleNamespace(
     user_data={},
-    bot=SimpleNamespace(edit_message_reply_markup=prompt_edits),
+    bot=SimpleNamespace(
+        delete_message=prompt_deletes,
+        edit_message_reply_markup=AsyncMock(),
+    ),
 )
 handlers._remember_optional_prompt(
     prompt_context, SimpleNamespace(chat_id=12, message_id=34)
 )
 asyncio.run(handlers._clear_optional_prompt(prompt_context))
 assert not prompt_context.user_data
-prompt_edits.assert_awaited_once_with(
-    chat_id=12, message_id=34, reply_markup=None
-)
+prompt_deletes.assert_awaited_once_with(chat_id=12, message_id=34)
 
 _at_threshold_scores = sightengine_moderation.parse_scores({
     "status": "success",
@@ -572,6 +584,7 @@ with patch.dict(os.environ, {"TURSO_DATABASE_URL": "", "TURSO_AUTH_TOKEN": ""}):
 
 support_user = SimpleNamespace(id=81818181, username="support_test", full_name="مستخدم الدعم")
 support_reply = AsyncMock()
+support_reply.return_value = SimpleNamespace(chat_id=81818181, message_id=2)
 support_send = AsyncMock()
 support_db_dir = tempfile.TemporaryDirectory(prefix="mrw-support-selftest-")
 support_db = database.Database(Path(support_db_dir.name) / "support.db")
@@ -588,7 +601,13 @@ support_state = asyncio.run(
     handlers.receive_support_message(support_update, support_context)
 )
 assert support_state == handlers.ConversationHandler.END
-assert not support_context.user_data
+assert support_context.user_data == {
+    handlers.ACTIVE_PROMPT_KEY: {
+        "chat_id": 81818181,
+        "message_id": 2,
+        "keyboard_kind": "inline",
+    }
+}
 assert asyncio.run(support_db.user_conversation_open(support_user.id))
 support_messages = asyncio.run(support_db.list_user_messages(support_user.id))
 assert len(support_messages) == 1
@@ -667,6 +686,10 @@ async def _capture_progress_edit(*args, **kwargs):
 async def _capture_progress_reply(*args, **kwargs):
     return SimpleNamespace(edit_text=_capture_progress_edit)
 
+async def _capture_user_prompt(*args, **kwargs):
+    await _capture_freeze_notice(*args, **kwargs)
+    return SimpleNamespace(edit_text=_capture_progress_edit)
+
 handlers._save_photo = _fake_flagged_photo
 try:
     conversation_user = SimpleNamespace(id=90909091, full_name="مستخدم محادثة")
@@ -678,7 +701,7 @@ try:
     conversation_update = SimpleNamespace(
         message=SimpleNamespace(reply_text=_capture_progress_reply),
         effective_user=conversation_user,
-        effective_message=SimpleNamespace(reply_text=_capture_freeze_notice),
+        effective_message=SimpleNamespace(reply_text=_capture_user_prompt),
     )
     conversation_state = asyncio.run(
         handlers.receive_photo(conversation_update, conversation_context)
@@ -746,6 +769,7 @@ async def _capture_review_message(**kwargs):
     review_notifications.append(("message", kwargs))
 
 review_context = SimpleNamespace(
+    bot_data={"db": DB},
     bot=SimpleNamespace(
         send_photo=_capture_review_photo,
         send_message=_capture_review_message,

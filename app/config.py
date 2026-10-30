@@ -173,6 +173,13 @@ MAX_BOT_MESSAGES_PER_MINUTE: int = int(os.getenv("MAX_BOT_MESSAGES_PER_MINUTE", 
 # ------------------------------------------------------------------
 # رابط التطبيق المنشور (GitHub Pages أو Cloudflare Pages أو أي استضافة ثابتة):
 MINI_APP_URL: str = os.getenv("MINI_APP_URL", "").strip()
+VERIFICATION_WEBAPP_URL: str = os.getenv(
+    "VERIFICATION_WEBAPP_URL", ""
+).strip()
+if not VERIFICATION_WEBAPP_URL:
+    _public_service_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if _public_service_url.startswith("https://"):
+        VERIFICATION_WEBAPP_URL = _public_service_url + "/verify/"
 
 # أنواع المخالفات المعتمدة (تظهر في التطبيق وفي التقارير)
 VIOLATION_TYPES: tuple[str, ...] = (

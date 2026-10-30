@@ -21,13 +21,22 @@ import asyncio
 import json
 import logging
 import mimetypes
+import secrets
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
-from telegram import ReplyKeyboardRemove, Update
+from telegram import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    Update,
+    WebAppInfo,
+)
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden
+from telegram.error import BadRequest, Forbidden, TelegramError
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -46,6 +55,7 @@ from services import (
     image_moderation,
     sightengine_moderation,
     utils,
+    verified_reporters,
 )
 from database import Database
 from bot.keyboards import (
@@ -68,7 +78,7 @@ from bot.keyboards import (
 logger = logging.getLogger(__name__)
 
 # مراحل المحادثة
-ASK_CATEGORY, ASK_PLATFORM, ASK_DESC, ASK_PHOTO, ASK_LINK, ASK_LOCATION, ASK_CONTACT, CONFIRM, ASK_FOLLOWUP, ASK_SUPPORT = range(10)
+ASK_CATEGORY, ASK_PLATFORM, ASK_DESC, ASK_PHOTO, ASK_LINK, ASK_LOCATION, ASK_CONTACT, CONFIRM, ASK_FOLLOWUP, ASK_SUPPORT, ASK_VERIFICATION_PHONE = range(11)
 SUPPORT_MAX_LENGTH = 1000
 
 # نصوص الأزرار (أنماط regex) لإلغاء العملية وتأكيد الحفظ
@@ -80,6 +90,7 @@ USR_PREFIX = "usr:"
 
 # الحد الأقصى للبطاقات المعروضة في شاشة «بلاغاتي» (تُجلب واحدة زيادة للكشف عن المزيد)
 MY_REPORTS_MAX = 6
+ACTIVE_PROMPT_KEY = "_active_user_prompt"
 
 # ==================================================================
 # طلبات التطبيق (Mini App): المستخدم الذي أرسل بياناته وينتظر الصورة
@@ -111,6 +122,170 @@ async def _welcome_content(db: Database) -> tuple[str, ParseMode | None]:
     return texts.WELCOME, ParseMode.HTML
 
 
+def _remember_user_prompt(
+    context: ContextTypes.DEFAULT_TYPE,
+    message,
+    keyboard_kind: str = "inline",
+) -> None:
+    if message is None:
+        return
+    chat_id = getattr(message, "chat_id", None)
+    message_id = getattr(message, "message_id", None)
+    if chat_id is not None and message_id is not None:
+        context.user_data[ACTIVE_PROMPT_KEY] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "keyboard_kind": keyboard_kind,
+        }
+
+
+async def _clear_user_prompt(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    prompt = context.user_data.pop(ACTIVE_PROMPT_KEY, None)
+    if not prompt:
+        return None
+    try:
+        await context.bot.delete_message(
+            chat_id=prompt["chat_id"], message_id=prompt["message_id"]
+        )
+    except TelegramError as exc:
+        logger.info(
+            "تعذر حذف رسالة البوت المؤقتة %s؛ ستُزال أزرارها إن أمكن: %s",
+            prompt["message_id"],
+            exc,
+        )
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=prompt["chat_id"],
+                message_id=prompt["message_id"],
+                reply_markup=None,
+            )
+        except TelegramError:
+            logger.warning(
+                "تعذر تنظيف رسالة البوت المؤقتة %s",
+                prompt["message_id"],
+                exc_info=True,
+            )
+    return prompt.get("keyboard_kind")
+
+
+async def _send_clean_prompt(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    *,
+    parse_mode: ParseMode | None = None,
+    reply_markup=None,
+):
+    """Replace the previous temporary bot prompt instead of stacking prompts."""
+    query = getattr(update, "callback_query", None)
+    if query and not isinstance(reply_markup, ReplyKeyboardMarkup):
+        try:
+            message = await query.edit_message_text(
+                text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+            )
+            kind = (
+                "reply"
+                if isinstance(reply_markup, ReplyKeyboardMarkup)
+                else "plain"
+                if reply_markup is None
+                else "inline"
+            )
+            _remember_user_prompt(context, message or query.message, kind)
+            return message or query.message
+        except BadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                _remember_user_prompt(context, query.message, "inline")
+                return query.message
+            logger.info("تعذر تحديث رسالة البوت الحالية؛ سيُستبدل بها غيرها: %s", exc)
+
+    previous_kind = await _clear_user_prompt(context)
+    remove_reply_keyboard = (
+        previous_kind == "reply"
+        and not isinstance(reply_markup, (ReplyKeyboardMarkup, ReplyKeyboardRemove))
+    )
+    send_markup = ReplyKeyboardRemove() if remove_reply_keyboard else reply_markup
+    if query:
+        message = await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=send_markup,
+        )
+    else:
+        message = await update.effective_message.reply_text(
+            text,
+            parse_mode=parse_mode,
+            reply_markup=send_markup,
+        )
+    if remove_reply_keyboard and isinstance(reply_markup, InlineKeyboardMarkup):
+        await context.bot.edit_message_reply_markup(
+            chat_id=message.chat_id,
+            message_id=message.message_id,
+            reply_markup=reply_markup,
+        )
+    kind = (
+        "reply"
+        if isinstance(reply_markup, ReplyKeyboardMarkup)
+        else "plain"
+        if reply_markup is None
+        else "inline"
+    )
+    _remember_user_prompt(context, message, kind)
+    return message
+
+
+def _contact_back_step(context: ContextTypes.DEFAULT_TYPE) -> int:
+    category = context.user_data.get("report_category")
+    if category == "field":
+        return ASK_LOCATION
+    if category == "social":
+        return ASK_LINK
+    return ASK_PHOTO
+
+
+async def _show_report_step(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    step: int,
+) -> int:
+    ud = context.user_data
+    if step == ASK_CATEGORY:
+        text, markup = "اختر القسم الأقرب إلى موضوع بلاغك:", report_category_kb()
+    elif step == ASK_PLATFORM:
+        text = texts.CATEGORY_INTROS["social"] + "\n\n" + texts.PLATFORM_PROMPT
+        markup = social_platform_kb()
+    elif step == ASK_DESC:
+        category = ud.get("report_category")
+        intro = texts.CATEGORY_INTROS.get(category, "")
+        text = (
+            (intro + "\n\n" if intro else "")
+            + texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN)
+        )
+        back_to = "platform" if category == "social" else "category"
+        markup = cancel_inline_kb(back_to)
+    elif step == ASK_PHOTO:
+        text, markup = texts.ASK_PHOTO, optional_step_kb("photo")
+    elif step == ASK_LINK:
+        text, markup = texts.ASK_LINK, optional_step_kb("link")
+    elif step == ASK_LOCATION:
+        text, markup = texts.ASK_LOCATION, location_request_kb()
+    elif step == ASK_CONTACT:
+        text, markup = texts.ASK_CONTACT, contact_request_kb()
+    else:
+        raise ValueError(f"Unknown report step: {step}")
+    ud["report_state"] = step
+    await _send_clean_prompt(
+        update,
+        context,
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=markup,
+    )
+    return step
+
+
 # ==================================================================
 # نقطة الدخول: /start أو /report
 # ==================================================================
@@ -134,7 +309,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await db.log_event(user.id, "start")
 
+    active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
     context.user_data.clear()
+    if active_prompt:
+        context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
+    _pending_app_users.discard(user.id)
     welcome, parse_mode = await _welcome_content(db)
     if await guards.is_emergency(db):
         if parse_mode == ParseMode.HTML:
@@ -151,7 +330,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_photo(photo=welcome_photo["data"])
         except Exception:
             logger.exception("تعذر إرسال صورة الترحيب للمستخدم %s", user.id)
-    await update.effective_message.reply_text(
+    await _send_clean_prompt(
+        update,
+        context,
         welcome,
         parse_mode=parse_mode,
         reply_markup=main_menu_kb(),
@@ -173,25 +354,22 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         doc = msg.document
         if not (doc.mime_type or "").lower().startswith("image/"):
-            await msg.reply_text(
-                texts.PHOTO_REMINDER, parse_mode=ParseMode.HTML
+            return "", None, "", image_moderation.ScreeningResult(
+                False, error=texts.PHOTO_REMINDER
             )
-            return "", None, "", image_moderation.ScreeningResult(False)
         if doc.file_size and doc.file_size > config.MAX_PHOTO_MB * 1024 * 1024:
-            await msg.reply_text(
-                texts.PHOTO_TOO_BIG.format(mb=config.MAX_PHOTO_MB),
-                parse_mode=ParseMode.HTML,
+            return "", None, "", image_moderation.ScreeningResult(
+                False,
+                error=texts.PHOTO_TOO_BIG.format(mb=config.MAX_PHOTO_MB),
             )
-            return "", None, "", image_moderation.ScreeningResult(False)
         ext = mimetypes.guess_extension(doc.mime_type or "") or ".jpg"
         media = doc
 
     if media.file_size and media.file_size > config.MAX_PHOTO_MB * 1024 * 1024:
-        await msg.reply_text(
-            texts.PHOTO_TOO_BIG.format(mb=config.MAX_PHOTO_MB),
-            parse_mode=ParseMode.HTML,
+        return "", None, "", image_moderation.ScreeningResult(
+            False,
+            error=texts.PHOTO_TOO_BIG.format(mb=config.MAX_PHOTO_MB),
         )
-        return "", None, "", image_moderation.ScreeningResult(False)
 
     # ------------------------------------------------------------------
     # حفظ الصورة على القرص: اختياري.
@@ -207,12 +385,14 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await tg_file.download_to_drive(custom_path=str(path))
         except Exception:
             logger.exception("فشل تحميل الصورة للمستخدم %s", user.id)
-            await msg.reply_text(texts.PHOTO_FAILED, parse_mode=ParseMode.HTML)
-            return "", None, "", image_moderation.ScreeningResult(False)
+            return "", None, "", image_moderation.ScreeningResult(
+                False, error=texts.PHOTO_FAILED
+            )
 
         if not path.exists() or path.stat().st_size == 0:
-            await msg.reply_text(texts.PHOTO_FAILED, parse_mode=ParseMode.HTML)
-            return "", None, "", image_moderation.ScreeningResult(False)
+            return "", None, "", image_moderation.ScreeningResult(
+                False, error=texts.PHOTO_FAILED
+            )
 
         photo_path = str(path)
         photo_name = path.name
@@ -242,27 +422,19 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _advance_after_evidence(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Continue the category-specific optional fields after the image step."""
-    ud = context.user_data
-    if ud.get("report_category") == "social":
-        prompt = await update.effective_message.reply_text(
-            texts.ASK_LINK,
-            parse_mode=ParseMode.HTML,
-            reply_markup=optional_step_kb("link"),
-        )
-        _remember_optional_prompt(context, prompt)
-        return ASK_LINK
-    if ud.get("report_category") == "field":
-        await update.effective_message.reply_text(
-            texts.ASK_LOCATION,
-            parse_mode=ParseMode.HTML,
-            reply_markup=location_request_kb(),
-        )
-        return ASK_LOCATION
+    category = context.user_data.get("report_category")
+    if category == "social":
+        return await _show_report_step(update, context, ASK_LINK)
+    if category == "field":
+        return await _show_report_step(update, context, ASK_LOCATION)
     return await _ask_contact(update, context)
 
 
 async def _ask_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
+    context.user_data["report_state"] = ASK_CONTACT
+    await _send_clean_prompt(
+        update,
+        context,
         texts.ASK_CONTACT,
         parse_mode=ParseMode.HTML,
         reply_markup=contact_request_kb(),
@@ -275,20 +447,12 @@ def _remember_optional_prompt(context: ContextTypes.DEFAULT_TYPE, message) -> No
         "chat_id": message.chat_id,
         "message_id": message.message_id,
     }
+    _remember_user_prompt(context, message)
 
 
 async def _clear_optional_prompt(context: ContextTypes.DEFAULT_TYPE) -> None:
-    prompt = context.user_data.pop("optional_prompt", None)
-    if not prompt:
-        return
-    try:
-        await context.bot.edit_message_reply_markup(
-            chat_id=prompt["chat_id"],
-            message_id=prompt["message_id"],
-            reply_markup=None,
-        )
-    except BadRequest as exc:
-        logger.debug("Optional report prompt is already unavailable: %s", exc)
+    context.user_data.pop("optional_prompt", None)
+    await _clear_user_prompt(context)
 
 
 async def _show_report_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -304,11 +468,9 @@ async def _show_report_confirmation(update: Update, context: ContextTypes.DEFAUL
         review_note += texts.VIRUSTOTAL_REVIEW
     if ud.get("image_moderation_flag"):
         review_note += "⚠️ صورة البلاغ تحتاج إلى مراجعة يدوية.\n"
-    await update.effective_message.reply_text(
-        "✅ اكتملت البيانات الاختيارية.",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    await update.effective_message.reply_text(
+    await _send_clean_prompt(
+        update,
+        context,
         texts.SUMMARY.format(
             category=utils.esc(category),
             platform=utils.esc(ud.get("platform") or "—"),
@@ -327,6 +489,7 @@ async def _show_report_confirmation(update: Update, context: ContextTypes.DEFAUL
         parse_mode=ParseMode.HTML,
         reply_markup=confirm_report_kb(),
     )
+    context.user_data["report_state"] = CONFIRM
     return CONFIRM
 
 
@@ -547,15 +710,20 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """استقبال الصورة (مضغوطة أو كملف) وحفظها في مجلد media/."""
     msg = update.message
     await _clear_optional_prompt(context)
-    progress = await msg.reply_text("🔄 جارٍ فحص الصورة أمنيًا...")
+    progress = await _send_clean_prompt(
+        update, context, "🔄 جارٍ فحص الصورة أمنيًا..."
+    )
 
     photo_path, photo_file_id, photo_name, screening = await _save_photo(
         update, context
     )
     if not photo_file_id:
-        await progress.edit_text("⚠️ لم يكتمل استلام الصورة. أعد إرسالها أو تخطَّ المرفق.")
-        prompt = await msg.reply_text(
-            texts.ASK_PHOTO,
+        prompt = await _send_clean_prompt(
+            update,
+            context,
+            (screening.error or "⚠️ لم يكتمل استلام الصورة.")
+            + "\n\n"
+            + texts.ASK_PHOTO,
             parse_mode=ParseMode.HTML,
             reply_markup=optional_step_kb("photo"),
         )
@@ -563,6 +731,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_PHOTO
     if screening.flagged:
         await progress.edit_text("⛔ أوقف النظام هذا البلاغ وفق نتيجة فحص الصورة.")
+        await _clear_user_prompt(context)
         await _freeze_for_sensitive_image(
             update, context, screening, photo_path, photo_file_id
         )
@@ -584,7 +753,9 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def remind_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """عندما يرسل المستخدم شيئًا غير صورة في خطوة الصورة."""
     await _clear_optional_prompt(context)
-    prompt = await update.effective_message.reply_text(
+    prompt = await _send_clean_prompt(
+        update,
+        context,
         texts.ASK_PHOTO,
         parse_mode=ParseMode.HTML,
         reply_markup=optional_step_kb("photo"),
@@ -600,7 +771,9 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     await _clear_optional_prompt(context)
     if not utils.is_valid_url(text):
-        prompt = await update.message.reply_text(
+        prompt = await _send_clean_prompt(
+            update,
+            context,
             texts.LINK_INVALID,
             parse_mode=ParseMode.HTML,
             reply_markup=optional_step_kb("link"),
@@ -610,8 +783,8 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     progress = None
     if config.VIRUSTOTAL_API_KEY:
-        progress = await update.message.reply_text(
-            "🔎 جار فحص الرابط عبر VirusTotal..."
+        progress = await _send_clean_prompt(
+            update, context, "🔎 جار فحص الرابط عبر VirusTotal..."
         )
     try:
         await _assess_link_and_description(context, _db(context), text)
@@ -623,7 +796,9 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=optional_step_kb("link"),
             )
             if progress
-            else await update.message.reply_text(
+            else await _send_clean_prompt(
+                update,
+                context,
                 str(exc),
                 parse_mode=ParseMode.HTML,
                 reply_markup=optional_step_kb("link"),
@@ -644,7 +819,9 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def remind_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _clear_optional_prompt(context)
-    prompt = await update.effective_message.reply_text(
+    prompt = await _send_clean_prompt(
+        update,
+        context,
         texts.ASK_LINK,
         parse_mode=ParseMode.HTML,
         reply_markup=optional_step_kb("link"),
@@ -659,16 +836,35 @@ async def remind_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if len(text) > config.MAX_DESC_LEN:
-        await update.message.reply_text(
-            texts.DESC_TOO_LONG.format(length=len(text), max=config.MAX_DESC_LEN),
+        await _send_clean_prompt(
+            update,
+            context,
+            texts.DESC_TOO_LONG.format(length=len(text), max=config.MAX_DESC_LEN)
+            + "\n\n"
+            + texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
             parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(
+                "platform"
+                if context.user_data.get("report_category") == "social"
+                else "category"
+            ),
         )
         return ASK_DESC
 
     substance_verdict = guards.check_substance(text)
     if substance_verdict.blocked:
-        await update.message.reply_text(
-            substance_verdict.message, parse_mode=ParseMode.HTML
+        await _send_clean_prompt(
+            update,
+            context,
+            substance_verdict.message
+            + "\n\n"
+            + texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(
+                "platform"
+                if context.user_data.get("report_category") == "social"
+                else "category"
+            ),
         )
         return ASK_DESC
     duplicate = await guards.check_duplicate(_db(context), "", text)
@@ -677,7 +873,10 @@ async def receive_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         duplicate.code in {"exact_duplicate", "similar_duplicate"}
     )
     context.user_data["duplicate_of"] = duplicate.extra.get("duplicate_of")
-    prompt = await update.message.reply_text(
+    context.user_data["report_state"] = ASK_PHOTO
+    prompt = await _send_clean_prompt(
+        update,
+        context,
         texts.ASK_PHOTO,
         parse_mode=ParseMode.HTML,
         reply_markup=optional_step_kb("photo"),
@@ -687,10 +886,16 @@ async def receive_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def remind_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
+    await _send_clean_prompt(
+        update,
+        context,
         texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
         parse_mode=ParseMode.HTML,
-        reply_markup=cancel_inline_kb(),
+        reply_markup=cancel_inline_kb(
+            "platform"
+            if context.user_data.get("report_category") == "social"
+            else "category"
+        ),
     )
     return ASK_DESC
 
@@ -703,27 +908,48 @@ async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["place"] = ""
     else:
         place = (message.text or "").strip()
+        if place == "↩️ رجوع":
+            return await _show_report_step(update, context, ASK_PHOTO)
         if place != "⏭️ تخطي":
             if not place or len(place) > 120:
-                await message.reply_text("اكتب وصفًا للمكان لا يتجاوز 120 حرفًا، أو اختر تخطي.")
+                await _send_clean_prompt(
+                    update,
+                    context,
+                    "اكتب وصفًا للمكان لا يتجاوز 120 حرفًا، أو اختر تخطي.",
+                    reply_markup=location_request_kb(),
+                )
                 return ASK_LOCATION
             context.user_data["place"] = place
+        else:
+            context.user_data["place"] = ""
+            context.user_data["latitude"] = None
+            context.user_data["longitude"] = None
     return await _ask_contact(update, context)
 
 
 async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     contact = message.contact
+    if not contact and (message.text or "").strip() == "↩️ رجوع":
+        return await _show_report_step(
+            update, context, _contact_back_step(context)
+        )
     if contact:
         if contact.user_id is not None and contact.user_id != update.effective_user.id:
-            await message.reply_text(
+            await _send_clean_prompt(
+                update,
+                context,
                 "يرجى مشاركة رقمك أنت فقط أو اختيار تخطي.",
                 reply_markup=contact_request_kb(),
             )
             return ASK_CONTACT
         context.user_data["contact_phone"] = contact.phone_number[:32]
-    elif (message.text or "").strip() != "⏭️ تخطي":
-        await message.reply_text(
+    elif (message.text or "").strip() == "⏭️ تخطي":
+        context.user_data["contact_phone"] = ""
+    else:
+        await _send_clean_prompt(
+            update,
+            context,
             texts.ASK_CONTACT,
             parse_mode=ParseMode.HTML,
             reply_markup=contact_request_kb(),
@@ -739,20 +965,14 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """حفظ البلاغ نهائيًا وإشعار المشرفين بوجوده."""
     db = _db(context)
     if await guards.is_emergency(db):
-        message = update.effective_message
-        if message:
-            await message.reply_text(
-                texts.REPORT_PAUSED_ALERT,
-                parse_mode=ParseMode.HTML,
-            )
+        await _send_clean_prompt(
+            update,
+            context,
+            texts.REPORT_PAUSED_ALERT,
+            parse_mode=ParseMode.HTML,
+            reply_markup=confirm_report_kb(),
+        )
         return CONFIRM
-
-    # تلاشي أزرار التأكيد فور الضغط عليها (تبقى الرسالة نصًا فقط)
-    if update.callback_query:
-        try:
-            await update.callback_query.edit_message_reply_markup(reply_markup=None)
-        except Exception:  # noqa: BLE001 — قد تغيّر الرسالة أو تكون مجمدة
-            logger.debug("تعذر إزالة أزرار التأكيد بعد الضغط")
 
     user = update.effective_user
     ud = context.user_data
@@ -777,8 +997,11 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         logger.exception("فشل حفظ البلاغ للمستخدم %s", user.id)
-        await update.effective_message.reply_text(
-            texts.GENERAL_ERROR, parse_mode=ParseMode.HTML
+        await _send_clean_prompt(
+            update,
+            context,
+            texts.GENERAL_ERROR,
+            parse_mode=ParseMode.HTML,
         )
         return ConversationHandler.END
 
@@ -792,15 +1015,24 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         logger.exception("تعذرت إضافة بصمة البلاغ %s", report["seq"])
-    await update.effective_message.reply_text(
-        texts.SAVED.format(
-            seq=report["seq"],
-            time=utils.fmt_local(report["created_at"]),
-            status=texts.badge(report["status"]),
-        ),
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_kb(),
+    saved_text = texts.SAVED.format(
+        seq=report["seq"],
+        time=utils.fmt_local(report["created_at"]),
+        status=texts.badge(report["status"]),
     )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            saved_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboards.saved_receipt_kb(),
+        )
+    else:
+        await _clear_user_prompt(context)
+        await update.effective_message.reply_text(
+            saved_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboards.saved_receipt_kb(),
+        )
 
     await _notify_admins(context, report)
 
@@ -1131,6 +1363,14 @@ async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, report: dict) -> No
         desc=utils.esc(utils.trunc(report["description"], 300)),
     )
     moderation_note = str(report.get("admin_note") or "").strip()
+    verification = await context.bot_data["db"].verification_status(
+        int(report["user_id"])
+    )
+    if verification and verification.get("status") == "verified":
+        caption += (
+            "\n\n🪪 <b>هوية المراسل معتمدة إداريًا</b> — "
+            "لا يعني ذلك اعتماد مضمون البلاغ."
+        )
     image_review_hold = bool(
         report.get("needs_review") and moderation_note
     )
@@ -1285,22 +1525,28 @@ async def receive_support_message(
         filename = message.document.file_name
     text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
     if media_type is None and not 2 <= len(text) <= SUPPORT_MAX_LENGTH:
-        await message.reply_text(
+        await _send_clean_prompt(
+            update,
+            context,
             texts.SUPPORT_TOO_LONG
             if len(text) > SUPPORT_MAX_LENGTH
             else "اكتب رسالة من حرفين على الأقل، أو اختر إلغاء.",
             parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(),
         )
         return ASK_SUPPORT
     if not config.ADMIN_IDS:
         context.user_data.pop("support_pending", None)
-        await message.reply_text(
+        await _clear_user_prompt(context)
+        prompt = await message.reply_text(
             texts.SUPPORT_UNAVAILABLE,
             parse_mode=ParseMode.HTML,
             reply_markup=main_menu_kb(),
         )
+        _remember_user_prompt(context, prompt)
         return ConversationHandler.END
 
+    await _clear_user_prompt(context)
     db = _db(context)
     await db.record_user(user.id, user.username, user.full_name)
     await db.open_user_conversation(user.id)
@@ -1353,11 +1599,130 @@ async def receive_support_message(
                 exc_info=True,
             )
 
-    await message.reply_text(
+    prompt = await message.reply_text(
         texts.SUPPORT_RECEIVED if delivered else texts.SUPPORT_SAVED_NO_NOTIFY,
         parse_mode=ParseMode.HTML,
         reply_markup=main_menu_kb(),
     )
+    _remember_user_prompt(context, prompt)
+    context.user_data.pop("support_pending", None)
+    return ConversationHandler.END
+
+
+async def receive_verification_phone(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    if not message or not user or not chat or chat.type != "private":
+        return ConversationHandler.END
+    if not context.user_data.get("verification_flow"):
+        await _send_clean_prompt(
+            update,
+            context,
+            texts.WELCOME_HINT,
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+    if not verified_reporters.is_configured() or not config.VERIFICATION_WEBAPP_URL:
+        await _send_clean_prompt(
+            update,
+            context,
+            "ميزة التوثيق غير مفعّلة حاليًا لأن إعدادات الحماية لم تكتمل.",
+            reply_markup=main_menu_kb(),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    contact = message.contact
+    if not contact or contact.user_id != user.id:
+        await _send_clean_prompt(
+            update,
+            context,
+            "للمتابعة شارك رقم هاتفك أنت عبر زر المشاركة، أو ألغِ العملية. لا ترسل رقم شخص آخر.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboards.verification_contact_kb(),
+        )
+        return ASK_VERIFICATION_PHONE
+
+    digits = "".join(character for character in contact.phone_number if character.isdigit())
+    if not 7 <= len(digits) <= 15:
+        await _send_clean_prompt(
+            update,
+            context,
+            "تعذّر التحقق من صيغة رقم الهاتف. أعد مشاركته من تيليجرام.",
+            reply_markup=keyboards.verification_contact_kb(),
+        )
+        return ASK_VERIFICATION_PHONE
+
+    ticket = secrets.token_urlsafe(32)
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=10)
+    ).isoformat(timespec="seconds")
+    try:
+        request_id = await _db(context).create_verification_ticket(
+            user.id,
+            verified_reporters.hash_ticket(ticket),
+            verified_reporters.encrypt_phone(contact.phone_number),
+            expires_at,
+        )
+    except verified_reporters.VerificationUnavailable:
+        logger.exception("Identity verification encryption is unavailable")
+        await _send_clean_prompt(
+            update,
+            context,
+            "تعذّر بدء التوثيق لأن خدمة الحفظ الآمن غير جاهزة. لم يُحفظ رقم الهاتف.",
+            reply_markup=main_menu_kb(),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    if request_id is None:
+        previous = await _db(context).verification_status(user.id)
+        if previous and previous.get("status") == "verified":
+            message_text = "حسابك موثّق بالفعل. لا حاجة لإرسال وثائقك مرة أخرى."
+        elif previous and previous.get("status") == "pending":
+            message_text = (
+                "طلب التوثيق قيد المراجعة. لا ترسل صور الهوية مرة أخرى؛ "
+                "سيظهر القرار في «حالة توثيق الحساب»."
+            )
+        else:
+            message_text = "يوجد طلب توثيق جارٍ. أعد فتحه من محادثة البوت."
+        context.user_data.clear()
+        await _send_clean_prompt(
+            update,
+            context,
+            message_text,
+            reply_markup=main_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    base_url = config.VERIFICATION_WEBAPP_URL.split("#", 1)[0].split("?", 1)[0]
+    capture_url = f"{base_url}#ticket={quote(ticket, safe='')}"
+    active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
+    context.user_data.clear()
+    if active_prompt:
+        context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
+    context.user_data["verification_flow"] = True
+    await _send_clean_prompt(
+        update,
+        context,
+        "تم استلام رقمك المشترك عبر تيليجرام. افتح صفحة الكاميرا خلال 10 دقائق "
+        "لالتقاط صورة الوجه والهوية من الجهتين. لا تختَر صورًا من الاستوديو. "
+        "إرسال الطلب اختياري، ولن يؤثر عدم التوثيق على حقك في تقديم شكوى.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton(
+                    "📷 فتح الكاميرا والتقاط الهوية",
+                    web_app=WebAppInfo(url=capture_url),
+                )
+            ]]
+        ),
+    )
+    context.user_data.pop("verification_flow", None)
     return ConversationHandler.END
 
 
@@ -1456,10 +1821,19 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # إلغاء العملية (أمر أو زر)
 # ==================================================================
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(texts.CANCELLED, parse_mode=ParseMode.HTML)
+    active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
     context.user_data.clear()
+    if active_prompt:
+        context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
     if update.effective_user:
         _pending_app_users.discard(update.effective_user.id)
+    await _send_clean_prompt(
+        update,
+        context,
+        texts.CANCELLED,
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_kb(),
+    )
     return ConversationHandler.END
 
 
@@ -1511,10 +1885,14 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if not data.startswith(USR_PREFIX):
         return
+    if data != f"{USR_PREFIX}home":
+        _remember_user_prompt(context, query.message)
     parts = data.split(":")
 
     # --- القائمة الرئيسية ---
     if parts[1] == "menu":
+        context.user_data.clear()
+        _pending_app_users.discard(query.from_user.id)
         welcome, parse_mode = await _welcome_content(db)
         if await guards.is_emergency(db):
             if parse_mode == ParseMode.HTML:
@@ -1526,6 +1904,26 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             parse_mode=parse_mode,
             reply_markup=main_menu_kb(),
         )
+        _remember_user_prompt(context, query.message)
+        return ConversationHandler.END
+
+    # The receipt is a record; opening the menu must not overwrite it.
+    if parts[1] == "home":
+        context.user_data.clear()
+        _pending_app_users.discard(query.from_user.id)
+        welcome, parse_mode = await _welcome_content(db)
+        if await guards.is_emergency(db):
+            if parse_mode == ParseMode.HTML:
+                welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
+            else:
+                welcome = "🛑 استقبال البلاغات الجديدة متوقف مؤقتًا.\n\n" + welcome
+        prompt = await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=welcome,
+            parse_mode=parse_mode,
+            reply_markup=main_menu_kb(),
+        )
+        _remember_user_prompt(context, prompt)
         return ConversationHandler.END
 
     # --- بلاغ جديد ---
@@ -1554,13 +1952,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         await db.log_event(query.from_user.id, "report")
         context.user_data.clear()
-        # اختيار أحد مسارات البلاغ الأربعة قبل إدخال التفاصيل.
-        await query.edit_message_text(
-            "اختر القسم الأقرب إلى موضوع بلاغك:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=report_category_kb(),
-        )
-        return ASK_CATEGORY
+        return await _show_report_step(update, context, ASK_CATEGORY)
 
     # --- فتح التطبيق ---
     # أُزيل زر فتح التطبيق من الأزرار المضمنة (قرار الواجهة الاحترافية)؛
@@ -1571,6 +1963,8 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # --- بلاغاتي: بطاقات كل بلاغات المتبلّغ (بدل آخر بلاغ فقط) ---
     if parts[1] == "status":
+        context.user_data.clear()
+        _pending_app_users.discard(query.from_user.id)
         reports, total = await db.list_user_reports(
             query.from_user.id, limit=MY_REPORTS_MAX + 1
         )
@@ -1585,6 +1979,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             parse_mode=ParseMode.HTML,
             reply_markup=my_reports_kb(reports[:MY_REPORTS_MAX]),
         )
+        _remember_user_prompt(context, query.message)
         return ConversationHandler.END
 
     # --- بطاقة تفصيل بلاغ من «بلاغاتي» (usr:r:<id>) ---
@@ -1608,6 +2003,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 rid, bool(r.get("followup_requested_at") and not r.get("followup_response"))
             ),
         )
+        _remember_user_prompt(context, query.message)
         return ConversationHandler.END
 
     if parts[1] == "followup" and len(parts) == 3 and parts[2].isdigit():
@@ -1622,19 +2018,24 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.answer("لا يوجد طلب معلومات مفتوح لهذا البلاغ.", show_alert=True)
             return ConversationHandler.END
         context.user_data["followup_report_id"] = rid
+        context.user_data["report_state"] = ASK_FOLLOWUP
         await query.edit_message_text(
             texts.ASK_FOLLOWUP,
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_inline_kb(),
         )
+        _remember_user_prompt(context, query.message)
         return ASK_FOLLOWUP
 
     # --- عن النظام ---
     if parts[1] == "about":
+        context.user_data.clear()
+        _pending_app_users.discard(query.from_user.id)
         await query.edit_message_text(
             texts.ABOUT_SYSTEM, parse_mode=ParseMode.HTML,
             reply_markup=back_to_menu_kb(),
         )
+        _remember_user_prompt(context, query.message)
         return ConversationHandler.END
 
     # --- تواصل مع الإدارة ---
@@ -1645,7 +2046,110 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             reply_markup=cancel_inline_kb(),
         )
         context.user_data["support_pending"] = True
+        _remember_user_prompt(context, query.message)
         return ASK_SUPPORT
+
+    if parts[1] == "verify-status":
+        status = await db.verification_status(query.from_user.id)
+        if not status:
+            message_text = "لم تقدّم طلب توثيق. يمكنك التقديم اختياريًا من القائمة الرئيسية."
+        elif status["status"] == "verified":
+            message_text = "✅ حسابك موثّق كمراسل. هذه الشارة لا تعني اعتماد أي بلاغ تلقائيًا."
+        elif status["status"] == "pending" and status.get("has_documents"):
+            message_text = "⏳ طلب التوثيق قيد المراجعة الإدارية."
+        elif status["status"] == "pending":
+            message_text = (
+                "تعذّر العثور على صور الطلب بعد استعادة بيانات النظام. "
+                "يمكنك بدء طلب جديد؛ لم تُستعد الصور من النسخ الاحتياطية."
+            )
+        elif status["status"] == "rejected":
+            message_text = "لم يُعتمد طلب التوثيق. يمكنك إعادة التقديم من القائمة الرئيسية."
+        else:
+            message_text = "لم يكتمل إرسال طلب التوثيق. ابدأ من جديد عند رغبتك."
+        await query.edit_message_text(
+            message_text,
+            reply_markup=back_to_menu_kb(),
+        )
+        _remember_user_prompt(context, query.message)
+        return context.user_data.get("report_state")
+
+    if parts[1] == "verify":
+        if query.message.chat.type != "private":
+            await query.answer("ابدأ التوثيق في المحادثة الخاصة مع البوت.", show_alert=True)
+            return context.user_data.get("report_state")
+        if any(
+            key in context.user_data
+            for key in ("report_category", "app_draft", "followup_report_id")
+        ):
+            await query.answer(
+                "أكمل البلاغ الحالي أو ألغِه قبل بدء التوثيق.",
+                show_alert=True,
+            )
+            return context.user_data.get("report_state")
+        if (
+            not verified_reporters.is_configured()
+            or not config.VERIFICATION_WEBAPP_URL
+        ):
+            await query.answer(
+                "التوثيق غير مفعّل بعد؛ إعداد التشفير الآمن غير مكتمل.",
+                show_alert=True,
+            )
+            return ConversationHandler.END
+        active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
+        context.user_data.clear()
+        if active_prompt:
+            context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
+        context.user_data["verification_flow"] = True
+        await _send_clean_prompt(
+            update,
+            context,
+            "التوثيق اختياري ولا يؤثر على حقك في تقديم شكوى. شارك رقمك أنت عبر زر تيليجرام، "
+            "ثم التقط صورة الوجه والهوية الأمامية والخلفية بالكاميرا. "
+            "يُراجع الطلب يدويًا، والتصوير لا يثبت وحده أصالة الهوية أو حيوية الصورة.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboards.verification_contact_kb(),
+        )
+        return ASK_VERIFICATION_PHONE
+
+    if parts[1] == "back" and len(parts) == 3:
+        target_states = {
+            "category": ASK_CATEGORY,
+            "platform": ASK_PLATFORM,
+            "description": ASK_DESC,
+            "photo": ASK_PHOTO,
+            "link": ASK_LINK,
+            "location": ASK_LOCATION,
+            "contact": ASK_CONTACT,
+        }
+        current = context.user_data.get("report_state")
+        allowed_back = {
+            ASK_PLATFORM: {"category"},
+            ASK_DESC: {
+                "platform"
+                if context.user_data.get("report_category") == "social"
+                else "category"
+            },
+            ASK_PHOTO: {"description"},
+            ASK_LINK: {"photo"},
+            ASK_LOCATION: {"photo"},
+            ASK_CONTACT: {
+                {
+                    "field": "location",
+                    "social": "link",
+                }.get(context.user_data.get("report_category"), "photo")
+            },
+            CONFIRM: {"contact"},
+        }
+        target = parts[2]
+        if target not in target_states or target not in allowed_back.get(current, set()):
+            await query.edit_message_text(
+                "انتهت هذه الخطوة. ابدأ من القائمة الرئيسية.",
+                reply_markup=back_to_menu_kb(),
+            )
+            context.user_data.clear()
+            _remember_user_prompt(context, query.message)
+            return ConversationHandler.END
+        return await _show_report_step(update, context, target_states[target])
 
     if parts[1] == "category" and len(parts) == 3:
         category = parts[2]
@@ -1664,20 +2168,9 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             longitude=None,
             contact_phone="",
         )
-        intro = texts.CATEGORY_INTROS[category]
         if category == "social":
-            await query.edit_message_text(
-                intro + "\n\n" + texts.PLATFORM_PROMPT,
-                parse_mode=ParseMode.HTML,
-                reply_markup=social_platform_kb(),
-            )
-            return ASK_PLATFORM
-        await query.edit_message_text(
-            intro + "\n\n" + texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
-            parse_mode=ParseMode.HTML,
-            reply_markup=cancel_inline_kb(),
-        )
-        return ASK_DESC
+            return await _show_report_step(update, context, ASK_PLATFORM)
+        return await _show_report_step(update, context, ASK_DESC)
 
     if parts[1] == "platform" and len(parts) == 3:
         platform_key = parts[2]
@@ -1686,34 +2179,25 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return ASK_PLATFORM
         context.user_data["platform"] = SOCIAL_PLATFORM_LABELS[platform_key]
         context.user_data["platform_key"] = platform_key
-        await query.edit_message_text(
-            texts.CATEGORY_INTROS["social"]
-            + "\n\n"
-            + texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
-            parse_mode=ParseMode.HTML,
-            reply_markup=cancel_inline_kb(),
-        )
-        return ASK_DESC
+        return await _show_report_step(update, context, ASK_DESC)
 
     if parts[1] == "skip" and len(parts) == 3:
         step = parts[2]
         if step == "photo":
-            try:
-                await query.edit_message_reply_markup(reply_markup=None)
-            except BadRequest:
-                pass
             context.user_data.pop("optional_prompt", None)
             return await _advance_after_evidence(update, context)
         if step == "link" and context.user_data.get("report_category") == "social":
-            try:
-                await query.edit_message_reply_markup(reply_markup=None)
-            except BadRequest:
-                pass
             context.user_data.pop("optional_prompt", None)
             try:
                 await _assess_link_and_description(context, db, "")
             except ValueError as exc:
-                await query.answer(str(exc), show_alert=True)
+                await _send_clean_prompt(
+                    update,
+                    context,
+                    str(exc),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=optional_step_kb("link"),
+                )
                 return ASK_LINK
             context.user_data["post_link"] = ""
             return await _ask_contact(update, context)
@@ -1726,12 +2210,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "type" and len(parts) > 2:
         vtype = ":".join(parts[2:])
         context.user_data["violation_type"] = vtype
-        await query.edit_message_text(
-            texts.ASK_DESC.format(maxlen=config.MAX_DESC_LEN),
-            parse_mode=ParseMode.HTML,
-            reply_markup=cancel_inline_kb(),
-        )
-        return ASK_DESC
+        return await _show_report_step(update, context, ASK_DESC)
 
     # --- تأكيد الإرسال ---
     if parts[1] == "confirm":
@@ -1749,6 +2228,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             texts.CANCELLED, parse_mode=ParseMode.HTML,
             reply_markup=main_menu_kb(),
         )
+        _remember_user_prompt(context, query.message)
         return ConversationHandler.END
 
     logger.warning("استدعاء مستخدم غير معروف: %s", data)
@@ -1941,6 +2421,14 @@ def build_conversation() -> ConversationHandler:
             ASK_FOLLOWUP: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_followup),
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
+            ],
+            ASK_VERIFICATION_PHONE: [
+                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(
+                    (filters.CONTACT | filters.TEXT) & ~filters.COMMAND,
+                    receive_verification_phone,
+                ),
+                MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],
             ASK_SUPPORT: [
                 MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
