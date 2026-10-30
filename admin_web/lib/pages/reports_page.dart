@@ -145,6 +145,53 @@ class _ReportsPageState extends State<ReportsPage> {
     }
   }
 
+  Future<void> _previewPhoto(int reportId) async {
+    final photo = widget.api.getBytes('/api/admin/photo/$reportId');
+    final screenSize = MediaQuery.sizeOf(context);
+    final width = (screenSize.width - 48).clamp(240.0, 720.0).toDouble();
+    final height = (screenSize.height - 180).clamp(220.0, 560.0).toDouble();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('معاينة صورة البلاغ'),
+        content: SizedBox(
+          width: width,
+          height: height,
+          child: FutureBuilder<Uint8List>(
+            future: photo,
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                return Center(
+                  child: Text(
+                    'تعذر تحميل الصورة: ${errMsg(snapshot.error!)}',
+                    textAlign: TextAlign.center,
+                  ),
+                );
+              }
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              return InteractiveViewer(
+                child: Image.memory(snapshot.data!, fit: BoxFit.contain),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () => _downloadPhoto(reportId),
+            icon: const Icon(Icons.download_outlined),
+            label: const Text('تنزيل'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('إغلاق'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _openConversation(Map<String, dynamic> report) {
     final userId = int.tryParse('${report['user_id'] ?? ''}');
     if (userId == null) {
@@ -517,6 +564,14 @@ class _ReportsPageState extends State<ReportsPage> {
                   children: [
                     if (hasPhoto)
                       IconButton(
+                        tooltip: 'معاينة صورة البلاغ',
+                        onPressed: reportId == null
+                            ? null
+                            : () => _previewPhoto(reportId),
+                        icon: const Icon(Icons.image_search_outlined),
+                      ),
+                    if (hasPhoto)
+                      IconButton(
                         tooltip: 'تنزيل صورة البلاغ',
                         onPressed: reportId == null
                             ? null
@@ -605,6 +660,15 @@ class _ReportsPageState extends State<ReportsPage> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (r['has_photo'] == true ||
+                  (r['photo_file_id'] ?? '').toString().isNotEmpty)
+                IconButton(
+                  tooltip: 'معاينة صورة البلاغ',
+                  onPressed: reportId == null
+                      ? null
+                      : () => _previewPhoto(reportId),
+                  icon: const Icon(Icons.image_search_outlined, size: 19),
+                ),
               if (r['has_photo'] == true ||
                   (r['photo_file_id'] ?? '').toString().isNotEmpty)
                 IconButton(
