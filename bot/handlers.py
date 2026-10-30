@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
@@ -55,8 +56,9 @@ from services import (
     sightengine_moderation,
     utils,
     verified_reporters,
+    word_filter,
 )
-from database import Database
+from database import Database, STATUS_AWAITING_INFO, STATUS_REJECTED
 from bot.keyboards import (
     admin_notify_buttons,
     back_to_menu_kb,
@@ -92,8 +94,12 @@ logger = logging.getLogger(__name__)
     ASK_VERIFICATION_SELFIE,
     ASK_VERIFICATION_ID_FRONT,
     ASK_VERIFICATION_ID_BACK,
-) = range(14)
+    ASK_REPORT_APPEAL,
+) = range(15)
 SUPPORT_MAX_LENGTH = 1000
+SUPPORT_MAX_WORDS = 100
+SUPPORT_MAX_PER_10_MINUTES = 3
+SUPPORT_MAX_PER_DAY = 10
 VERIFICATION_TICKET_KEY = "verification_ticket_hash"
 VERIFICATION_CAPTURES_KEY = "verification_captures"
 VERIFICATION_STEP_KEY = "verification_step"
@@ -138,6 +144,36 @@ async def _welcome_content(db: Database) -> tuple[str, ParseMode | None]:
     if isinstance(custom, str) and custom.strip():
         return custom.strip(), None
     return texts.WELCOME, ParseMode.HTML
+
+
+async def _privacy_policy_url(db: Database) -> str | None:
+    raw = await db.get_state("bot_profile")
+    try:
+        profile = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(profile, dict):
+        return None
+    url = str(profile.get("privacy_policy_url") or "").strip()
+    return url if url.startswith("https://") else None
+
+
+async def _verification_consent(db: Database) -> tuple[str, str]:
+    raw = await db.get_state("bot_profile")
+    try:
+        profile = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        profile = {}
+    custom = profile.get("verification_consent_text") if isinstance(profile, dict) else None
+    supplemental = custom.strip() if isinstance(custom, str) else ""
+    text = texts.VERIFICATION_CONSENT_DEFAULT
+    if supplemental:
+        text += "\n\nإيضاحات إضافية من الإدارة:\n" + supplemental
+    privacy_url = await _privacy_policy_url(db) or ""
+    version = hashlib.sha256(
+        (text + "\n" + privacy_url).encode("utf-8")
+    ).hexdigest()[:24]
+    return text, version
 
 
 def _remember_user_prompt(
@@ -271,6 +307,13 @@ async def _show_report_step(
     ud = context.user_data
     if step == ASK_CATEGORY:
         text, markup = "اختر القسم الأقرب إلى موضوع بلاغك:", report_category_kb()
+        privacy_url = await _privacy_policy_url(_db(context))
+        if privacy_url:
+            text += (
+                "\n\n<a href=\""
+                + utils.esc(privacy_url)
+                + "\">اطّلع على سياسة الخصوصية قبل إرسال البلاغ.</a>"
+            )
     elif step == ASK_PLATFORM:
         text = texts.CATEGORY_INTROS["social"] + "\n\n" + texts.PLATFORM_PROMPT
         markup = social_platform_kb()
@@ -1472,6 +1515,12 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         not report
         or int(report.get("user_id") or 0) != user.id
         or not report.get("followup_requested_at")
+        or report.get("status") != STATUS_AWAITING_INFO
+        or (
+            report.get("followup_due_at")
+            and report["followup_due_at"]
+            <= datetime.now(timezone.utc).isoformat(timespec="seconds")
+        )
     ):
         await message.reply_text("لا يوجد طلب معلومات مفتوح لهذا البلاغ.")
         return
@@ -1543,13 +1592,81 @@ async def receive_support_message(
         file_id = message.document.file_id
         filename = message.document.file_name
     text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    word_count = len(text.split())
+    if word_count > SUPPORT_MAX_WORDS:
+        await _db(context).log_event(user.id, "support_message")
+        await _send_clean_prompt(
+            update,
+            context,
+            "رسالة التواصل لا تتجاوز 100 كلمة. اختصرها وأرسلها مجددًا.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(),
+        )
+        return ASK_SUPPORT
     if media_type is None and not 2 <= len(text) <= SUPPORT_MAX_LENGTH:
+        await _db(context).log_event(user.id, "support_message")
         await _send_clean_prompt(
             update,
             context,
             texts.SUPPORT_TOO_LONG
             if len(text) > SUPPORT_MAX_LENGTH
             else "اكتب رسالة من حرفين على الأقل، أو اختر إلغاء.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(),
+        )
+        return ASK_SUPPORT
+    db = _db(context)
+    now = datetime.now(timezone.utc)
+    ten_minute_count = await db.count_events(
+        (now - timedelta(minutes=10)).isoformat(timespec="seconds"),
+        user.id,
+        "support_message",
+    )
+    daily_count = await db.count_events(
+        (now - timedelta(days=1)).isoformat(timespec="seconds"),
+        user.id,
+        "support_message",
+    )
+    if (
+        ten_minute_count >= SUPPORT_MAX_PER_10_MINUTES
+        or daily_count >= SUPPORT_MAX_PER_DAY
+    ):
+        await _send_clean_prompt(
+            update,
+            context,
+            "وصلت إلى حد رسائل التواصل. أعد المحاولة بعد انتهاء المهلة؛ "
+            "هذا لا يمنعك من استخدام بقية خدمات البوت.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(),
+        )
+        return ASK_SUPPORT
+    raw_wordlist = await db.get_state("support_blocklist")
+    try:
+        saved_wordlist = json.loads(raw_wordlist) if raw_wordlist else {"words": []}
+        words = saved_wordlist.get("words") if isinstance(saved_wordlist, dict) else None
+        if not isinstance(words, list) or any(
+            not isinstance(word, str) for word in words
+        ):
+            raise ValueError("invalid_support_blocklist")
+    except (TypeError, ValueError):
+        logger.exception("تعذّر تحميل قائمة كلمات التواصل")
+        await db.log_event(user.id, "support_message")
+        await _send_clean_prompt(
+            update,
+            context,
+            "تعذّر التحقق من إعدادات التواصل الآمنة. لم تُرسل رسالتك؛ "
+            "أعد المحاولة لاحقًا أو استخدم البلاغات.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_inline_kb(),
+        )
+        return ASK_SUPPORT
+    if text and word_filter.contains_blocked_term(text, words):
+        await db.log_event(user.id, "support_message")
+        await _send_clean_prompt(
+            update,
+            context,
+            "لم تُرسل الرسالة لأنها تحتوي على كلمة تمنعها قائمة الفلترة. "
+            "أعد صياغتها أو اختر إلغاء.",
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_inline_kb(),
         )
@@ -1566,7 +1683,6 @@ async def receive_support_message(
         return ConversationHandler.END
 
     await _clear_user_prompt(context)
-    db = _db(context)
     await db.record_user(user.id, user.username, user.full_name)
     await db.open_user_conversation(user.id)
     await db.add_user_message(
@@ -1587,6 +1703,7 @@ async def receive_support_message(
             if media_type else f"عدد الأحرف: {len(text)}"
         ),
     )
+    await db.log_event(user.id, "support_message")
     context.user_data.pop("support_pending", None)
 
     delivered = 0
@@ -1690,6 +1807,8 @@ async def receive_verification_phone(
             ticket_hash,
             verified_reporters.encrypt_phone(normalized_phone),
             expires_at,
+            context.user_data.get("verification_consent_at"),
+            context.user_data.get("verification_consent_version"),
         )
     except verified_reporters.VerificationUnavailable:
         logger.exception("Identity verification encryption is unavailable")
@@ -2018,6 +2137,12 @@ async def receive_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or int(report.get("user_id") or 0) != user.id
         or not report.get("followup_requested_at")
         or report.get("followup_response")
+        or report.get("status") != STATUS_AWAITING_INFO
+        or (
+            report.get("followup_due_at")
+            and report["followup_due_at"]
+            <= datetime.now(timezone.utc).isoformat(timespec="seconds")
+        )
     ):
         context.user_data.pop("followup_report_id", None)
         await message.reply_text("لم يعد هناك طلب معلومات مفتوح لهذا البلاغ.")
@@ -2048,6 +2173,62 @@ async def receive_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "تم استلام المعلومات وإيصالها إلى الإدارة."
         if delivered
         else "تم حفظ المعلومات، لكن تعذر إيصالها للمشرفين حاليًا."
+    )
+    return ConversationHandler.END
+
+
+async def receive_report_appeal(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+    report_id = context.user_data.get("report_appeal_id")
+    text = (message.text or "").strip() if message else ""
+    if (
+        message is None
+        or user is None
+        or chat is None
+        or chat.type != "private"
+        or not isinstance(report_id, int)
+        or not 2 <= len(text) <= 2000
+    ):
+        if message:
+            await message.reply_text("اكتب اعتراضًا بين حرفين و2000 حرف.")
+        return ASK_REPORT_APPEAL
+
+    db = _db(context)
+    appeal_id = await db.add_report_appeal(report_id, user.id, text)
+    if appeal_id is None:
+        context.user_data.pop("report_appeal_id", None)
+        await message.reply_text("لم يعد هذا البلاغ قابلًا لتقديم اعتراض جديد.")
+        return ConversationHandler.END
+    report = await db.get_by_id(report_id)
+    delivered = 0
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    f"✉️ طلب إعادة مراجعة للبلاغ {report.get('seq') or report_id}\n"
+                    f"المبلّغ: {utils.esc(user.full_name or '-')} ({user.id})\n\n"
+                    f"{utils.esc(text)}\n\n"
+                    "لم يُعَد فتح البلاغ تلقائيًا؛ راجعه من لوحة الإدارة."
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+            delivered += 1
+        except Exception:
+            logger.warning(
+                "تعذر إيصال اعتراض البلاغ %s للمشرف %s", report_id, admin_id
+            )
+    context.user_data.pop("report_appeal_id", None)
+    await message.reply_text(
+        "تم حفظ اعتراضك وإحالته للمراجعة؛ لم يُعَد فتح البلاغ تلقائيًا."
+        if delivered
+        else "تم حفظ اعتراضك، لكن تعذر إيصال إشعار للمشرفين حاليًا. "
+        "سيبقى البلاغ في قائمة المراجعة.",
+        reply_markup=main_menu_kb(),
     )
     return ConversationHandler.END
 
@@ -2283,7 +2464,13 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             ),
             parse_mode=ParseMode.HTML,
             reply_markup=report_open_kb(
-                rid, bool(r.get("followup_requested_at") and not r.get("followup_response"))
+                rid,
+                bool(
+                    r.get("followup_requested_at")
+                    and not r.get("followup_response")
+                    and r.get("status") == STATUS_AWAITING_INFO
+                ),
+                r.get("status") == STATUS_REJECTED,
             ),
         )
         _remember_user_prompt(context, query.message)
@@ -2297,6 +2484,12 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             or int(report.get("user_id") or 0) != query.from_user.id
             or not report.get("followup_requested_at")
             or report.get("followup_response")
+            or report.get("status") != STATUS_AWAITING_INFO
+            or (
+                report.get("followup_due_at")
+                and report["followup_due_at"]
+                <= datetime.now(timezone.utc).isoformat(timespec="seconds")
+            )
         ):
             await query.answer("لا يوجد طلب معلومات مفتوح لهذا البلاغ.", show_alert=True)
             return ConversationHandler.END
@@ -2310,7 +2503,48 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         _remember_user_prompt(context, query.message)
         return ASK_FOLLOWUP
 
+    if parts[1] == "appeal" and len(parts) == 3 and parts[2].isdigit():
+        rid = int(parts[2])
+        report = await db.get_by_id(rid)
+        if (
+            query.message.chat.type != "private"
+            or not report
+            or int(report.get("user_id") or 0) != query.from_user.id
+            or report.get("status") != STATUS_REJECTED
+        ):
+            await query.answer("لا يمكن إرسال اعتراض لهذا البلاغ.", show_alert=True)
+            return ConversationHandler.END
+        context.user_data.clear()
+        context.user_data["report_appeal_id"] = rid
+        await query.edit_message_text(
+            "أرسل اعتراضك أو المعلومات الإضافية المتعلقة بهذا البلاغ "
+            "(حتى 2000 حرف). سيصل الطلب إلى المشرف للمراجعة، ولن يُعاد فتح "
+            "البلاغ تلقائيًا.",
+            reply_markup=cancel_inline_kb(),
+        )
+        _remember_user_prompt(context, query.message)
+        return ASK_REPORT_APPEAL
+
     # --- عن النظام ---
+    if parts[1] == "privacy":
+        privacy_url = await _privacy_policy_url(db)
+        if privacy_url:
+            message_text = (
+                "يمكنك قراءة سياسة الخصوصية عبر الرابط التالي. "
+                "راجعها قبل إرسال بلاغ أو بدء توثيق المراسل."
+            )
+        else:
+            message_text = (
+                "لم يُضبط رابط سياسة الخصوصية بعد. لا تُرسل بيانات حساسة "
+                "ضمن البلاغ قبل مراجعة الإدارة."
+            )
+        await query.edit_message_text(
+            message_text,
+            reply_markup=keyboards.privacy_policy_kb(privacy_url),
+        )
+        _remember_user_prompt(context, query.message)
+        return ConversationHandler.END
+
     if parts[1] == "about":
         context.user_data.clear()
         _pending_app_users.discard(query.from_user.id)
@@ -2380,11 +2614,70 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 show_alert=True,
             )
             return context.user_data.get("report_state")
+        privacy_url = await _privacy_policy_url(db)
+        disclosure, consent_version = await _verification_consent(db)
+        await query.edit_message_text(
+            disclosure,
+            reply_markup=keyboards.verification_consent_kb(
+                privacy_url, consent_version
+            ),
+        )
+        _remember_user_prompt(context, query.message)
+        return ConversationHandler.END
+
+    if parts[1] == "verify-consent":
+        if query.message.chat.type != "private":
+            await query.answer("ابدأ التوثيق في المحادثة الخاصة مع البوت.", show_alert=True)
+            return context.user_data.get("report_state")
+        if any(
+            key in context.user_data
+            for key in ("report_category", "app_draft", "followup_report_id")
+        ):
+            await query.answer(
+                "أكمل البلاغ الحالي أو ألغِه قبل بدء التوثيق.",
+                show_alert=True,
+            )
+            return context.user_data.get("report_state")
         if not verified_reporters.is_configured():
             await query.answer(
                 "التوثيق غير مفعّل بعد؛ إعداد التشفير الآمن غير مكتمل.",
                 show_alert=True,
             )
+            return ConversationHandler.END
+        disclosure, consent_version = await _verification_consent(db)
+        if len(parts) != 3 or parts[2] != consent_version:
+            await query.edit_message_text(
+                disclosure,
+                reply_markup=keyboards.verification_consent_kb(
+                    await _privacy_policy_url(db), consent_version
+                ),
+            )
+            _remember_user_prompt(context, query.message)
+            return ConversationHandler.END
+        consented_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        status = await db.verification_status(query.from_user.id)
+        if status and status.get("status") == "verified":
+            updated = await db.update_verification_consent(
+                query.from_user.id, consented_at, consent_version
+            )
+            if not updated:
+                await query.answer(
+                    "تعذر تحديث الموافقة؛ أعد المحاولة لاحقًا.",
+                    show_alert=True,
+                )
+                return ConversationHandler.END
+            await db.audit(
+                query.from_user.id,
+                "reporter_consent_updated",
+                str(query.from_user.id),
+                f"consent_version={consent_version}",
+            )
+            await query.edit_message_text(
+                "تم تسجيل موافقتك على إفصاح التوثيق المحدّث. "
+                "لم نجمع وثائق إضافية.",
+                reply_markup=main_menu_kb(),
+            )
+            _remember_user_prompt(context, query.message)
             return ConversationHandler.END
         await db.cancel_verification_capture(query.from_user.id)
         active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
@@ -2392,15 +2685,13 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if active_prompt:
             context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
         context.user_data["verification_flow"] = True
+        context.user_data["verification_consent_at"] = consented_at
+        context.user_data["verification_consent_version"] = consent_version
         await _send_clean_prompt(
             update,
             context,
-            "التوثيق اختياري ولا يؤثر على حقك في تقديم شكوى. نطلب رقمًا سوريًا "
-            "وصورة الوجه والهوية من الجهتين كملفات داخل هذه المحادثة. "
-            "تُفحص الصور محليًا وتُحفظ مشفّرة للمراجعة البشرية، ثم تُحذف بعد "
-            "30 يومًا من القرار. لا يثبت الفحص "
-            "أصالة الهوية أو أن الصورة حيّة، ولا يستطيع البوت إثبات أن الصورة "
-            "التُقطت بالكاميرا. لن تُرسل الصور إلى خدمة فحص خارجية.",
+            "شارِك رقم هاتفك السوري عبر زر تيليجرام للانتقال إلى خطوات التوثيق. "
+            "يمكنك الإلغاء في أي وقت.",
             parse_mode=ParseMode.HTML,
             reply_markup=keyboards.verification_contact_kb(),
         )
@@ -2719,6 +3010,13 @@ def build_conversation() -> ConversationHandler:
             ],
             ASK_FOLLOWUP: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_followup),
+                MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
+            ],
+            ASK_REPORT_APPEAL: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    receive_report_appeal,
+                ),
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
             ],
             ASK_VERIFICATION_PHONE: [

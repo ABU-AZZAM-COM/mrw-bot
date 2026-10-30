@@ -28,7 +28,8 @@ class _AdminsPageState extends State<AdminsPage> {
     'operate': 'إجراءات التشغيل والرسائل والتصنيفات',
     'export': 'التصدير والنسخ الاحتياطية',
     'delete': 'حذف البلاغات',
-    'identity': 'مراجعة المراسلين والوصول إلى وثائق الهوية (حساس)',
+    'identity': 'مراجعة طلبات المراسلين',
+    'identity_documents': 'الاطلاع على صور الهوية وتنزيل ملف PDF (حساس)',
   };
   static const _rolePermissions = <String, Set<String>>{
     'viewer': {'read'},
@@ -220,7 +221,8 @@ class _AdminsPageState extends State<AdminsPage> {
                       dense: true,
                       title: Text(entry.value),
                       value: permissions.contains(entry.key),
-                      onChanged: role == 'owner'
+                      onChanged:
+                          role == 'owner' && entry.key != 'identity_documents'
                           ? null
                           : (selected) => setDialogState(() {
                               if (selected == true) {

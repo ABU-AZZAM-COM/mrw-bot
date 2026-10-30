@@ -22,6 +22,8 @@ class _BotProfilePageState extends State<BotProfilePage> {
   final _shortDescription = TextEditingController();
   final _description = TextEditingController();
   final _welcome = TextEditingController();
+  final _privacyPolicyUrl = TextEditingController();
+  final _verificationConsent = TextEditingController();
   bool _loading = true;
   bool _saving = false;
   bool _canEdit = false;
@@ -34,6 +36,9 @@ class _BotProfilePageState extends State<BotProfilePage> {
   Uint8List? _savedWelcomePhotoBytes;
   String? _welcomePhotoName;
   Uint8List? _welcomePhotoBytes;
+  String _blockedWordsContent = '';
+  int _blockedWordsCount = 0;
+  String? _blockedWordsUpdatedAt;
 
   @override
   void initState() {
@@ -47,6 +52,8 @@ class _BotProfilePageState extends State<BotProfilePage> {
     _shortDescription.dispose();
     _description.dispose();
     _welcome.dispose();
+    _privacyPolicyUrl.dispose();
+    _verificationConsent.dispose();
     super.dispose();
   }
 
@@ -56,19 +63,27 @@ class _BotProfilePageState extends State<BotProfilePage> {
       final results = await Future.wait([
         widget.api.get('/api/admin/bot-profile'),
         widget.api.get('/api/admin/session'),
+        widget.api.get('/api/admin/bot-profile/blocked-words'),
       ]);
       final profile = (results[0]['items'] as Map).cast<String, dynamic>();
       final hasWelcomePhoto = profile['has_welcome_photo'] == true;
+      final blockedWords = results[2];
       if (!mounted) return;
       setState(() {
         _name.text = '${profile['name'] ?? ''}';
         _shortDescription.text = '${profile['short_description'] ?? ''}';
         _description.text = '${profile['description'] ?? ''}';
         _welcome.text = '${profile['welcome_text'] ?? ''}';
+        _privacyPolicyUrl.text = '${profile['privacy_policy_url'] ?? ''}';
+        _verificationConsent.text =
+            '${profile['verification_consent_text'] ?? ''}';
         _username = '${profile['username'] ?? ''}';
         _botReady = results[0]['bot_ready'] == true;
         _canEdit = results[1]['role'] == 'owner';
         _hasWelcomePhoto = hasWelcomePhoto;
+        _blockedWordsContent = '${blockedWords['content'] ?? ''}';
+        _blockedWordsCount = (blockedWords['count'] as num?)?.toInt() ?? 0;
+        _blockedWordsUpdatedAt = blockedWords['updated_at']?.toString();
         _savedWelcomePhotoBytes = null;
         _removeWelcomePhoto = false;
         _loading = false;
@@ -183,6 +198,82 @@ class _BotProfilePageState extends State<BotProfilePage> {
     });
   }
 
+  Future<void> _uploadBlockedWords() async {
+    final picker = html.FileUploadInputElement()
+      ..accept = '.txt,text/plain'
+      ..multiple = false;
+    picker.click();
+    await picker.onChange.first;
+    final files = picker.files;
+    if (files == null || files.isEmpty) return;
+    final file = files.first;
+    if (!file.name.toLowerCase().endsWith('.txt') || file.size > 100 * 1024) {
+      if (mounted) {
+        toast(context, 'اختر ملف TXT لا يتجاوز 100 كيلوبايت', error: true);
+      }
+      return;
+    }
+    final reader = html.FileReader()..readAsArrayBuffer(file);
+    await reader.onLoad.first;
+    final result = reader.result;
+    if (result is! ByteBuffer) {
+      if (mounted) toast(context, 'تعذرت قراءة الملف', error: true);
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final saved = await widget.api.upload(
+        '/api/admin/bot-profile/blocked-words',
+        fields: const {},
+        filename: file.name,
+        bytes: result.asUint8List(),
+      );
+      final current = await widget.api.get(
+        '/api/admin/bot-profile/blocked-words',
+      );
+      if (!mounted) return;
+      setState(() {
+        _blockedWordsContent = '${current['content'] ?? ''}';
+        _blockedWordsCount = (saved['count'] as num?)?.toInt() ?? 0;
+        _blockedWordsUpdatedAt = current['updated_at']?.toString();
+      });
+      toast(
+        context,
+        'تم التحقق من القائمة واستبدالها ($_blockedWordsCount كلمة)',
+      );
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _clearBlockedWords() async {
+    final confirmed = await confirmDialog(
+      context,
+      'تفريغ قائمة الكلمات',
+      'ستتوقف فلترة رسائل التواصل بالكلمات حتى رفع قائمة جديدة.',
+      okLabel: 'تفريغ القائمة',
+      danger: true,
+    );
+    if (!confirmed || !mounted) return;
+    setState(() => _saving = true);
+    try {
+      await widget.api.del('/api/admin/bot-profile/blocked-words', {});
+      if (!mounted) return;
+      setState(() {
+        _blockedWordsContent = '';
+        _blockedWordsCount = 0;
+        _blockedWordsUpdatedAt = null;
+      });
+      toast(context, 'تم تفريغ قائمة الكلمات');
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
   Future<void> _saveWelcomePhoto() async {
     if (_welcomePhotoBytes == null && !_removeWelcomePhoto) return;
     setState(() => _saving = true);
@@ -248,6 +339,8 @@ class _BotProfilePageState extends State<BotProfilePage> {
     final shortDescription = _shortDescription.text.trim();
     final description = _description.text.trim();
     final welcome = _welcome.text.trim();
+    final privacyPolicyUrl = _privacyPolicyUrl.text.trim();
+    final verificationConsent = _verificationConsent.text.trim();
     if (name.isEmpty || name.length > 64) {
       toast(context, 'اسم البوت مطلوب وبحد أقصى 64 حرفاً', error: true);
       return;
@@ -255,9 +348,26 @@ class _BotProfilePageState extends State<BotProfilePage> {
     if (shortDescription.length > 120 ||
         description.length > 512 ||
         welcome.isEmpty ||
-        welcome.length > 3500) {
+        welcome.length > 3500 ||
+        verificationConsent.isEmpty ||
+        verificationConsent.length > 2500) {
       toast(context, 'تحقق من أطوال النبذة والوصف ورسالة البداية', error: true);
       return;
+    }
+    if (privacyPolicyUrl.isNotEmpty) {
+      final parsedUrl = Uri.tryParse(privacyPolicyUrl);
+      if (parsedUrl == null ||
+          parsedUrl.scheme != 'https' ||
+          parsedUrl.host.isEmpty ||
+          parsedUrl.userInfo.isNotEmpty ||
+          privacyPolicyUrl.length > 500) {
+        toast(
+          context,
+          'رابط سياسة الخصوصية يجب أن يكون HTTPS صالحًا',
+          error: true,
+        );
+        return;
+      }
     }
     final confirmed = await confirmDialog(
       context,
@@ -276,6 +386,8 @@ class _BotProfilePageState extends State<BotProfilePage> {
           'short_description': shortDescription,
           'description': description,
           'welcome_text': welcome,
+          'privacy_policy_url': privacyPolicyUrl,
+          'verification_consent_text': verificationConsent,
         },
         filename: _photoName,
         bytes: _photoBytes,
@@ -552,6 +664,103 @@ class _BotProfilePageState extends State<BotProfilePage> {
                     )
                   : const Icon(Icons.save_outlined),
               label: const Text('حفظ ونشر التغييرات'),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 12),
+      SectionCard(
+        'سياسة الخصوصية',
+        icon: Icons.privacy_tip_outlined,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'أضف رابط HTTPS لصفحة السياسة. يظهر الرابط في القائمة الرئيسية '
+              'وعند بدء البلاغ وتوثيق المراسل. اتركه فارغًا لإزالة الرابط.',
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _privacyPolicyUrl,
+              enabled: _canEdit && !_loading && !_saving,
+              keyboardType: TextInputType.url,
+              maxLength: 500,
+              decoration: const InputDecoration(
+                labelText: 'رابط سياسة الخصوصية',
+                hintText: 'https://github.com/…',
+                prefixIcon: Icon(Icons.link_outlined),
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _verificationConsent,
+              enabled: _canEdit && !_loading && !_saving,
+              maxLength: 2500,
+              minLines: 5,
+              maxLines: 10,
+              decoration: const InputDecoration(
+                labelText: 'إفصاح توثيق المراسل والموافقة',
+                helperText:
+                    'هذا حقل إيضاح إضافي ولا يستبدل الإفصاح الأساسي. تغييره ينشئ إصدار موافقة جديدًا؛ سيُطلب من المراسل المعتمد تأكيده عند فتح التسجيل.',
+                alignLabelWithHint: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 12),
+      SectionCard(
+        'فلترة رسائل التواصل',
+        icon: Icons.rule_folder_outlined,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'ارفع ملف TXT بترميز UTF-8، كلمة أو عبارة في كل سطر. '
+              'الأسطر التي تبدأ بـ # تعليقات. يتحقق الخادم من الملف كاملًا '
+              'قبل الاستبدال، لذلك تبقى القائمة الحالية عند رفض ملف غير صالح.',
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'عدد الكلمات: $_blockedWordsCount'
+              '${_blockedWordsUpdatedAt == null ? '' : ' · آخر تحديث: $_blockedWordsUpdatedAt'}',
+            ),
+            if (_blockedWordsContent.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                constraints: const BoxConstraints(maxHeight: 180),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: SingleChildScrollView(
+                  child: SelectableText(_blockedWordsContent),
+                ),
+              ),
+            ],
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: !_canEdit || _loading || _saving
+                      ? null
+                      : _uploadBlockedWords,
+                  icon: const Icon(Icons.upload_file_outlined),
+                  label: const Text('رفع قائمة TXT'),
+                ),
+                if (_blockedWordsCount > 0)
+                  TextButton.icon(
+                    onPressed: !_canEdit || _loading || _saving
+                        ? null
+                        : _clearBlockedWords,
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('تفريغ القائمة'),
+                  ),
+              ],
             ),
           ],
         ),

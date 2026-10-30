@@ -37,9 +37,11 @@ from typing import Any, Optional
 from fastapi import Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse  # noqa: E402
 
-from bot import texts  # noqa: E402
-from services import utils, verified_reporters  # noqa: E402
+from bot import keyboards, texts  # noqa: E402
+from services import utils, verified_reporters, word_filter  # noqa: E402
 from database import (
+    STATUS_AWAITING_INFO,
+    STATUS_CLOSED_NO_RESPONSE,
     STATUS_APPROVED,
     STATUS_CODES,
     STATUS_NEW,
@@ -53,13 +55,14 @@ MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 20
 MAX_TEXT = 2000
 ADMIN_PERMISSIONS = {
-    "read", "review", "users", "operate", "export", "delete", "identity"
+    "read", "review", "users", "operate", "export", "delete", "identity",
+    "identity_documents",
 }
 ROLE_PERMISSIONS = {
     "viewer": {"read"},
     "reviewer": {"read", "review"},
     "operator": {"read", "review", "users", "operate", "export"},
-    "owner": ADMIN_PERMISSIONS,
+    "owner": ADMIN_PERMISSIONS - {"identity_documents"},
 }
 FAR_FUTURE = "9999-12-31T00:00:00"
 ADMIN_PASSWORD_ITERATIONS = 600_000
@@ -285,7 +288,11 @@ def _auth(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
 
     method = getattr(request, "method", "POST").upper()
-    if path.startswith("/api/admin/verified-reporters"):
+    if path.startswith("/api/admin/verified-reporters") and (
+        "/documents/" in path or path.endswith("/pdf")
+    ):
+        permission = "identity_documents"
+    elif path.startswith("/api/admin/verified-reporters"):
         permission = "identity"
     elif path.startswith("/api/admin/notifications") or path == "/api/admin/events/stream":
         permission = "read"
@@ -316,7 +323,11 @@ def _auth(request):
     else:
         allowed_permissions = set()
     if principal["role"] == "owner":
-        allowed_permissions = ADMIN_PERMISSIONS
+        allowed_permissions = set(ROLE_PERMISSIONS["owner"])
+        if isinstance(configured_permissions, list) and (
+            "identity_documents" in configured_permissions
+        ):
+            allowed_permissions.add("identity_documents")
     if permission not in allowed_permissions:
         return JSONResponse({"ok": False, "error": "forbidden"}, status_code=403)
     try:
@@ -569,7 +580,45 @@ async def _send_panel_reply(r: dict[str, Any], reply_text: str) -> bool:
     return await _on_bot_loop(_sender)
 
 
-async def _send_direct_message_result(user_id: int, text: str) -> dict[str, Any]:
+async def _notify_verification_decision(
+    user_id: int, decision: str, rejection_reason: str | None = None
+) -> bool:
+    async def _sender():
+        bot, _loop = _bot_runtime()
+        if bot is None:
+            return False
+        if decision == "verified":
+            message = (
+                "✅ تم اعتماد طلب توثيقك كمراسل موثوق. "
+                "اعتماد الحساب لا يعني اعتماد البلاغات تلقائيًا."
+            )
+        else:
+            message = (
+                "لم يُعتمد طلب توثيقك كمراسل موثوق.\n"
+                f"السبب: {utils.esc(rejection_reason or '')}\n\n"
+                "يمكنك معالجة السبب ثم إعادة التقديم من القائمة الرئيسية."
+            )
+        try:
+            await bot.send_message(
+                chat_id=int(user_id),
+                text=message,
+                parse_mode=_parse_html(),
+            )
+            return True
+        except Exception:
+            logger.info(
+                "تعذر إيصال قرار توثيق المراسل إلى المستخدم %s",
+                user_id,
+                exc_info=True,
+            )
+            return False
+
+    return await _on_bot_loop(_sender)
+
+
+async def _send_direct_message_result(
+    user_id: int, text: str, reply_markup=None
+) -> dict[str, Any]:
     async def _sender():
         bot, loop = _bot_runtime()
         if bot is None:
@@ -578,6 +627,7 @@ async def _send_direct_message_result(user_id: int, text: str) -> dict[str, Any]
             message = await bot.send_message(
                 chat_id=int(user_id),
                 text=f"📨 رسالة من الجهة المختصة:\n\n{text}",
+                reply_markup=reply_markup,
             )
             return {
                 "sent": True,
@@ -608,8 +658,8 @@ async def _send_direct_message_result(user_id: int, text: str) -> dict[str, Any]
     }
 
 
-async def _send_direct_message(user_id: int, text: str) -> bool:
-    result = await _send_direct_message_result(user_id, text)
+async def _send_direct_message(user_id: int, text: str, reply_markup=None) -> bool:
+    result = await _send_direct_message_result(user_id, text, reply_markup)
     return result.get("sent") is True
 
 
@@ -658,7 +708,9 @@ def _status_text(r: dict[str, Any], new_status: str, note_extra: str) -> str:
     from bot import admin as admin_mod  # noqa: PLC0415
 
     key = {STATUS_NEW: "new", STATUS_REVIEW: "review",
-           STATUS_APPROVED: "approved", STATUS_REJECTED: "rejected"}.get(new_status)
+           STATUS_APPROVED: "approved", STATUS_REJECTED: "rejected",
+           STATUS_AWAITING_INFO: "awaiting_info",
+           STATUS_CLOSED_NO_RESPONSE: "closed_no_response"}.get(new_status)
     note = texts.STATUS_FINAL_LINES.get(key, "") if key else ""
     if note_extra:
         note = f"{note}{note_extra}"
@@ -1043,11 +1095,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             or "read" not in requested_permissions
         ):
             return bad("bad_admin_permissions")
-        permissions = (
-            sorted(ADMIN_PERMISSIONS)
-            if role == "owner"
-            else sorted(set(requested_permissions))
-        )
+        permissions = sorted(set(requested_permissions))
         if admin_id is not None and (
             not isinstance(admin_id, int)
             or isinstance(admin_id, bool)
@@ -1088,7 +1136,10 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 _admin_actor(request),
                 "admin_created",
                 account["id"],
-                f"name={name}; role={role}; by={_admin_account_label(request)}",
+                f"name={name}; role={role}; "
+                f"identity_documents="
+                f"{'granted' if 'identity_documents' in permissions else 'not_granted'}; "
+                f"by={_admin_account_label(request)}",
             ),
         )
         if create_outcome == "name_exists":
@@ -1144,6 +1195,20 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("bad_admin_password")
         db = db_of()
         outcome = "updated"
+        snapshot_accounts, _bootstrap_disabled = request.state.admin_auth_snapshot
+        existing_account = next(
+            (item for item in snapshot_accounts if item.get("id") == account_id),
+            None,
+        )
+        previous_document_access = bool(
+            existing_account
+            and "identity_documents"
+            in (
+                existing_account.get("permissions")
+                or ROLE_PERMISSIONS.get(existing_account.get("role"), set())
+            )
+        )
+        requested_document_access = "identity_documents" in requested_permissions
 
         def apply_update(accounts, bootstrap_disabled):
             nonlocal outcome
@@ -1173,11 +1238,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                     outcome = "last_owner"
                     return False
             account["role"] = role
-            account["permissions"] = (
-                sorted(ADMIN_PERMISSIONS)
-                if role == "owner"
-                else sorted(set(requested_permissions))
-            )
+            account["permissions"] = sorted(set(requested_permissions))
             account["active"] = active
             if password is not None:
                 account.update(_password_credentials(password))
@@ -1203,6 +1264,21 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("admin_not_found", 404)
         if outcome == "last_owner":
             return bad("last_owner_cannot_be_removed", 409)
+        if (
+            outcome == "updated"
+            and existing_account is not None
+            and previous_document_access != requested_document_access
+        ):
+            await db.audit(
+                _admin_actor(request),
+                (
+                    "admin_identity_documents_granted"
+                    if requested_document_access
+                    else "admin_identity_documents_revoked"
+                ),
+                account_id,
+                f"by={_admin_account_label(request)}",
+            )
         return JSONResponse({"ok": True})
 
     @app.post("/api/admin/admin-token/rotate")
@@ -1327,7 +1403,9 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         r = await db_of().get_by_id(rid)
         if not r:
             return bad("not_found", 404)
-        return JSONResponse({"ok": True, "item": _safe_report(r)})
+        item = _safe_report(r)
+        item["appeals"] = await db_of().list_report_appeals(rid)
+        return JSONResponse({"ok": True, "item": item})
 
     @app.put("/api/admin/reports/{rid}/workflow")
     async def report_workflow(rid: int, request: Request) -> JSONResponse:
@@ -1405,15 +1483,25 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("report_closed", 409)
         if not await db.user_contact_enabled(int(report["user_id"])):
             return bad("direct_contact_disabled", 403)
+        from app import config  # noqa: PLC0415
+
+        due_at = datetime.now(timezone.utc) + timedelta(days=2)
+        local_due = due_at.astimezone(
+            timezone(timedelta(hours=config.LOCAL_UTC_OFFSET))
+        )
+        due_iso = due_at.isoformat(timespec="seconds")
         sent = await _send_direct_message(
             int(report["user_id"]),
             f"نحتاج إلى معلومات إضافية بخصوص البلاغ {report.get('seq') or rid}:\n\n"
-            f"{note}\n\nأرسل المعلومات باستخدام الأمر:\n"
-            f"/reply {report.get('seq') or rid} نص المعلومات الإضافية",
+            f"{note}\n\n"
+            f"أرسل ردك قبل {local_due.strftime('%Y-%m-%d %H:%M')} "
+            f"(التوقيت المحلي UTC{config.LOCAL_UTC_OFFSET:+g}). "
+            "سيُغلق البلاغ تلقائيًا بعد هذا الموعد إذا لم يصل رد.",
+            reply_markup=keyboards.report_followup_reply_kb(rid),
         )
         if not sent:
             return bad("telegram_send_failed", 502)
-        await db.set_followup_request(rid, note)
+        await db.set_followup_request(rid, note, due_iso)
         await db.audit(
             _admin_actor(request), "report_followup_requested", str(rid), note[:MAX_TEXT]
         )
@@ -1601,6 +1689,135 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             },
         )
 
+    @app.get("/api/admin/verified-reporters/{request_id}/pdf")
+    async def verified_reporter_pdf(
+        request_id: int, request: Request
+    ) -> Response:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        db = db_of()
+        item = await db.verification_request(request_id)
+        if not item:
+            return bad("verification_request_not_found", 404)
+        encrypted_phone = await db.verification_phone(request_id)
+        if not encrypted_phone:
+            return bad("document_not_available", 404)
+        documents = {}
+        try:
+            phone = verified_reporters.decrypt(encrypted_phone).decode("utf-8")
+            for kind in verified_reporters.DOCUMENT_KINDS:
+                encrypted = await db.verification_document(request_id, kind)
+                if not encrypted:
+                    return bad("document_not_available", 404)
+                documents[kind] = verified_reporters.decrypt_document(encrypted)
+
+            from io import BytesIO  # noqa: PLC0415
+            from pathlib import Path  # noqa: PLC0415
+
+            import arabic_reshaper  # noqa: PLC0415
+            from bidi.algorithm import get_display  # noqa: PLC0415
+            from reportlab.lib.pagesizes import A4  # noqa: PLC0415
+            from reportlab.lib.utils import ImageReader  # noqa: PLC0415
+            from reportlab.pdfbase import pdfmetrics  # noqa: PLC0415
+            from reportlab.pdfbase.ttfonts import TTFont  # noqa: PLC0415
+            from reportlab.pdfgen import canvas  # noqa: PLC0415
+
+            font_path = (
+                Path(__file__).resolve().parents[1]
+                / "admin_web"
+                / "assets"
+                / "fonts"
+                / "NotoSansArabic-Regular.ttf"
+            )
+            pdfmetrics.registerFont(TTFont("IdentityArabic", str(font_path)))
+            output = BytesIO()
+            page_width, page_height = A4
+            pdf = canvas.Canvas(output, pagesize=A4, pageCompression=1)
+            pdf.setTitle("Verified reporter identity documents")
+
+            def draw_rtl(text: str, x: float, y: float, size: int = 12) -> None:
+                shaped = get_display(arabic_reshaper.reshape(text))
+                pdf.setFont("IdentityArabic", size)
+                pdf.drawRightString(x, y, shaped)
+
+            draw_rtl("ملف توثيق المراسل", page_width - 44, page_height - 56, 20)
+            draw_rtl(f"رقم المستخدم: {item['user_id']}", page_width - 44, page_height - 100)
+            profile = await db.user_profile(int(item["user_id"]))
+            full_name = str((profile or {}).get("full_name") or "غير متوفر")
+            username = str((profile or {}).get("username") or "غير متوفر")
+            draw_rtl(f"الاسم: {full_name}", page_width - 44, page_height - 128)
+            draw_rtl(f"اسم المستخدم: @{username.lstrip('@')}", page_width - 44, page_height - 156)
+            draw_rtl(f"رقم الهاتف: {phone}", page_width - 44, page_height - 184)
+            draw_rtl(
+                f"تاريخ التقديم: {item.get('submitted_at') or 'غير متوفر'}",
+                page_width - 44,
+                page_height - 212,
+            )
+            draw_rtl(
+                f"الحالة: {item.get('status') or 'غير متوفر'}",
+                page_width - 44,
+                page_height - 240,
+            )
+            pdf.showPage()
+
+            labels = {
+                "selfie": "صورة الوجه",
+                "id_front": "الهوية - الوجه الأمامي",
+                "id_back": "الهوية - الوجه الخلفي",
+            }
+            for kind in ("selfie", "id_front", "id_back"):
+                draw_rtl(labels[kind], page_width - 44, page_height - 48, 16)
+                image = ImageReader(BytesIO(documents[kind]))
+                image_width, image_height = image.getSize()
+                scale = min(
+                    (page_width - 88) / image_width,
+                    (page_height - 112) / image_height,
+                )
+                width, height = image_width * scale, image_height * scale
+                pdf.drawImage(
+                    image,
+                    (page_width - width) / 2,
+                    (page_height - height) / 2 - 12,
+                    width=width,
+                    height=height,
+                    preserveAspectRatio=True,
+                    anchor="c",
+                )
+                pdf.showPage()
+            pdf.save()
+            pdf_bytes = output.getvalue()
+        except verified_reporters.VerificationUnavailable:
+            logger.exception(
+                "Unable to decrypt verification PDF request %s", request_id
+            )
+            return bad("document_unavailable", 503)
+        except (ImportError, OSError):
+            logger.exception("Verification PDF dependencies or font unavailable")
+            return bad("pdf_generation_unavailable", 503)
+        except Exception:
+            logger.exception("Unable to generate verification PDF")
+            return bad("pdf_generation_failed", 500)
+
+        await db.audit(
+            _admin_actor(request),
+            "verified_reporter_pdf_downloaded",
+            str(request_id),
+            "تم تنزيل PDF لوثائق الهوية",
+        )
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Cache-Control": "no-store, private, max-age=0",
+                "Pragma": "no-cache",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": (
+                    f'attachment; filename="verified-reporter-{request_id}.pdf"'
+                ),
+            },
+        )
+
     @app.post("/api/admin/verified-reporters/{request_id}/decision")
     async def verified_reporter_decision(
         request_id: int, request: Request
@@ -1615,21 +1832,77 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         decision = body.get("decision") if isinstance(body, dict) else None
         if decision not in {"verified", "rejected"}:
             return bad("bad_decision")
-        changed = await db_of().decide_verification(
-            request_id, _admin_actor(request), decision
+        rejection_reason = (
+            body.get("rejection_reason")
+            if isinstance(body, dict) and decision == "rejected"
+            else None
         )
+        if decision == "rejected" and (
+            not isinstance(rejection_reason, str)
+            or not rejection_reason.strip()
+            or len(rejection_reason.strip()) > 1000
+        ):
+            return bad("verification_rejection_reason_required")
+        try:
+            changed = await db_of().decide_verification(
+                request_id,
+                _admin_actor(request),
+                decision,
+                rejection_reason,
+            )
+        except ValueError as exc:
+            if str(exc) in {
+                "verification_rejection_reason_required",
+                "verification_rejection_reason_too_long",
+            }:
+                return bad(str(exc))
+            raise
         if not changed:
             return bad("request_not_pending_or_documents_missing", 409)
+        item = await db_of().verification_request(request_id)
+        notified = await _notify_verification_decision(
+            int(item["user_id"]) if item else 0,
+            decision,
+            rejection_reason.strip() if isinstance(rejection_reason, str) else None,
+        ) if item else False
         await db_of().audit(
             _admin_actor(request),
             "verified_reporter_decided",
             str(request_id),
-            f"decision={decision}",
+            f"decision={decision}; notification_sent={notified}",
         )
         return JSONResponse(
-            {"ok": True, "decision": decision},
+            {"ok": True, "decision": decision, "notification_sent": notified},
             headers={"Cache-Control": "no-store"},
         )
+
+    @app.post("/api/admin/verified-reporters/{request_id}/delete")
+    async def verified_reporter_delete(
+        request_id: int, request: Request
+    ) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        permissions = set(
+            getattr(request.state, "admin_permissions", [])
+        )
+        if not {"identity_documents", "delete"}.issubset(permissions):
+            return bad("forbidden", 403)
+        try:
+            body = await request.json()
+        except Exception:
+            return bad("bad_json")
+        reason = body.get("reason") if isinstance(body, dict) else None
+        if not isinstance(reason, str) or not reason.strip() or len(reason.strip()) > 500:
+            return bad("deletion_reason_required")
+        deleted = await db_of().delete_verified_reporter(
+            request_id,
+            _admin_actor(request),
+            reason.strip(),
+        )
+        if not deleted:
+            return bad("verified_reporter_not_found_or_not_approved", 409)
+        return JSONResponse({"ok": True})
 
     @app.get("/api/admin/users/{uid}")
     async def user_detail(uid: int, request: Request) -> JSONResponse:
@@ -2496,7 +2769,14 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "ok": True,
             "vtypes": list(config.VIOLATION_TYPES),
             "admin_ids": config.ADMIN_IDS,
-            "statuses": [STATUS_NEW, STATUS_REVIEW, STATUS_APPROVED, STATUS_REJECTED],
+            "statuses": [
+                STATUS_NEW,
+                STATUS_REVIEW,
+                STATUS_AWAITING_INFO,
+                STATUS_APPROVED,
+                STATUS_REJECTED,
+                STATUS_CLOSED_NO_RESPONSE,
+            ],
         })
 
     @app.get("/api/admin/photo/{rid}")
@@ -3428,6 +3708,10 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "welcome_text": str(
                 saved.get("welcome_text") or texts.BOT_PROFILE_DEFAULT_WELCOME
             ),
+            "privacy_policy_url": str(saved.get("privacy_policy_url") or ""),
+            "verification_consent_text": str(
+                saved.get("verification_consent_text") or ""
+            ),
             "photo_updated_at": str(saved.get("photo_updated_at") or ""),
             "has_welcome_photo": await db.has_welcome_photo(),
         }
@@ -3460,6 +3744,95 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "bot_ready": bot is not None,
             "can_edit": getattr(getattr(request, "state", None), "admin_role", "") == "owner",
         })
+
+    @app.get("/api/admin/bot-profile/blocked-words")
+    async def blocked_words_get(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        raw = await db_of().get_state("support_blocklist")
+        try:
+            saved = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            logger.exception("تعذرت قراءة قائمة الكلمات المحظورة")
+            return bad("wordlist_unavailable", 503)
+        if not isinstance(saved, dict) or not isinstance(saved.get("words", []), list):
+            return bad("wordlist_unavailable", 503)
+        words = saved.get("words", [])
+        if any(not isinstance(word, str) for word in words):
+            return bad("wordlist_unavailable", 503)
+        return JSONResponse({
+            "ok": True,
+            "count": len(words),
+            "content": "\n".join(words),
+            "updated_at": saved.get("updated_at"),
+        })
+
+    @app.post("/api/admin/bot-profile/blocked-words")
+    async def blocked_words_put(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        try:
+            form = await request.form()
+        except Exception:
+            return bad("multipart_unavailable", 503)
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "read"):
+            return bad("wordlist_file_required")
+        filename = str(getattr(upload, "filename", "") or "")
+        filename = filename.replace("\\", "/").rsplit("/", 1)[-1][:120]
+        if not filename.lower().endswith(".txt"):
+            return bad("wordlist_must_be_txt")
+        content = await upload.read(word_filter.MAX_WORD_LIST_BYTES + 1)
+        try:
+            terms = word_filter.parse_word_list(content)
+        except ValueError as exc:
+            return bad(str(exc))
+        value = {
+            "words": terms,
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        await db_of().set_state(
+            "support_blocklist",
+            json.dumps(value, ensure_ascii=False, sort_keys=True),
+        )
+        await db_of().audit(
+            _admin_actor(request),
+            "support_blocklist_replaced",
+            "قائمة الكلمات المحظورة",
+            f"count={len(terms)}; filename={filename}",
+        )
+        return JSONResponse({"ok": True, "count": len(terms)})
+
+    @app.delete("/api/admin/bot-profile/blocked-words")
+    async def blocked_words_delete(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        await db_of().set_state(
+            "support_blocklist",
+            json.dumps(
+                {"words": [], "updated_at": datetime.now(timezone.utc).isoformat(
+                    timespec="seconds"
+                )},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        await db_of().audit(
+            _admin_actor(request),
+            "support_blocklist_cleared",
+            "قائمة الكلمات المحظورة",
+            "تم تفريغ القائمة يدويًا",
+        )
+        return JSONResponse({"ok": True, "count": 0})
 
     @app.get("/api/admin/bot-profile/welcome-photo")
     async def welcome_photo_get(request: Request):
@@ -3581,6 +3954,10 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         short_description = str(form.get("short_description") or "").strip()
         description = str(form.get("description") or "").strip()
         welcome_text = str(form.get("welcome_text") or "").strip()
+        privacy_policy_url = str(form.get("privacy_policy_url") or "").strip()
+        verification_consent_text = str(
+            form.get("verification_consent_text") or ""
+        ).strip()
         if not name or len(name) > 64:
             return bad("bad_bot_name")
         if len(short_description) > 120:
@@ -3589,6 +3966,18 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("description_too_long")
         if not welcome_text or len(welcome_text) > 3500:
             return bad("bad_welcome_text")
+        if len(verification_consent_text) > 2500:
+            return bad("bad_verification_consent_text")
+        if privacy_policy_url:
+            parsed_policy_url = urllib.parse.urlsplit(privacy_policy_url)
+            if (
+                len(privacy_policy_url) > 500
+                or parsed_policy_url.scheme != "https"
+                or not parsed_policy_url.netloc
+                or parsed_policy_url.username
+                or parsed_policy_url.password
+            ):
+                return bad("bad_privacy_policy_url")
 
         upload = form.get("photo") or form.get("media")
         photo_bytes = None
@@ -3627,11 +4016,17 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "short_description": short_description,
             "description": description,
             "welcome_text": welcome_text,
+            "privacy_policy_url": privacy_policy_url,
+            "verification_consent_text": verification_consent_text,
             "photo_updated_at": (
                 datetime.now(timezone.utc).isoformat(timespec="seconds")
                 if photo_bytes else str(previous.get("photo_updated_at") or "")
             ),
         }
+        consent_text_changed = (
+            previous.get("verification_consent_text")
+            or texts.VERIFICATION_CONSENT_DEFAULT
+        ) != verification_consent_text
         await db.set_state(
             "bot_profile", json.dumps(values, ensure_ascii=False, sort_keys=True)
         )
@@ -3640,7 +4035,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "bot_profile_changed",
             "هوية البوت",
             "تحديث بيانات الحساب ورسالة البداية"
-            + (" وتغيير الصورة" if photo_bytes else ""),
+            + (" وتغيير الصورة" if photo_bytes else "")
+            + (" وتحديث إفصاح توثيق المراسل" if consent_text_changed else ""),
         )
         return JSONResponse({"ok": True, "items": values})
 

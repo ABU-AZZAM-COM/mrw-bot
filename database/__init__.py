@@ -28,6 +28,8 @@ STATUS_NEW = "جديد"
 STATUS_REVIEW = "قيد المراجعة"
 STATUS_APPROVED = "معتمد"
 STATUS_REJECTED = "مرفوض"
+STATUS_AWAITING_INFO = "بانتظار معلومات إضافية من المبلّغ"
+STATUS_CLOSED_NO_RESPONSE = "أُغلق لعدم الرد"
 
 STATUS_CODES: dict[str, str] = {          # كود الأزرار -> اسم الحالة في القاعدة
     "new": STATUS_NEW,
@@ -66,12 +68,23 @@ CREATE TABLE IF NOT EXISTS reports (
     assigned_to  INTEGER,
     due_at       TEXT,
     followup_requested_at TEXT,
+    followup_due_at TEXT,
     followup_note TEXT,
     followup_response TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_id);
+CREATE TABLE IF NOT EXISTS report_appeals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    submitted_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending_review'
+);
+CREATE INDEX IF NOT EXISTS idx_report_appeals_report
+    ON report_appeals(report_id, submitted_at);
 
 -- ==================================================================
 -- جداول طبقة الحماية (إساءة / إغراق / كيد / تخريب)
@@ -111,7 +124,10 @@ CREATE TABLE IF NOT EXISTS verified_reporters (
     status TEXT NOT NULL CHECK(status IN ('capturing', 'pending', 'verified', 'rejected')),
     submitted_at TEXT,
     decided_at TEXT,
-    reviewed_by INTEGER
+    reviewed_by INTEGER,
+    consented_at TEXT,
+    consent_version TEXT,
+    rejection_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_verified_reporters_status
     ON verified_reporters(status, submitted_at);
@@ -472,6 +488,7 @@ class Database:
         ("assigned_to", "INTEGER"),
         ("due_at", "TEXT"),
         ("followup_requested_at", "TEXT"),
+        ("followup_due_at", "TEXT"),
         ("followup_note", "TEXT"),
         ("followup_response", "TEXT"),
     )
@@ -504,6 +521,17 @@ class Database:
             if column not in message_columns:
                 self._conn.execute(
                     f"ALTER TABLE user_messages ADD COLUMN {column} {ddl}"
+                )
+        verification_columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(verified_reporters)"
+            ).fetchall()
+        }
+        for column in ("consented_at", "consent_version", "rejection_reason"):
+            if column not in verification_columns:
+                self._conn.execute(
+                    f"ALTER TABLE verified_reporters ADD COLUMN {column} TEXT"
                 )
         broadcast_columns = {
             row["name"]
@@ -805,7 +833,13 @@ class Database:
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE reports SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
+                """
+                UPDATE reports
+                SET status = ?, reviewed_by = ?, reviewed_at = ?,
+                    followup_requested_at = NULL, followup_due_at = NULL,
+                    followup_note = NULL
+                WHERE id = ?
+                """,
                 (new_status, admin_id, now_iso, rid),
             )
             self._conn.commit()
@@ -859,7 +893,11 @@ class Database:
         ticket_hash: str,
         phone_ciphertext: bytes,
         expires_at: str,
+        consented_at: str | None = None,
+        consent_version: str | None = None,
     ) -> int | None:
+        if not consented_at or not consent_version:
+            raise ValueError("verification_consent_required")
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
             latest = self._conn.execute(
@@ -896,9 +934,12 @@ class Database:
                     if documents:
                         return None
             cursor = self._conn.execute(
-                "INSERT INTO verified_reporters(user_id, status) "
-                "VALUES (?, 'capturing')",
-                (user_id,),
+                """
+                INSERT INTO verified_reporters
+                    (user_id, status, consented_at, consent_version)
+                VALUES (?, 'capturing', ?, ?)
+                """,
+                (user_id, consented_at, consent_version),
             )
             request_id = int(cursor.lastrowid)
             self._conn.execute(
@@ -923,6 +964,8 @@ class Database:
         ticket_hash: str,
         phone_ciphertext: bytes,
         expires_at: str,
+        consented_at: str | None = None,
+        consent_version: str | None = None,
     ) -> int | None:
         return await asyncio.to_thread(
             self._create_verification_ticket,
@@ -930,6 +973,8 @@ class Database:
             ticket_hash,
             phone_ciphertext,
             expires_at,
+            consented_at,
+            consent_version,
         )
 
     def _extend_verification_ticket(
@@ -1081,6 +1126,7 @@ class Database:
             row = self._conn.execute(
                 """
                 SELECT r.id, r.status, r.submitted_at, r.decided_at,
+                       r.rejection_reason,
                        CASE WHEN p.request_id IS NULL THEN 0 ELSE 1 END AS has_documents
                 FROM verified_reporters r
                 LEFT JOIN verified_reporter_private p ON p.request_id = r.id
@@ -1094,6 +1140,98 @@ class Database:
     async def verification_status(self, user_id: int) -> dict[str, Any] | None:
         return await asyncio.to_thread(self._verification_status, user_id)
 
+    def _verification_request(self, request_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, user_id, status, submitted_at, decided_at,
+                       reviewed_by, consented_at, consent_version,
+                       rejection_reason
+                FROM verified_reporters
+                WHERE id = ?
+                """,
+                (request_id,),
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+
+    async def verification_request(
+        self, request_id: int
+    ) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._verification_request, request_id)
+
+    def _update_verification_consent(
+        self, user_id: int, consented_at: str, consent_version: str
+    ) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE verified_reporters
+                SET consented_at = ?, consent_version = ?
+                WHERE id = (
+                    SELECT id FROM verified_reporters
+                    WHERE user_id = ? AND status = 'verified'
+                    ORDER BY id DESC LIMIT 1
+                )
+                """,
+                (consented_at, consent_version, user_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def update_verification_consent(
+        self, user_id: int, consented_at: str, consent_version: str
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._update_verification_consent,
+            user_id,
+            consented_at,
+            consent_version,
+        )
+
+    def _delete_verified_reporter(
+        self, request_id: int, actor_id: int, reason: str
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, user_id, status FROM verified_reporters WHERE id = ?",
+                (request_id,),
+            ).fetchone()
+            if not row:
+                return None
+            item = _row_to_dict(row)
+            if item["status"] != "verified":
+                return None
+            self._conn.execute(
+                "DELETE FROM verified_reporter_private WHERE request_id = ?",
+                (request_id,),
+            )
+            self._conn.execute(
+                "DELETE FROM verification_tickets WHERE request_id = ?",
+                (request_id,),
+            )
+            self._conn.execute(
+                "DELETE FROM verified_reporters WHERE id = ?",
+                (request_id,),
+            )
+            self._insert_audit_locked(
+                actor_id,
+                "verified_reporter_documents_deleted",
+                str(request_id),
+                f"reason={reason}; user_id={item['user_id']}",
+            )
+            self._conn.commit()
+            return item
+
+    async def delete_verified_reporter(
+        self, request_id: int, actor_id: int, reason: str
+    ) -> dict[str, Any] | None:
+        return await asyncio.to_thread(
+            self._delete_verified_reporter,
+            request_id,
+            actor_id,
+            reason,
+        )
+
     def _list_verification_requests(
         self, status: str = "pending", limit: int = 100
     ) -> list[dict[str, Any]]:
@@ -1106,7 +1244,8 @@ class Database:
             rows = self._conn.execute(
                 f"""
                 SELECT r.id, r.user_id, r.status, r.submitted_at,
-                       r.decided_at, r.reviewed_by,
+                       r.decided_at, r.reviewed_by, r.consented_at,
+                       r.consent_version, r.rejection_reason,
                        CASE WHEN p.request_id IS NULL THEN 0 ELSE 1 END AS has_documents,
                        u.full_name, u.username
                 FROM verified_reporters r
@@ -1154,11 +1293,29 @@ class Database:
             self._verification_document, request_id, kind
         )
 
+    def _verification_phone(self, request_id: int) -> bytes | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT phone_ciphertext FROM verified_reporter_private "
+                "WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            return bytes(row["phone_ciphertext"]) if row else None
+
+    async def verification_phone(self, request_id: int) -> bytes | None:
+        return await asyncio.to_thread(self._verification_phone, request_id)
+
     def _decide_verification(
-        self, request_id: int, reviewer_id: int, decision: str
+        self, request_id: int, reviewer_id: int, decision: str,
+        rejection_reason: str | None = None,
     ) -> bool:
         if decision not in {"verified", "rejected"}:
             raise ValueError("invalid_verification_decision")
+        reason = (rejection_reason or "").strip()
+        if decision == "rejected" and not reason:
+            raise ValueError("verification_rejection_reason_required")
+        if len(reason) > 1000:
+            raise ValueError("verification_rejection_reason_too_long")
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
             docs = self._conn.execute(
@@ -1170,22 +1327,29 @@ class Database:
             cursor = self._conn.execute(
                 """
                 UPDATE verified_reporters
-                SET status = ?, decided_at = ?, reviewed_by = ?
+                SET status = ?, decided_at = ?, reviewed_by = ?,
+                    rejection_reason = ?
                 WHERE id = ? AND status = 'pending'
                 """,
-                (decision, now, reviewer_id, request_id),
+                (
+                    decision, now, reviewer_id,
+                    reason if decision == "rejected" else None,
+                    request_id,
+                ),
             )
             self._conn.commit()
             return cursor.rowcount == 1
 
     async def decide_verification(
-        self, request_id: int, reviewer_id: int, decision: str
+        self, request_id: int, reviewer_id: int, decision: str,
+        rejection_reason: str | None = None,
     ) -> bool:
         return await asyncio.to_thread(
             self._decide_verification,
             request_id,
             reviewer_id,
             decision,
+            rejection_reason,
         )
 
     def _count_events(self, since_iso: str, user_id: Optional[int] = None,
@@ -2005,25 +2169,34 @@ class Database:
             self._update_report_workflow, rid, priority, assigned_to, due_at
         )
 
-    def _set_followup_request(self, rid: int, note: Optional[str]) -> bool:
+    def _set_followup_request(
+        self, rid: int, note: Optional[str], due_at: str
+    ) -> bool:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE reports SET followup_requested_at = ?, followup_note = ?, "
-                "followup_response = NULL WHERE id = ?",
-                (now, note, rid),
+                "followup_response = NULL, followup_due_at = ?, status = ? "
+                "WHERE id = ?",
+                (now, note, due_at, STATUS_AWAITING_INFO, rid),
             )
             self._conn.commit()
             return cur.rowcount > 0
 
-    async def set_followup_request(self, rid: int, note: Optional[str]) -> bool:
-        return await asyncio.to_thread(self._set_followup_request, rid, note)
+    async def set_followup_request(
+        self, rid: int, note: Optional[str], due_at: str
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._set_followup_request, rid, note, due_at
+        )
 
     def _clear_followup_request(self, rid: int) -> bool:
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE reports SET followup_requested_at = NULL, followup_note = NULL WHERE id = ?",
-                (rid,),
+                "UPDATE reports SET followup_requested_at = NULL, "
+                "followup_note = NULL, followup_due_at = NULL, status = ? "
+                "WHERE id = ?",
+                (STATUS_REVIEW, rid),
             )
             self._conn.commit()
             return cur.rowcount > 0
@@ -2035,14 +2208,115 @@ class Database:
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE reports SET followup_response = ?, "
-                "followup_requested_at = NULL, followup_note = NULL WHERE id = ?",
-                (response, rid),
+                "followup_requested_at = NULL, followup_note = NULL, "
+                "followup_due_at = NULL, status = ? WHERE id = ?",
+                (response, STATUS_REVIEW, rid),
             )
             self._conn.commit()
             return cur.rowcount > 0
 
     async def save_followup_response(self, rid: int, response: str) -> bool:
         return await asyncio.to_thread(self._save_followup_response, rid, response)
+
+    def _close_expired_followups(self, now_iso: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, user_id, seq, followup_due_at
+                FROM reports
+                WHERE status = ? AND followup_due_at <= ?
+                  AND followup_response IS NULL
+                """,
+                (STATUS_AWAITING_INFO, now_iso),
+            ).fetchall()
+            if not rows:
+                return []
+            self._conn.execute(
+                """
+                UPDATE reports
+                SET status = ?, reviewed_at = ?, followup_due_at = NULL
+                WHERE status = ? AND followup_due_at <= ?
+                  AND followup_response IS NULL
+                """,
+                (
+                    STATUS_CLOSED_NO_RESPONSE,
+                    now_iso,
+                    STATUS_AWAITING_INFO,
+                    now_iso,
+                ),
+            )
+            for row in rows:
+                self._insert_audit_locked(
+                    None,
+                    "report_followup_auto_closed",
+                    str(row["id"]),
+                    "انتهت مهلة اليومين دون رد من المبلّغ",
+                )
+            self._conn.commit()
+            return [_row_to_dict(row) for row in rows]
+
+    async def close_expired_followups(
+        self, now_iso: str | None = None
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._close_expired_followups,
+            now_iso or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+
+    def _add_report_appeal(
+        self, report_id: int, user_id: int, message: str
+    ) -> int | None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            report = self._conn.execute(
+                "SELECT status FROM reports WHERE id = ? AND user_id = ?",
+                (report_id, user_id),
+            ).fetchone()
+            if not report or report["status"] != STATUS_REJECTED:
+                return None
+            cursor = self._conn.execute(
+                """
+                INSERT INTO report_appeals
+                    (report_id, user_id, message, submitted_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (report_id, user_id, message, now),
+            )
+            self._conn.execute(
+                "UPDATE reports SET needs_review = 1 WHERE id = ?",
+                (report_id,),
+            )
+            self._insert_audit_locked(
+                user_id,
+                "report_appeal_submitted",
+                str(report_id),
+                f"عدد الأحرف: {len(message)}",
+            )
+            self._conn.commit()
+            return int(cursor.lastrowid)
+
+    async def add_report_appeal(
+        self, report_id: int, user_id: int, message: str
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self._add_report_appeal, report_id, user_id, message
+        )
+
+    def _list_report_appeals(self, report_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, report_id, user_id, message, submitted_at, status
+                FROM report_appeals
+                WHERE report_id = ?
+                ORDER BY submitted_at ASC, id ASC
+                """,
+                (report_id,),
+            ).fetchall()
+            return [_row_to_dict(row) for row in rows]
+
+    async def list_report_appeals(self, report_id: int) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._list_report_appeals, report_id)
 
     async def get_runtime_settings(self) -> dict[str, Any]:
         raw = await self.get_state("runtime_settings")
@@ -2089,6 +2363,9 @@ class Database:
             ).fetchone()
             cur = self._conn.execute("DELETE FROM reports WHERE id = ?", (rid,))
             if cur.rowcount > 0:
+                self._conn.execute(
+                    "DELETE FROM report_appeals WHERE report_id = ?", (rid,)
+                )
                 self._conn.execute(
                     "DELETE FROM report_fingerprints WHERE report_id = ?", (rid,)
                 )
@@ -2246,11 +2523,27 @@ class Database:
                 DELETE FROM verified_reporter_private
                 WHERE request_id IN (
                     SELECT id FROM verified_reporters
-                    WHERE status IN ('verified', 'rejected')
+                    WHERE status = 'rejected'
                       AND decided_at IS NOT NULL AND decided_at < ?
                 )
                 """,
                 (verification_cutoff,),
+            )
+            verification_requests = self._conn.execute(
+                """
+                DELETE FROM verified_reporters
+                WHERE status = 'rejected'
+                  AND decided_at IS NOT NULL AND decided_at < ?
+                """,
+                (verification_cutoff,),
+            )
+            self._conn.execute(
+                """
+                DELETE FROM verified_reporter_private
+                WHERE request_id NOT IN (
+                    SELECT id FROM verified_reporters
+                )
+                """
             )
             self._conn.commit()
             return {
@@ -2263,6 +2556,9 @@ class Database:
                 "verification_tickets_deleted": verification_tickets_deleted,
                 "verification_documents_deleted": int(
                     verification_documents.rowcount
+                ),
+                "verification_requests_deleted": int(
+                    verification_requests.rowcount
                 ),
             }
 
