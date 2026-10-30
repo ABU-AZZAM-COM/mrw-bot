@@ -370,6 +370,12 @@ def report_open_kb(
     return InlineKeyboardMarkup(rows)
 
 
+def report_followup_reply_kb(report_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[_cb("📩 إرسال المعلومات المطلوبة", f"{USR_PREFIX}followup:{report_id}")]]
+    )
+
+
 def report_appeal_kb(report_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[_cb("إرسال اعتراض أو معلومات إضافية", f"{USR_PREFIX}appeal:{report_id}")]]

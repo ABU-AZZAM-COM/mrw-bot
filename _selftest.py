@@ -954,10 +954,10 @@ assert (
     and v == "🟠 قيد المراجعة"
 )
 
-# القائمة الرئيسية: 4 إجراءات بلا زر فتح التطبيق + زر الرجوع يعيد إظهارها
+# القائمة الرئيسية: إجراءات الخدمة وسياسة الخصوصية + زر الرجوع يعيد إظهارها
 mm = keyboards.main_menu_kb()
 actions = [b.callback_data for row in mm.inline_keyboard for b in row]
-assert actions == ["usr:report", "usr:status", "usr:about", "usr:contact"], actions
+assert actions == ["usr:report", "usr:status", "usr:about", "usr:contact", "usr:privacy"], actions
 back = keyboards.back_to_menu_kb()
 assert back.inline_keyboard[0][0].callback_data == "usr:menu"
 print("texts OK")
@@ -2530,8 +2530,8 @@ assert asyncio.run(pdb.get_state("user_limits_paused_until")) is None
 send_calls = []
 send_results = [{"sent": True, "message_id": 7001}]
 
-async def _fake_send_direct_message(user_id, text):
-    send_calls.append((user_id, text))
+async def _fake_send_direct_message(user_id, text, reply_markup=None):
+    send_calls.append((user_id, text, reply_markup))
     return True
 
 async def _fake_send_direct_message_result(user_id, text):
@@ -2548,13 +2548,17 @@ followup_response = asyncio.run(followup_endpoint(
 assert followup_response.status_code == 200
 followup_saved = asyncio.run(pdb.get_by_id(reject_report["id"]))
 assert followup_saved["followup_requested_at"]
-assert len(send_calls) == 1 and "/reply" in send_calls[0][1]
+assert len(send_calls) == 1 and "أرسل ردك قبل" in send_calls[0][1]
+assert (
+    send_calls[0][2].inline_keyboard[0][0].callback_data
+    == f"usr:followup:{reject_report['id']}"
+)
 message_response = asyncio.run(message_endpoint(
     777, _Request({"text": "رسالة اختبار"})
 ))
 assert message_response.status_code == 200
 assert json.loads(message_response.body)["sent"] is True
-assert send_calls[0][0] == 909 and "/reply" in send_calls[0][1]
+assert send_calls[0][0] == 909 and "أرسل ردك قبل" in send_calls[0][1]
 assert send_calls[1] == (777, "رسالة اختبار")
 tracked_direct_text = "📨 رسالة من الجهة المختصة:\n\nرسالة اختبار"
 messages_response = asyncio.run(user_messages_endpoint(777, _Request({})))
