@@ -1,37 +1,26 @@
-# بيئة افتراضية
-venv/
-.venv/
-
-# ذاكرة بايثون المؤقتة
-__pycache__/
-*.pyc
-
-# ملفات السرية والإعدادات الشخصية
+# الأسرار — لا تُرفع أبدًا
 .env
+.env.local
+mrf-keys.txt
+مفاتيح_المشروع.txt
 
-# مخرجات التشغيل (قاعدة البيانات والصور والتقارير والسجلات)
-data/
-media/
-exports/
-logs/
+# قواعد البيانات التجريبية
+*.db
+live_demo.db
+test_*.db
 
-# لوحة سطح المكتب — إعدادات سرية ومخرجات البناء
-desktop_panel/panel_config.json
-desktop_panel/build/
-desktop_panel/dist/
-desktop_panel/*.spec
+# ملفات اختبار مؤقتة (يمكن الاحتفاظ بها محليًا فقط)
+tmp_*.py
+apply_real_token.py
+set_env_key.py
+set_admin_token.py
+verify_*.py
+gen_key.py
+real_bot_check.py
+final_live_test.py
+live_*.py
+bot_buttons_live.html
 
-# مشروع لوحة الإدارة فلاتر (جيد: dist يُنشر — يعمل كملفات مبنية)
-admin_web/build/
-admin_web/.dart_tool/
-admin_web/.flutter-plugins
-admin_web/.flutter-plugins-dependencies
-admin_web/build_output*
-
-# مخرجات flutter create لمنصات لا نستخدمها (اللوحة تُشغَّل كويب/سطح مكتب)
-admin_web/android/
-admin_web/ios/
-admin_web/linux/
-admin_web/macos/
-admin_web/windows/
-
+# التوثيق/الصور التجريبية
+media/fake.jpg
+test_photo_*.jpg
