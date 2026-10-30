@@ -74,6 +74,12 @@ def _snapshot(db_path: Path, out_path: Path) -> bool:
         try:
             with dst:
                 src.backup(dst)
+            for table in (
+                "verification_tickets",
+                "verified_reporter_private",
+            ):
+                dst.execute(f'DROP TABLE IF EXISTS "{table}"')
+            dst.commit()
         finally:
             dst.close()
             src.close()

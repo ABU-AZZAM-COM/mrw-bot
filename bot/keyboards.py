@@ -14,6 +14,7 @@ from telegram import (
 from database import STATUS_NEW, STATUS_REVIEW, STATUS_APPROVED, STATUS_REJECTED
 from app import config
 from bot import texts
+from services import verified_reporters
 
 # نصوص أزرار لوحة المفاتيح العادية (تُرسل كنص عادي)
 CANCEL_TEXT = "❌ إلغاء"
@@ -120,18 +121,37 @@ def app_kb() -> ReplyKeyboardMarkup | None:
 # ==================================================================
 
 def main_menu_kb() -> InlineKeyboardMarkup:
-    """القائمة الرئيسية الاحترافية: كل شيء بأزرار مضمنة، لا أوامر كتابية.
-
-    بلا زر فتح التطبيق؛ يستخدم المبلّغ الأزرار التفاعلية داخل المحادثة.
-    """
-    return InlineKeyboardMarkup([
-        [_cb("📝 إرسال بلاغ جديد", f"{USR_PREFIX}report")],
+    """قائمة المستخدم: إجراء البلاغ والمتابعة أولًا، والخدمات المساندة بعدها."""
+    rows = [
+        [_cb("📝 تقديم بلاغ جديد", f"{USR_PREFIX}report")],
+        [_cb("📊 متابعة بلاغاتي", f"{USR_PREFIX}status")],
         [
-            _cb("📊 حالة بلاغي", f"{USR_PREFIX}status"),
-            _cb("ℹ️ التعليمات", f"{USR_PREFIX}about"),
+            _cb("ℹ️ دليل الاستخدام", f"{USR_PREFIX}about"),
+            _cb("📞 التواصل مع الإدارة", f"{USR_PREFIX}contact"),
         ],
-        [_cb("📞 تواصل مع الإدارة", f"{USR_PREFIX}contact")],
-    ])
+    ]
+    if config.VERIFICATION_WEBAPP_URL and verified_reporters.is_configured():
+        rows.insert(
+            1,
+            [_cb("🪪 التسجيل كمراسل موثوق", f"{USR_PREFIX}verify")],
+        )
+        rows.insert(
+            2,
+            [_cb("🔎 حالة توثيق الحساب", f"{USR_PREFIX}verify-status")],
+        )
+    return InlineKeyboardMarkup(rows)
+
+
+def verification_contact_kb() -> ReplyKeyboardMarkup:
+    """Request the user's own Telegram contact before issuing a camera ticket."""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(text=texts.SHARE_CONTACT, request_contact=True)],
+            [KeyboardButton(text=CANCEL_TEXT)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 
 def report_type_kb(
@@ -184,7 +204,7 @@ def report_category_kb() -> InlineKeyboardMarkup:
             [_cb(label, f"{USR_PREFIX}category:{key}")]
             for key, label in REPORT_CATEGORIES.items()
         ]
-        + [[_cb("❌ إلغاء", f"{USR_PREFIX}cancel")]]
+        + [[_cb("🏠 القائمة الرئيسية", f"{USR_PREFIX}menu")]]
     )
 
 
@@ -194,7 +214,12 @@ def social_platform_kb() -> InlineKeyboardMarkup:
             [_cb(label, f"{USR_PREFIX}platform:{key}")]
             for key, label in SOCIAL_PLATFORM_LABELS.items()
         ]
-        + [[_cb("❌ إلغاء", f"{USR_PREFIX}cancel")]]
+        + [
+            [
+                _cb("⬅️ رجوع للقسم", f"{USR_PREFIX}back:category"),
+                _cb("❌ إلغاء", f"{USR_PREFIX}cancel"),
+            ]
+        ]
     )
 
 
@@ -207,12 +232,19 @@ def optional_step_kb(step: str) -> InlineKeyboardMarkup:
     }
     if step not in labels:
         raise ValueError(f"Unknown optional report step: {step}")
-    return InlineKeyboardMarkup(
+    previous_step = {
+        "photo": "description",
+        "link": "photo",
+        "location": "photo",
+        "contact": "photo",
+    }[step]
+    return InlineKeyboardMarkup([
+        [_cb(labels[step], f"{USR_PREFIX}skip:{step}")],
         [
-            [_cb(labels[step], f"{USR_PREFIX}skip:{step}")],
-            [_cb("❌ إلغاء", f"{USR_PREFIX}cancel")],
-        ]
-    )
+            _cb("⬅️ رجوع", f"{USR_PREFIX}back:{previous_step}"),
+            _cb("❌ إلغاء", f"{USR_PREFIX}cancel"),
+        ],
+    ])
 
 
 def contact_request_kb() -> ReplyKeyboardMarkup:
@@ -220,6 +252,7 @@ def contact_request_kb() -> ReplyKeyboardMarkup:
         [
             [KeyboardButton(text=texts.SHARE_CONTACT, request_contact=True)],
             [KeyboardButton(text="⏭️ تخطي")],
+            [KeyboardButton(text="↩️ رجوع")],
             [KeyboardButton(text=CANCEL_TEXT)],
         ],
         resize_keyboard=True,
@@ -232,6 +265,7 @@ def location_request_kb() -> ReplyKeyboardMarkup:
         [
             [KeyboardButton(text="📍 مشاركة الموقع", request_location=True)],
             [KeyboardButton(text="⏭️ تخطي")],
+            [KeyboardButton(text="↩️ رجوع")],
             [KeyboardButton(text=CANCEL_TEXT)],
         ],
         resize_keyboard=True,
@@ -239,8 +273,12 @@ def location_request_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def cancel_inline_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[_cb("❌ إلغاء", f"{USR_PREFIX}cancel")]])
+def cancel_inline_kb(back_to: str | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    if back_to:
+        rows.append([_cb("⬅️ رجوع", f"{USR_PREFIX}back:{back_to}")])
+    rows.append([_cb("❌ إلغاء", f"{USR_PREFIX}cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def confirm_report_kb() -> InlineKeyboardMarkup:
@@ -250,6 +288,14 @@ def confirm_report_kb() -> InlineKeyboardMarkup:
             _cb("✅ إرسال البلاغ", f"{USR_PREFIX}confirm"),
             _cb("❌ إلغاء", f"{USR_PREFIX}cancel"),
         ],
+        [_cb("⬅️ مراجعة البيانات", f"{USR_PREFIX}back:contact")],
+    ])
+
+
+def saved_receipt_kb() -> InlineKeyboardMarkup:
+    """Keep the saved-report receipt intact when the user returns to the menu."""
+    return InlineKeyboardMarkup([
+        [_cb("🏠 القائمة الرئيسية", f"{USR_PREFIX}home")],
     ])
 
 

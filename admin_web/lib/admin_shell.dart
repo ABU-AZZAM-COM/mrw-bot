@@ -39,6 +39,7 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
   String _role = '';
+  Set<String> _permissions = {};
   String _roleLabel = 'لوحة الإدارة';
   int _unreadCount = 0;
   int _eventRevision = 0;
@@ -514,6 +515,9 @@ class _MainShellState extends State<MainShell> {
       };
       setState(() {
         _role = session['role']?.toString() ?? '';
+        _permissions = (session['permissions'] as List<dynamic>? ?? const [])
+            .map((permission) => permission.toString())
+            .toSet();
         _roleLabel = roles[_role] ?? 'لوحة الإدارة';
       });
     } on ApiException catch (error) {
@@ -572,6 +576,7 @@ class _MainShellState extends State<MainShell> {
     UsersPage(
       key: ValueKey('users-$_eventRevision-${_pendingUserId ?? 0}'),
       api: widget.api,
+      canReviewIdentity: _role == 'owner' || _permissions.contains('identity'),
       initialUserId: _pendingUserId,
       onFocusHandled: () {
         if (mounted) setState(() => _pendingUserId = null);
