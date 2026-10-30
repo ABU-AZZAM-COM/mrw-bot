@@ -11,7 +11,14 @@ from telegram import (
     WebAppInfo,
 )
 
-from database import STATUS_NEW, STATUS_REVIEW, STATUS_APPROVED, STATUS_REJECTED
+from database import (
+    STATUS_AWAITING_INFO,
+    STATUS_CLOSED_NO_RESPONSE,
+    STATUS_NEW,
+    STATUS_REVIEW,
+    STATUS_APPROVED,
+    STATUS_REJECTED,
+)
 from app import config
 from bot import texts
 from services import verified_reporters
@@ -29,6 +36,8 @@ STATUS_EMOJI = {
     "review": "🟠",
     "approved": "🟢",
     "rejected": "🔴",
+    "awaiting_info": "🟠",
+    "closed_no_response": "⚫",
 }
 
 # اسم الحالة بالعربية (نفس القيم المخزنة في القاعدة)
@@ -37,6 +46,8 @@ STATUS_CODE_TO_NAME = {
     "review": STATUS_REVIEW,
     "approved": STATUS_APPROVED,
     "rejected": STATUS_REJECTED,
+    "awaiting_info": STATUS_AWAITING_INFO,
+    "closed_no_response": STATUS_CLOSED_NO_RESPONSE,
 }
 
 # بادئة استدعاءات المستخدم العادي (لتمييزها عن أزرار المشرف adm:)
@@ -129,6 +140,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             _cb("ℹ️ دليل الاستخدام", f"{USR_PREFIX}about"),
             _cb("📞 التواصل مع الإدارة", f"{USR_PREFIX}contact"),
         ],
+        [_cb("🔒 سياسة الخصوصية", f"{USR_PREFIX}privacy")],
     ]
     if verified_reporters.is_configured():
         rows.insert(
@@ -152,6 +164,30 @@ def verification_contact_kb() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
+
+def verification_consent_kb(
+    privacy_url: str | None = None,
+    consent_version: str = "reporter-consent-v1",
+) -> InlineKeyboardMarkup:
+    rows = [
+        [_cb("متابعة والموافقة", f"{USR_PREFIX}verify-consent:{consent_version}")],
+        [_cb("إلغاء", f"{USR_PREFIX}cancel")],
+    ]
+    if privacy_url and privacy_url.startswith("https://"):
+        rows.insert(
+            0,
+            [InlineKeyboardButton("سياسة الخصوصية", url=privacy_url)],
+        )
+    return InlineKeyboardMarkup(rows)
+
+
+def privacy_policy_kb(privacy_url: str | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    if privacy_url and privacy_url.startswith("https://"):
+        rows.append([InlineKeyboardButton("قراءة سياسة الخصوصية", url=privacy_url)])
+    rows.append([_cb("العودة إلى القائمة", f"{USR_PREFIX}menu")])
+    return InlineKeyboardMarkup(rows)
 
 
 def report_type_kb(
@@ -316,16 +352,28 @@ def my_reports_kb(items: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def report_open_kb(report_id: int, followup_requested: bool = False) -> InlineKeyboardMarkup:
+def report_open_kb(
+    report_id: int,
+    followup_requested: bool = False,
+    can_appeal: bool = False,
+) -> InlineKeyboardMarkup:
     """أزرار بطاقة بلاغ مفرد في «بلاغاتي»: عودة للقائمة أو للقائمة الرئيسية."""
     rows = []
     if followup_requested:
         rows.append([_cb("📩 إرسال المعلومات المطلوبة", f"{USR_PREFIX}followup:{report_id}")])
+    if can_appeal:
+        rows.append([_cb("✉️ اعتراض أو معلومات إضافية", f"{USR_PREFIX}appeal:{report_id}")])
     rows.extend([
         [_cb("⬅️ عودة إلى بلاغاتي", f"{USR_PREFIX}status")],
         [_cb("🏠 القائمة الرئيسية", f"{USR_PREFIX}menu")],
     ])
     return InlineKeyboardMarkup(rows)
+
+
+def report_appeal_kb(report_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[_cb("إرسال اعتراض أو معلومات إضافية", f"{USR_PREFIX}appeal:{report_id}")]]
+    )
 
 
 # ------------------------------------------------------------------

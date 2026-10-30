@@ -1017,6 +1017,22 @@ class _ReportDetailState extends State<_ReportDetail> {
           _kv('موعد المتابعة', fmt(r['due_at'] as String)),
         if ((r['followup_response'] ?? '').toString().isNotEmpty)
           _kv('رد المتبلّغ الإضافي', r['followup_response'] as String),
+        if ((r['followup_note'] ?? '').toString().isNotEmpty)
+          _kv('المعلومات المطلوبة', r['followup_note'] as String),
+        if ((r['followup_due_at'] ?? '').toString().isNotEmpty)
+          _kv('مهلة الرد حتى', fmt(r['followup_due_at'] as String)),
+        if (r['appeals'] is List && (r['appeals'] as List).isNotEmpty) ...[
+          const SizedBox(height: 8),
+          const Text(
+            'اعتراضات / طلبات إعادة مراجعة',
+            style: TextStyle(fontWeight: FontWeight.w700),
+          ),
+          for (final appeal in r['appeals'] as List<dynamic>)
+            _kv(
+              'مقدم ${fmt('${(appeal as Map)['submitted_at'] ?? ''}')}',
+              '${appeal['message'] ?? ''}',
+            ),
+        ],
         if (link.isNotEmpty) ...[
           const Text('رابط المخالفة:'),
           SelectableText(

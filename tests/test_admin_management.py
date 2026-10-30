@@ -245,10 +245,19 @@ class AdminManagementTests(unittest.TestCase):
         account["permissions"] = ["read", "review"]
         self.assertIsNone(_auth(request))
 
-        for method, path in (
-            ("GET", "/api/admin/verified-reporters"),
-            ("GET", "/api/admin/verified-reporters/1/documents/selfie"),
-            ("POST", "/api/admin/verified-reporters/1/decision"),
+        for method, path, required_permission in (
+            ("GET", "/api/admin/verified-reporters", "identity"),
+            (
+                "GET",
+                "/api/admin/verified-reporters/1/documents/selfie",
+                "identity_documents",
+            ),
+            ("GET", "/api/admin/verified-reporters/1/pdf", "identity_documents"),
+            (
+                "POST",
+                "/api/admin/verified-reporters/1/decision",
+                "identity",
+            ),
         ):
             identity_request = Request({
                 "type": "http",
@@ -266,8 +275,27 @@ class AdminManagementTests(unittest.TestCase):
             account["permissions"] = ["read"]
             self.assertEqual(_auth(identity_request).status_code, 403, path)
 
-            account["permissions"] = ["read", "identity"]
+            account["permissions"] = ["read", required_permission]
             self.assertIsNone(_auth(identity_request), path)
+
+        account["role"] = "owner"
+        account.pop("permissions")
+        document_request = Request({
+            "type": "http",
+            "app": self.app,
+            "method": "GET",
+            "path": "/api/admin/verified-reporters/1/documents/selfie",
+            "headers": request.scope["headers"],
+            "query_string": b"",
+            "scheme": "http",
+            "server": ("test", 80),
+            "client": ("test", 1),
+            "http_version": "1.1",
+        })
+        document_request.state.admin_auth_snapshot = ([account], True)
+        self.assertEqual(_auth(document_request).status_code, 403)
+        account["permissions"] = ["read", "identity", "identity_documents"]
+        self.assertIsNone(_auth(document_request))
 
     def test_rotating_owner_token_disables_old_environment_tokens(self):
         response = self.client.post(

@@ -37,7 +37,7 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
     try {
       final result = await widget.api.get(
         '/api/admin/verified-reporters',
-        const {'status': 'pending', 'limit': '100'},
+        const {'status': 'all', 'limit': '100'},
       );
       if (!mounted) return;
       setState(() {
@@ -57,25 +57,140 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
 
   Future<void> _decide(Map<String, dynamic> item, String decision) async {
     final approved = decision == 'verified';
-    final confirmed = await confirmDialog(
-      context,
-      approved ? 'اعتماد المراسل' : 'رفض طلب التوثيق',
-      approved
-          ? 'هل راجعت الوجه والوجهين الأمامي والخلفي؟ اعتماد الحساب لا يعني اعتماد الشكاوى التي يرسلها.'
-          : 'سيُعلَم المستخدم بقرار الرفض دون إرفاق بيانات الهوية.',
-      okLabel: approved ? 'اعتماد' : 'رفض',
-      danger: !approved,
-    );
-    if (!confirmed || !mounted) return;
+    String? rejectionReason;
+    if (approved) {
+      final confirmed = await confirmDialog(
+        context,
+        'اعتماد المراسل',
+        'هل راجعت الوجه والوجهين الأمامي والخلفي؟ اعتماد الحساب لا يعني اعتماد الشكاوى التي يرسلها.',
+        okLabel: 'اعتماد',
+      );
+      if (!confirmed || !mounted) return;
+    } else {
+      final controller = TextEditingController();
+      rejectionReason = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('رفض طلب التوثيق'),
+          content: SizedBox(
+            width: 440,
+            child: TextField(
+              controller: controller,
+              autofocus: true,
+              minLines: 3,
+              maxLines: 6,
+              maxLength: 1000,
+              decoration: const InputDecoration(
+                labelText: 'سبب الرفض (إلزامي)',
+                hintText: 'اكتب السبب الذي سيصل إلى مقدم الطلب',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إلغاء'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error,
+              ),
+              onPressed: () {
+                final value = controller.text.trim();
+                if (value.isEmpty) return;
+                Navigator.pop(context, value);
+              },
+              child: const Text('رفض وإرسال السبب'),
+            ),
+          ],
+        ),
+      );
+      controller.dispose();
+      if (rejectionReason == null || !mounted) return;
+    }
     final id = int.tryParse('${item['id'] ?? ''}');
     if (id == null) return;
     setState(() => _busyId = id);
     try {
-      await widget.api.post('/api/admin/verified-reporters/$id/decision', {
-        'decision': decision,
+      final result = await widget.api
+          .post('/api/admin/verified-reporters/$id/decision', {
+            'decision': decision,
+            if (rejectionReason != null) 'rejection_reason': rejectionReason,
+          });
+      if (!mounted) return;
+      final notified = result['notification_sent'] == true;
+      toast(
+        context,
+        approved
+            ? 'تم اعتماد المراسل${notified ? ' وإشعار المستخدم' : '؛ تعذر إشعار المستخدم'}'
+            : 'تم رفض الطلب وإرسال السبب${notified ? '' : '؛ تعذر إشعار المستخدم'}',
+        error: !notified,
+      );
+      await _load();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    } finally {
+      if (mounted) setState(() => _busyId = null);
+    }
+  }
+
+  Future<void> _downloadPdf(int requestId) async {
+    try {
+      await widget.api.download('/api/admin/verified-reporters/$requestId/pdf');
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  Future<void> _deleteApproved(int requestId) async {
+    final controller = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('حذف ملف مراسل معتمد'),
+        content: SizedBox(
+          width: 440,
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 2,
+            maxLines: 5,
+            maxLength: 500,
+            decoration: const InputDecoration(
+              labelText: 'سبب الحذف (إلزامي)',
+              border: OutlineInputBorder(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isEmpty) return;
+              Navigator.pop(context, value);
+            },
+            child: const Text('حذف الملف'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (reason == null || !mounted) return;
+    setState(() => _busyId = requestId);
+    try {
+      await widget.api.post('/api/admin/verified-reporters/$requestId/delete', {
+        'reason': reason,
       });
       if (!mounted) return;
-      toast(context, approved ? 'تم اعتماد المراسل' : 'تم رفض طلب التوثيق');
+      toast(context, 'حُذف ملف التوثيق وسُجل السبب');
       await _load();
     } catch (error) {
       if (mounted) toast(context, errMsg(error), error: true);
@@ -122,7 +237,8 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
           padding: EdgeInsets.all(12),
           child: Text(
             'وثائق الهوية بيانات شديدة الحساسية. لا تحفظها أو تنسخها خارج النظام. '
-            'بعد القرار تُحذف تلقائيًا بعد 30 يومًا؛ لا تُحذف أثناء انتظار المراجعة.',
+            'تُحذف بيانات الطلب المرفوض وصوره بعد 30 يومًا من قرار الرفض. '
+            'ملفات المراسلين المعتمدين لا تُحذف تلقائيًا.',
           ),
         ),
         Expanded(child: _body()),
@@ -133,7 +249,7 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
   Widget _body() {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) return ErrorView(_error!, _load);
-    if (_items.isEmpty) return const EmptyView('لا توجد طلبات توثيق معلّقة');
+    if (_items.isEmpty) return const EmptyView('لا توجد ملفات توثيق');
     return ListView.builder(
       padding: const EdgeInsets.all(12),
       itemCount: _items.length,
@@ -145,6 +261,13 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
     final id = int.tryParse('${item['id'] ?? ''}');
     final hasDocuments =
         item['has_documents'] == 1 || item['has_documents'] == true;
+    final status = item['status']?.toString() ?? '';
+    final statusLabel = switch (status) {
+      'pending' => 'قيد المراجعة',
+      'verified' => 'معتمد',
+      'rejected' => 'مرفوض',
+      _ => status,
+    };
     return Card(
       margin: const EdgeInsets.only(bottom: 14),
       child: Padding(
@@ -157,7 +280,8 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             Text(
-              '@${item['username'] ?? '—'} · قُدّم ${fmt('${item['submitted_at'] ?? ''}')}',
+              '@${item['username'] ?? '—'} · $statusLabel · '
+              'قُدّم ${fmt('${item['submitted_at'] ?? ''}')}',
             ),
             const SizedBox(height: 10),
             if (hasDocuments && id != null)
@@ -170,10 +294,19 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
                   _document(id, 'id_back', 'الهوية — خلف'),
                 ],
               )
-            else
+            else if (status == 'pending')
               const Text(
                 'صور الطلب غير متاحة (قد تكون أزيلت من نسخة احتياطية قديمة). '
                 'لا تعتمد هذا الطلب دون الوثائق.',
+              ),
+            if (status == 'verified' && id != null)
+              Align(
+                alignment: AlignmentDirectional.centerEnd,
+                child: OutlinedButton.icon(
+                  onPressed: _busyId == id ? null : () => _deleteApproved(id),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('حذف الملف المعتمد استثنائيًا'),
+                ),
               ),
             const SizedBox(height: 12),
             if (hasDocuments && id != null)
@@ -181,19 +314,26 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
                 alignment: WrapAlignment.end,
                 spacing: 8,
                 children: [
-                  OutlinedButton(
-                    onPressed: _busyId == id
-                        ? null
-                        : () => _decide(item, 'rejected'),
-                    child: const Text('رفض'),
+                  OutlinedButton.icon(
+                    onPressed: _busyId == id ? null : () => _downloadPdf(id),
+                    icon: const Icon(Icons.picture_as_pdf_outlined),
+                    label: const Text('تنزيل ملف PDF'),
                   ),
-                  FilledButton.icon(
-                    onPressed: _busyId == id
-                        ? null
-                        : () => _decide(item, 'verified'),
-                    icon: const Icon(Icons.verified_outlined),
-                    label: const Text('اعتماد الهوية'),
-                  ),
+                  if (status == 'pending') ...[
+                    OutlinedButton(
+                      onPressed: _busyId == id
+                          ? null
+                          : () => _decide(item, 'rejected'),
+                      child: const Text('رفض'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: _busyId == id
+                          ? null
+                          : () => _decide(item, 'verified'),
+                      icon: const Icon(Icons.verified_outlined),
+                      label: const Text('اعتماد الهوية'),
+                    ),
+                  ],
                 ],
               ),
           ],

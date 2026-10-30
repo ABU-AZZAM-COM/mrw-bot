@@ -149,6 +149,39 @@ async def post_init(app) -> None:
         name="bot-heartbeat",
     )
     app.create_task(
+        followup_deadline_loop(app),
+        name="report-followup-deadlines",
+    )
+
+
+async def followup_deadline_loop(app) -> None:
+    db = app.bot_data["db"]
+    while True:
+        try:
+            closed = await db.close_expired_followups()
+            for report in closed:
+                try:
+                    await app.bot.send_message(
+                        chat_id=int(report["user_id"]),
+                        text=(
+                            f"أُغلق البلاغ {report.get('seq') or report['id']} "
+                            "تلقائيًا لانتهاء مهلة اليومين دون رد. "
+                            "يمكنك التواصل مع الإدارة إذا أردت طلب مراجعة."
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "تعذر إشعار المبلّغ بإغلاق مهلة البلاغ %s",
+                        report.get("id"),
+                        exc_info=True,
+                    )
+            await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("تعذر معالجة المهل المنتهية لطلبات معلومات البلاغ")
+            await asyncio.sleep(60)
+    app.create_task(
         notifications_cleanup_loop(app.bot_data["db"]),
         name="notifications-cleanup",
     )

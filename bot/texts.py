@@ -7,7 +7,14 @@
 """
 from html import escape as _esc
 
-from database import (STATUS_NEW, STATUS_REVIEW, STATUS_APPROVED, STATUS_REJECTED)
+from database import (
+    STATUS_AWAITING_INFO,
+    STATUS_CLOSED_NO_RESPONSE,
+    STATUS_NEW,
+    STATUS_REVIEW,
+    STATUS_APPROVED,
+    STATUS_REJECTED,
+)
 
 # ------------------------------------------------------------------
 # حالات البلاغ: الرمز التعبيري لكل حالة (تُستخدم في الرسائل والقوائم)
@@ -17,6 +24,8 @@ STATUS_EMOJI = {
     STATUS_REVIEW: "🟠",
     STATUS_APPROVED: "🟢",
     STATUS_REJECTED: "🔴",
+    STATUS_AWAITING_INFO: "🟠",
+    STATUS_CLOSED_NO_RESPONSE: "⚫",
 }
 
 STATUS_BADGE = {name: f"{emoji} {name}" for name, emoji in STATUS_EMOJI.items()}
@@ -32,6 +41,8 @@ STATUS_EXPLANATIONS = {
     STATUS_REVIEW: "تراجعه الجهة المختصة حاليًا.",
     STATUS_APPROVED: "اعتمدته الجهة المختصة.",
     STATUS_REJECTED: "أُغلق لعدم استيفاء شروط الاستقبال؛ راجع سبب الرفض المرسل إليك.",
+    STATUS_AWAITING_INFO: "ننتظر المعلومات الإضافية المطلوبة قبل استكمال مراجعة البلاغ.",
+    STATUS_CLOSED_NO_RESPONSE: "أُغلق البلاغ تلقائيًا بعد انتهاء مهلة اليومين دون رد.",
 }
 
 
@@ -227,6 +238,19 @@ BOT_PROFILE_DEFAULT_WELCOME = (
     "ستراجع بياناتك قبل الإرسال، ثم يصلك رقم تتبع للمتابعة.\n\n"
     "مشاركة رقم الهاتف والموقع اختيارية. أرسل فقط المعلومات والأدلة ذات الصلة.\n\n"
     "اختر الخدمة التي تحتاجها:"
+)
+
+VERIFICATION_CONSENT_DEFAULT = (
+    "🪪 التسجيل كمراسل موثوق\n\n"
+    "الغرض: توثيق حساب المراسل لدى الشرطة العسكرية فرع الحسكة. "
+    "يتطلب الطلب مشاركة رقم سوري عبر زر تيليجرام، وصورة وجه، "
+    "وصورتي الهوية الأمامية والخلفية.\n\n"
+    "تُفحص الصور محليًا ولا يثبت الفحص أصالة الهوية. إذا اعتُمد الطلب، "
+    "يُحفظ الملف والصور دون حذف تلقائي، ويمكن تنزيلها ضمن ملف PDF. "
+    "يقتصر الاطلاع والتنزيل على المشرفين الذين مُنحوا صلاحية الوثائق؛ "
+    "وتُسجل عمليات الاطلاع والتنزيل. يمكن للمشرف المخوّل حذف الملف "
+    "مع تسجيل الإجراء. إذا رُفض الطلب، تُحذف بياناته وصوره بعد 30 يومًا.\n\n"
+    "بالضغط على «متابعة والموافقة» تؤكد اطلاعك وموافقتك على هذه الشروط."
 )
 
 REPORTING_PAUSED = (
