@@ -177,7 +177,7 @@ async def _send_clean_prompt(
     reply_markup=None,
 ):
     """Replace the previous temporary bot prompt instead of stacking prompts."""
-    query = update.callback_query
+    query = getattr(update, "callback_query", None)
     if query and not isinstance(reply_markup, ReplyKeyboardMarkup):
         try:
             message = await query.edit_message_text(
