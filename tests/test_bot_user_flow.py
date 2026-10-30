@@ -1,3 +1,5 @@
+import asyncio
+import hashlib
 import os
 import unittest
 from types import SimpleNamespace
@@ -9,7 +11,11 @@ from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRem
 from telegram.ext import ConversationHandler
 
 from bot import handlers, keyboards
-from services import identity_image_checks, verified_reporters
+from services import (
+    identity_image_checks,
+    sightengine_moderation,
+    verified_reporters,
+)
 
 
 class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
@@ -144,15 +150,19 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
 
 
 class VerificationConversationTests(unittest.IsolatedAsyncioTestCase):
-    def _make_update(self, mime_type="image/jpeg"):
+    def _make_update(self, *, as_document=False):
+        consent_version = hashlib.sha256(
+            (handlers.texts.VERIFICATION_CONSENT_DEFAULT + "\n").encode("utf-8")
+        ).hexdigest()[:24]
         document = SimpleNamespace(
             file_id="synthetic-image",
             file_size=20,
-            mime_type=mime_type,
         )
+        photo = SimpleNamespace(file_id="synthetic-image", file_size=20)
         reply_message = SimpleNamespace(chat_id=42, message_id=8)
         message = SimpleNamespace(
-            document=document,
+            document=document if as_document else None,
+            photo=[] if as_document else [photo],
             reply_text=AsyncMock(return_value=reply_message),
         )
         update = SimpleNamespace(
@@ -170,22 +180,40 @@ class VerificationConversationTests(unittest.IsolatedAsyncioTestCase):
             extend_verification_ticket=AsyncMock(return_value=True),
             submit_verification_documents=AsyncMock(return_value=42),
             cancel_verification_capture=AsyncMock(return_value=True),
+            get_state=AsyncMock(return_value=None),
         )
         context = SimpleNamespace(
             user_data={
                 handlers.VERIFICATION_TICKET_KEY: "ticket-hash",
                 handlers.VERIFICATION_CAPTURES_KEY: {},
                 handlers.VERIFICATION_STEP_KEY: "selfie",
+                "verification_consent_version": consent_version,
             },
             bot_data={"db": database},
-            bot=SimpleNamespace(get_file=AsyncMock(return_value=telegram_file)),
+            bot=SimpleNamespace(
+                get_file=AsyncMock(return_value=telegram_file),
+                send_chat_action=AsyncMock(),
+            ),
         )
         return update, context, database
 
-    async def test_accepts_a_document_and_advances_to_the_next_step(self):
+    async def test_accepts_gallery_photo_and_advances_after_screening_face(self):
         update, context, database = self._make_update()
+
+        async def inspect_image_with_delay(path):
+            await asyncio.sleep(0.01)
+            return sightengine_moderation.NudityScores(())
+
         with (
-            patch.object(identity_image_checks, "validate_identity_image"),
+            patch.object(
+                identity_image_checks, "validate_identity_image"
+            ) as validate_image,
+            patch.object(sightengine_moderation, "credentials", return_value=("u", "s")),
+            patch.object(
+                sightengine_moderation,
+                "inspect_image",
+                new=AsyncMock(side_effect=inspect_image_with_delay),
+            ) as inspect_image,
             patch.object(
                 verified_reporters,
                 "encrypt_document",
@@ -199,8 +227,82 @@ class VerificationConversationTests(unittest.IsolatedAsyncioTestCase):
             context.user_data[handlers.VERIFICATION_CAPTURES_KEY]["selfie"],
             b"encrypted-selfie",
         )
+        validate_image.assert_called_once_with(
+            "selfie", b"synthetic-image-bytes"
+        )
+        inspect_image.assert_awaited_once()
+        inspected_path = inspect_image.await_args.args[0]
+        self.assertFalse(inspected_path.exists())
+        context.bot.send_chat_action.assert_awaited()
         database.extend_verification_ticket.assert_awaited_once()
         database.submit_verification_documents.assert_not_awaited()
+
+    async def test_rejects_file_upload_instead_of_gallery_photo(self):
+        update, context, database = self._make_update(as_document=True)
+        with patch.object(identity_image_checks, "validate_identity_image") as validate:
+            state = await handlers.receive_verification_selfie(update, context)
+
+        self.assertEqual(state, handlers.ASK_VERIFICATION_SELFIE)
+        self.assertIn("كملف", update.effective_message.reply_text.await_args.args[0])
+        validate.assert_not_called()
+        database.extend_verification_ticket.assert_not_awaited()
+
+    async def test_requires_new_consent_before_processing_images(self):
+        update, context, database = self._make_update()
+        with patch.object(
+            handlers,
+            "_verification_consent",
+            new=AsyncMock(return_value=("updated disclosure", "new-consent-version")),
+        ):
+            state = await handlers.receive_verification_selfie(update, context)
+
+        self.assertEqual(state, ConversationHandler.END)
+        database.cancel_verification_capture.assert_awaited_once_with(
+            123, "ticket-hash"
+        )
+        context.bot.get_file.assert_not_awaited()
+        self.assertIn("تم تحديث إفصاح الخصوصية", update.effective_message.reply_text.await_args.args[0])
+
+    async def test_rejects_selfie_flagged_by_sightengine_without_saving(self):
+        update, context, database = self._make_update()
+        flagged_scores = sightengine_moderation.NudityScores(
+            (("sexual_activity", 0.9),)
+        )
+        with (
+            patch.object(identity_image_checks, "validate_identity_image"),
+            patch.object(sightengine_moderation, "credentials", return_value=("u", "s")),
+            patch.object(
+                sightengine_moderation,
+                "inspect_image",
+                new=AsyncMock(return_value=flagged_scores),
+            ),
+            patch.object(verified_reporters, "encrypt_document") as encrypt,
+        ):
+            state = await handlers.receive_verification_selfie(update, context)
+
+        self.assertEqual(state, handlers.ASK_VERIFICATION_SELFIE)
+        self.assertEqual(
+            update.effective_message.reply_text.await_args.args[0],
+            handlers._verification_image_error_message("inappropriate_content"),
+        )
+        encrypt.assert_not_called()
+        database.extend_verification_ticket.assert_not_awaited()
+
+    async def test_does_not_save_selfie_when_sightengine_is_unconfigured(self):
+        update, context, database = self._make_update()
+        with (
+            patch.object(identity_image_checks, "validate_identity_image"),
+            patch.object(sightengine_moderation, "credentials", return_value=None),
+            patch.object(sightengine_moderation, "inspect_image") as inspect_image,
+            patch.object(verified_reporters, "encrypt_document") as encrypt,
+        ):
+            state = await handlers.receive_verification_selfie(update, context)
+
+        self.assertEqual(state, handlers.ASK_VERIFICATION_SELFIE)
+        self.assertIn("تعذّر فحص صورة الوجه", update.effective_message.reply_text.await_args.args[0])
+        inspect_image.assert_not_awaited()
+        encrypt.assert_not_called()
+        database.extend_verification_ticket.assert_not_awaited()
 
     async def test_rejects_unclear_image_and_keeps_current_step(self):
         update, context, database = self._make_update()
@@ -232,6 +334,7 @@ class VerificationConversationTests(unittest.IsolatedAsyncioTestCase):
         }
         with (
             patch.object(identity_image_checks, "validate_identity_image"),
+            patch.object(sightengine_moderation, "inspect_image") as inspect_image,
             patch.object(
                 verified_reporters,
                 "encrypt_document",
@@ -251,6 +354,7 @@ class VerificationConversationTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertNotIn(handlers.VERIFICATION_CAPTURES_KEY, context.user_data)
+        inspect_image.assert_not_awaited()
 
     async def test_status_button_does_not_cancel_an_in_progress_capture(self):
         message = SimpleNamespace(chat_id=42, message_id=8)

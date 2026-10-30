@@ -1,7 +1,6 @@
 """Local-only preliminary checks for verified-reporter identity images."""
 from __future__ import annotations
 
-import re
 import unicodedata
 from io import BytesIO
 
@@ -15,29 +14,6 @@ MIN_SELFIE_HEIGHT = 640
 
 class IdentityImageCheckError(ValueError):
     """A local check rejected an image or could not run safely."""
-
-
-_SYRIAN_ID_MARKERS = {
-    "id_front": (
-        "الجمهورية العربية السورية",
-        "وزارة الداخلية",
-        "بطاقة شخصية",
-        "الرقم الوطني",
-        "سوريا",
-        "سورية",
-    ),
-    "id_back": (
-        "الجمهورية العربية السورية",
-        "الرقم الوطني",
-        "رقم وطني",
-        "مكان القيد",
-        "تاريخ الولادة",
-        "مكان الولادة",
-        "السجل المدني",
-        "الجنسية",
-        "سورية",
-    ),
-}
 
 
 def normalize_syrian_phone(raw_phone: str) -> str:
@@ -75,20 +51,6 @@ def _image_media_type(data: bytes) -> str | None:
     return None
 
 
-def _normalize_arabic_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value)
-    normalized = "".join(
-        char for char in normalized
-        if not unicodedata.combining(char)
-    )
-    normalized = normalized.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
-    normalized = normalized.translate(
-        str.maketrans({"ة": "ه", "ى": "ي", "ؤ": "و", "ئ": "ي"})
-    )
-    normalized = re.sub(r"[^\w\s]", " ", normalized, flags=re.UNICODE)
-    return re.sub(r"\s+", " ", normalized).strip()
-
-
 def _detect_faces(image):
     import cv2
 
@@ -102,19 +64,6 @@ def _detect_faces(image):
         scaleFactor=1.1,
         minNeighbors=5,
         minSize=(70, 70),
-    )
-
-
-def _read_arabic_text(image) -> str:
-    import cv2
-    import pytesseract
-
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    return pytesseract.image_to_string(
-        gray,
-        lang="ara+eng",
-        config="--psm 6",
-        timeout=12,
     )
 
 
@@ -186,17 +135,3 @@ def validate_identity_image(kind: str, data: bytes) -> None:
             or y + face_height > height
         ):
             raise IdentityImageCheckError("face_unclear")
-        return
-
-    try:
-        text = _normalize_arabic_text(_read_arabic_text(image))
-    except IdentityImageCheckError:
-        raise
-    except Exception as exc:
-        raise IdentityImageCheckError("inspection_unavailable") from exc
-    markers = tuple(
-        _normalize_arabic_text(marker)
-        for marker in _SYRIAN_ID_MARKERS[kind]
-    )
-    if not any(marker in text for marker in markers):
-        raise IdentityImageCheckError("identity_markers_missing")

@@ -70,24 +70,10 @@ class IdentityImageChecksTests(unittest.TestCase):
                 "id_front", _encoded_image(noisy=False)
             )
 
-    def test_id_image_requires_local_syrian_text_marker(self):
+    def test_id_image_uses_quality_checks_without_local_text_recognition(self):
         image = _encoded_image()
-        with patch.object(
-            identity_image_checks,
-            "_read_arabic_text",
-            return_value="الجمهوريه العربيه السوريه",
-        ):
-            identity_image_checks.validate_identity_image("id_front", image)
-        with patch.object(
-            identity_image_checks,
-            "_read_arabic_text",
-            return_value="نص غير كاف",
-        ):
-            with self.assertRaisesRegex(
-                identity_image_checks.IdentityImageCheckError,
-                "identity_markers_missing",
-            ):
-                identity_image_checks.validate_identity_image("id_back", image)
+        identity_image_checks.validate_identity_image("id_front", image)
+        identity_image_checks.validate_identity_image("id_back", image)
 
     def test_selfie_requires_exactly_one_clear_face(self):
         image = _encoded_image(640, 640)
