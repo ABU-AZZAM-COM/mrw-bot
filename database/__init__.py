@@ -76,7 +76,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     key TEXT UNIQUE NOT NULL,           -- مثل: welcome_message, verify_consent, help_text
                     label TEXT NOT NULL,                -- الاسم الظاهري في اللوحة: "رسالة الترحيب"
-                    content TEXT NOT NULL DEFAULT ,
+                    content TEXT NOT NULL DEFAULT '',
                     category TEXT DEFAULT 'user_facing',-- user_facing | button_label | system
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
