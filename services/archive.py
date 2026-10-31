@@ -26,6 +26,7 @@ from telegram.constants import ParseMode
 
 from app import config
 from bot import texts
+from bot import texts
 from services import utils
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ async def backup_database(bot: Bot, db_path: Path) -> bool:
                 chat_id=config.ARCHIVE_CHAT_ID,
                 document=str(snap),
                 filename=f"mrw-backup-{stamp}{DB_SUFFIX}",
-                caption="نسخة احتياطية من قاعدة بيانات بلاغات المخالفات العسكرية.",
+                caption=texts.INLINE_MESSAGES["backup_document_caption"],
             )
         logger.info("تم رفع نسخة احتياطية إلى القناة الرسمية")
         return True

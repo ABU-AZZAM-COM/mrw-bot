@@ -347,13 +347,15 @@ async def _show_report_step(
 ) -> int:
     ud = context.user_data
     if step == ASK_CATEGORY:
-        text, markup = "اختر القسم الأقرب إلى موضوع بلاغك:", report_category_kb()
+        text, markup = (
+            texts.INLINE_MESSAGES["report_category_prompt"],
+            report_category_kb(),
+        )
         privacy_url = await _privacy_policy_url(_db(context))
         if privacy_url:
-            text += (
-                "\n\n<a href=\""
-                + utils.esc(privacy_url)
-                + "\">اطّلع على سياسة الخصوصية قبل إرسال البلاغ.</a>"
+            text += texts.format_inline_message(
+                "privacy_report_link",
+                url=utils.esc(privacy_url),
             )
     elif step == ASK_PLATFORM:
         text = texts.CATEGORY_INTROS["social"] + "\n\n" + texts.PLATFORM_PROMPT
@@ -422,7 +424,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if parse_mode == ParseMode.HTML:
             welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
         else:
-            welcome = "🛑 استقبال البلاغات الجديدة متوقف مؤقتًا.\n\n" + welcome
+            welcome = texts.INLINE_MESSAGES["reporting_paused_plain"] + welcome
     command = (update.effective_message.text or "").split(maxsplit=1)
     command = command[0].split("@", 1)[0].lower() if command else ""
     welcome_photo = context.bot_data.get("welcome_photo")
@@ -560,7 +562,9 @@ async def _clear_optional_prompt(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _show_report_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ud = context.user_data
-    category = REPORT_CATEGORIES.get(ud.get("report_category"), "غير محدد")
+    category = REPORT_CATEGORIES.get(
+        ud.get("report_category"), texts.INLINE_MESSAGES["unspecified_value"]
+    )
     place = ud.get("place") or ""
     if not place and ud.get("latitude") is not None and ud.get("longitude") is not None:
         place = f"{ud['latitude']:.5f}, {ud['longitude']:.5f}"
@@ -577,11 +581,15 @@ async def _show_report_confirmation(update: Update, context: ContextTypes.DEFAUL
         texts.SUMMARY.format(
             category=utils.esc(category),
             platform=utils.esc(ud.get("platform") or "—"),
-            photo="✅ مستلمة" if ud.get("photo_file_id") else "غير مرفقة",
+            photo=(
+                texts.INLINE_MESSAGES["report_photo_received"]
+                if ud.get("photo_file_id")
+                else texts.INLINE_MESSAGES["report_photo_missing"]
+            ),
             link=(
                 utils.link_anchor(ud["post_link"])
                 if ud.get("post_link")
-                else "غير مرفق"
+                else texts.INLINE_MESSAGES["report_link_missing"]
             ),
             place=utils.esc(place or "—"),
             contact=utils.esc(ud.get("contact_phone") or "—"),
@@ -814,7 +822,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     await _clear_optional_prompt(context)
     progress = await _send_clean_prompt(
-        update, context, "🔄 جارٍ فحص الصورة أمنيًا..."
+        update, context, texts.INLINE_MESSAGES["photo_check_progress"]
     )
 
     photo_path, photo_file_id, photo_name, screening = await _save_photo(
@@ -824,7 +832,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt = await _send_clean_prompt(
             update,
             context,
-            (screening.error or "⚠️ لم يكتمل استلام الصورة.")
+            (screening.error or texts.INLINE_MESSAGES["photo_receipt_incomplete"])
             + "\n\n"
             + texts.ASK_PHOTO,
             parse_mode=ParseMode.HTML,
@@ -833,7 +841,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _remember_optional_prompt(context, prompt)
         return ASK_PHOTO
     if screening.flagged:
-        await progress.edit_text("⛔ أوقف النظام هذا البلاغ وفق نتيجة فحص الصورة.")
+        await progress.edit_text(texts.INLINE_MESSAGES["photo_check_interrupted"])
         await _clear_user_prompt(context)
         await _freeze_for_sensitive_image(
             update, context, screening, photo_path, photo_file_id
@@ -841,9 +849,9 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await progress.edit_text(
-        "⚠️ تعذر إكمال الفحص الآلي بالكامل؛ سيُحال البلاغ للمراجعة اليدوية."
+        texts.INLINE_MESSAGES["photo_check_review_required"]
         if screening.review_required
-        else "✅ اكتمل الفحص الآلي الأولي للصورة."
+        else texts.INLINE_MESSAGES["photo_check_passed"]
     )
     context.user_data.update(
         photo_path=photo_path,
@@ -887,7 +895,7 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress = None
     if config.VIRUSTOTAL_API_KEY:
         progress = await _send_clean_prompt(
-            update, context, "🔎 جار فحص الرابط عبر VirusTotal..."
+            update, context, texts.INLINE_MESSAGES["link_check_progress"]
         )
     try:
         await _assess_link_and_description(context, _db(context), text)
@@ -913,7 +921,7 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_text = (
             texts.VIRUSTOTAL_REVIEW
             if context.user_data.get("link_review_reason") == "virustotal"
-            else "✅ اكتمل فحص الرابط."
+            else texts.INLINE_MESSAGES["link_check_complete"]
         )
         await progress.edit_text(result_text, parse_mode=ParseMode.HTML)
     context.user_data["post_link"] = text
@@ -1018,7 +1026,7 @@ async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _send_clean_prompt(
                     update,
                     context,
-                    "اكتب وصفًا للمكان لا يتجاوز 120 حرفًا، أو اختر تخطي.",
+                    texts.INLINE_MESSAGES["location_description_too_long"],
                     reply_markup=location_request_kb(),
                 )
                 return ASK_LOCATION
@@ -1044,7 +1052,7 @@ async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _send_clean_prompt(
                 update,
                 context,
-                "يرجى مشاركة رقمك أنت فقط أو اختيار تخطي.",
+                texts.INLINE_MESSAGES["contact_must_be_own"],
                 reply_markup=contact_request_kb(),
             )
             return ASK_CONTACT
@@ -1248,7 +1256,7 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if violation_type:
         if len(violation_type) > 60 or violation_type not in await db.effective_vtypes():
             await update.effective_message.reply_text(
-                "⚠️ نوع المخالفة المحدد لم يعد متاحًا. أعد فتح التطبيق واختر تصنيفًا من القائمة.",
+                texts.INLINE_MESSAGES["violation_type_unavailable"],
                 parse_mode=ParseMode.HTML,
             )
             return None
@@ -1321,13 +1329,15 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.effective_message.reply_text(
         texts.APP_DATA_OK.format(
-            vtype=utils.esc(violation_type or "غير محدد"),
-            place=utils.esc(place or "غير محدد"),
+            vtype=utils.esc(
+                violation_type or texts.INLINE_MESSAGES["unspecified_value"]
+            ),
+            place=utils.esc(place or texts.INLINE_MESSAGES["unspecified_value"]),
             review=(
                 utils.esc(review_notice) + "\n\n"
                 if review_notice
                 else (
-                    "⚠️ سيُحال البلاغ للمراجعة اليدوية بسبب تشابهه مع بلاغ سابق.\n\n"
+                    texts.INLINE_MESSAGES["app_duplicate_manual_review"]
                     if duplicate and duplicate.code in {"exact_duplicate", "similar_duplicate"}
                     else ""
                 )
@@ -1354,27 +1364,27 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # حفظ الصورة بنفس المنطق المستخدم في المحادثة العادية
     progress = await update.effective_message.reply_text(
-        "🔄 جارٍ فحص الصورة أمنيًا..."
+        texts.INLINE_MESSAGES["verification_checking_photo"]
     )
     photo_path, photo_file_id, photo_name, screening = await _save_photo(
         update, context
     )
     if not photo_file_id:
-        await progress.edit_text("⚠️ لم يكتمل استلام الصورة. أعد إرسالها.")
+        await progress.edit_text(texts.INLINE_MESSAGES["photo_receipt_incomplete"])
         await update.effective_message.reply_text(
             texts.PHOTO_FAILED, parse_mode=ParseMode.HTML
         )
         return None
     if screening.flagged:
-        await progress.edit_text("⛔ أوقف النظام هذا البلاغ وفق نتيجة فحص الصورة.")
+        await progress.edit_text(texts.INLINE_MESSAGES["photo_check_interrupted"])
         await _freeze_for_sensitive_image(
             update, context, screening, photo_path, photo_file_id
         )
         return None
     await progress.edit_text(
-        "⚠️ تعذر إكمال الفحص الآلي بالكامل؛ سيُحال البلاغ للمراجعة اليدوية."
+        texts.INLINE_MESSAGES["photo_check_review_required"]
         if screening.review_required
-        else "✅ اكتمل الفحص الآلي الأولي للصورة."
+        else texts.INLINE_MESSAGES["photo_check_passed"]
     )
 
     try:
@@ -1453,7 +1463,9 @@ async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, report: dict) -> No
         name=utils.esc(report["full_name"] or "-"),
         username=texts.username_display(report["username"]),
         uid=report["user_id"],
-        vtype=utils.esc(report.get("violation_type") or "غير محدد"),
+        vtype=utils.esc(
+            report.get("violation_type") or texts.INLINE_MESSAGES["unspecified_value"]
+        ),
         category=utils.esc(report.get("category") or "—"),
         platform=utils.esc(report.get("platform") or "—"),
         place=utils.esc(
@@ -1549,10 +1561,10 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     if message is None or user is None or len(context.args) < 2:
         if message is not None:
-            await message.reply_text("الاستخدام: /reply رقم_البلاغ المعلومات الإضافية")
+            await message.reply_text(texts.INLINE_MESSAGES["reply_usage"])
         return
     if chat is None or chat.type != "private":
-        await message.reply_text("أرسل المعلومات الإضافية في المحادثة الخاصة مع البوت.")
+        await message.reply_text(texts.INLINE_MESSAGES["reply_private_only"])
         return
 
     report = await _db(context).get_by_seq(context.args[0].strip())
@@ -1567,12 +1579,12 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             <= datetime.now(timezone.utc).isoformat(timespec="seconds")
         )
     ):
-        await message.reply_text("لا يوجد طلب معلومات مفتوح لهذا البلاغ.")
+        await message.reply_text(texts.INLINE_MESSAGES["followup_unavailable"])
         return
 
     response = " ".join(context.args[1:]).strip()
     if not 2 <= len(response) <= 2000:
-        await message.reply_text("يجب أن تكون المعلومات بين حرفين و2000 حرف.")
+        await message.reply_text(texts.INLINE_MESSAGES["followup_length"])
         return
 
     db = _db(context)
@@ -1586,9 +1598,11 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
-                text=(
-                    f"📩 معلومات إضافية للبلاغ {report.get('seq') or report['id']}\n"
-                    f"المبلّغ: {user.full_name} ({user.id})\n\n{response}"
+                text=texts.FOLLOWUP_ADMIN_NOTIF.format(
+                    seq=report.get("seq") or report["id"],
+                    name=user.full_name,
+                    user_id=user.id,
+                    message=response,
                 ),
             )
             delivered += 1
@@ -1598,9 +1612,9 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 report["id"], admin_id,
             )
     if delivered:
-        await message.reply_text("تم استلام المعلومات وإيصالها إلى الإدارة.")
+        await message.reply_text(texts.INLINE_MESSAGES["followup_received"])
     else:
-        await message.reply_text("تم حفظ المعلومات، لكن تعذر إيصالها للمشرفين حاليًا.")
+        await message.reply_text(texts.INLINE_MESSAGES["followup_saved_no_notify"])
 
 
 async def receive_support_message(
@@ -1643,7 +1657,7 @@ async def receive_support_message(
         await _send_clean_prompt(
             update,
             context,
-            "رسالة التواصل لا تتجاوز 100 كلمة. اختصرها وأرسلها مجددًا.",
+            texts.INLINE_MESSAGES["support_too_many_words"],
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_inline_kb(),
         )
@@ -1655,7 +1669,7 @@ async def receive_support_message(
             context,
             texts.SUPPORT_TOO_LONG
             if len(text) > SUPPORT_MAX_LENGTH
-            else "اكتب رسالة من حرفين على الأقل، أو اختر إلغاء.",
+            else texts.INLINE_MESSAGES["support_min_length"],
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_inline_kb(),
         )
@@ -1679,8 +1693,7 @@ async def receive_support_message(
         await _send_clean_prompt(
             update,
             context,
-            "وصلت إلى حد رسائل التواصل. أعد المحاولة بعد انتهاء المهلة؛ "
-            "هذا لا يمنعك من استخدام بقية خدمات البوت.",
+            texts.INLINE_MESSAGES["support_rate_limited"],
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_inline_kb(),
         )
@@ -1699,8 +1712,7 @@ async def receive_support_message(
         await _send_clean_prompt(
             update,
             context,
-            "تعذّر التحقق من إعدادات التواصل الآمنة. لم تُرسل رسالتك؛ "
-            "أعد المحاولة لاحقًا أو استخدم البلاغات.",
+            texts.INLINE_MESSAGES["support_settings_unavailable"],
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_inline_kb(),
         )
@@ -1710,8 +1722,7 @@ async def receive_support_message(
         await _send_clean_prompt(
             update,
             context,
-            "لم تُرسل الرسالة لأنها تحتوي على كلمة تمنعها قائمة الفلترة. "
-            "أعد صياغتها أو اختر إلغاء.",
+            texts.INLINE_MESSAGES["support_filtered"],
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_inline_kb(),
         )
@@ -1811,7 +1822,7 @@ async def receive_verification_phone(
         await _send_clean_prompt(
             update,
             context,
-            "ميزة التوثيق غير مفعّلة حاليًا لأن إعداد التشفير الآمن لم يكتمل.",
+            texts.INLINE_MESSAGES["verification_disabled"],
             reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         context.user_data.clear()
@@ -1822,7 +1833,7 @@ async def receive_verification_phone(
         await _send_clean_prompt(
             update,
             context,
-            "للمتابعة شارك رقم هاتفك أنت عبر زر المشاركة، أو ألغِ العملية. لا ترسل رقم شخص آخر.",
+            texts.INLINE_MESSAGES["verification_share_own_phone"],
             parse_mode=ParseMode.HTML,
             reply_markup=keyboards.verification_contact_kb(),
         )
@@ -1836,7 +1847,7 @@ async def receive_verification_phone(
         await _send_clean_prompt(
             update,
             context,
-            "نقبل أرقام الهاتف السورية فقط. أعد مشاركة رقمك السوري من تيليجرام.",
+            texts.INLINE_MESSAGES["verification_syrian_phone_only"],
             reply_markup=keyboards.verification_contact_kb(),
         )
         return ASK_VERIFICATION_PHONE
@@ -1860,7 +1871,7 @@ async def receive_verification_phone(
         await _send_clean_prompt(
             update,
             context,
-            "تعذّر بدء التوثيق لأن خدمة الحفظ الآمن غير جاهزة. لم يُحفظ رقم الهاتف.",
+            texts.INLINE_MESSAGES["verification_storage_unavailable"],
             reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         context.user_data.clear()
@@ -1869,14 +1880,11 @@ async def receive_verification_phone(
     if request_id is None:
         previous = await _db(context).verification_status(user.id)
         if previous and previous.get("status") == "verified":
-            message_text = "حسابك موثّق بالفعل. لا حاجة لإرسال وثائقك مرة أخرى."
+            message_text = texts.INLINE_MESSAGES["verification_already_verified"]
         elif previous and previous.get("status") == "pending":
-            message_text = (
-                "طلب التوثيق قيد المراجعة. لا ترسل صور الهوية مرة أخرى؛ "
-                "سيظهر القرار في «حالة توثيق الحساب»."
-            )
+            message_text = texts.INLINE_MESSAGES["verification_already_pending"]
         else:
-            message_text = "يوجد طلب توثيق جارٍ. أعد فتحه من محادثة البوت."
+            message_text = texts.INLINE_MESSAGES["verification_request_open"]
         context.user_data.clear()
         await _send_clean_prompt(
             update,
@@ -1892,10 +1900,7 @@ async def receive_verification_phone(
     await _send_clean_prompt(
         update,
         context,
-        "تم استلام رقمك السوري. أرسل الآن صورة وجه واضحة من المعرض أو الكاميرا "
-        "كصورة عادية في المحادثة، ولا ترسلها كملف. يجب أن يظهر وجه واحد بوضوح. "
-        "ستُفحص صورة الوجه عبر Sightengine للتأكد من خلوها من المحتوى غير اللائق؛ "
-        "ولا تُرسل صور الهوية إلى هذه الخدمة.",
+        texts.INLINE_MESSAGES["verification_selfie_prompt"],
         reply_markup=ReplyKeyboardRemove(),
     )
     return ASK_VERIFICATION_SELFIE
@@ -1913,27 +1918,9 @@ async def _discard_verification_capture(
 
 
 def _verification_image_error_message(code: str) -> str:
-    messages = {
-        "image_size_invalid": "حجم الملف غير مناسب. أرسل صورة أصغر من 10 ميغابايت.",
-        "image_format_invalid": "أرسل ملف صورة بصيغة JPEG أو PNG.",
-        "image_dimensions_invalid": "دقة الصورة منخفضة. أعد الإرسال بصورة أكبر وأوضح.",
-        "image_blurry": "الصورة غير واضحة بما يكفي. أعد تصويرها بإضاءة جيدة وثبّت الهاتف.",
-        "image_unreadable": "تعذّر فتح الصورة. أعد إرسالها كصورة واضحة من المعرض.",
-        "face_not_found": "لم يُعثر على وجه واضح في الصورة. أعد إرسال صورة شخصية يظهر فيها وجه واحد.",
-        "face_multiple": "يجب أن يظهر وجه واحد فقط. أعد إرسال صورة شخصية منفردة.",
-        "face_unclear": "الوجه صغير أو غير واضح. أعد إرسال صورة أقرب وأوضح.",
-        "inspection_unavailable": (
-            "تعذّر التحقق من وضوح الصورة أو الوجه الآن. لم تُحفظ الصورة؛ "
-            "حاول مرة أخرى بعد قليل."
-        ),
-        "inappropriate_content": (
-            "لم تُقبل الصورة لأن فحص المحتوى رصد مادة غير مناسبة. "
-            "أرسل صورة أخرى مناسبة وواضحة."
-        ),
-    }
-    return messages.get(
-        code,
-        "لم تجتز الصورة الفحص الأولي. أعد إرسال صورة واضحة للخطوة الحالية.",
+    key = f"verification_{code}"
+    return texts.INLINE_MESSAGES.get(
+        key, texts.INLINE_MESSAGES["verification_image_check_failed"]
     )
 
 
@@ -1962,7 +1949,7 @@ async def _receive_verification_image(
         await _send_clean_prompt(
             update,
             context,
-            "انتهت جلسة التوثيق. ابدأ طلبًا جديدًا من القائمة الرئيسية.",
+            texts.INLINE_MESSAGES["verification_session_expired"],
             reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
@@ -1971,7 +1958,7 @@ async def _receive_verification_image(
     except Exception:
         logger.exception("Could not verify consent version for user %s", user.id)
         await message.reply_text(
-            "تعذّر التحقق من إفصاح الخصوصية الآن. لم تُعالج الصورة؛ حاول مجددًا."
+            texts.INLINE_MESSAGES["verification_privacy_unavailable"]
         )
         return _verification_state_for_kind(kind)
     if context.user_data.get("verification_consent_version") != current_consent_version:
@@ -1981,16 +1968,14 @@ async def _receive_verification_image(
         await _send_clean_prompt(
             update,
             context,
-            "تم تحديث إفصاح الخصوصية. ابدأ طلب التوثيق من جديد وراجع الإفصاح "
-            "المحدّث قبل إرسال الصور.",
+            texts.INLINE_MESSAGES["verification_privacy_changed"],
             reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
 
     if not message.photo:
         await message.reply_text(
-            "أرسل الصورة من المعرض أو الكاميرا كصورة عادية في المحادثة، "
-            "ولا ترسلها كملف. يمكنك الإلغاء في أي وقت.",
+            texts.INLINE_MESSAGES["verification_image_format"],
         )
         return _verification_state_for_kind(kind)
     media = message.photo[-1]
@@ -2052,8 +2037,7 @@ async def _receive_verification_image(
             user.id,
         )
         await message.reply_text(
-            "تعذّر فحص صورة الوجه للتأكد من خلوها من المحتوى غير اللائق. "
-            "لم تُحفظ الصورة؛ حاول مجددًا بعد قليل."
+            texts.INLINE_MESSAGES["verification_sightengine_failed"]
         )
         return _verification_state_for_kind(kind)
     except verified_reporters.VerificationUnavailable:
@@ -2062,7 +2046,7 @@ async def _receive_verification_image(
         await _send_clean_prompt(
             update,
             context,
-            "تعذّر التشفير الآمن، لذلك لم تُحفظ الصورة. ابدأ طلبًا جديدًا لاحقًا.",
+            texts.INLINE_MESSAGES["verification_encryption_failed"],
             reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
@@ -2072,7 +2056,7 @@ async def _receive_verification_image(
             user.id,
         )
         await message.reply_text(
-            "تعذّر إكمال فحص الصورة الآن، ولم تُحفظ. حاول مرة أخرى بعد قليل."
+            texts.INLINE_MESSAGES["verification_processing_failed"]
         )
         return _verification_state_for_kind(kind)
 
@@ -2090,7 +2074,7 @@ async def _receive_verification_image(
         context.user_data.pop(VERIFICATION_CAPTURES_KEY, None)
         context.user_data.pop(VERIFICATION_STEP_KEY, None)
         await message.reply_text(
-            "تعذّر متابعة التوثيق بسبب مشكلة مؤقتة في الحفظ. لم تُرسل الصور للمراجعة."
+            texts.INLINE_MESSAGES["verification_ticket_save_failed"]
         )
         return ConversationHandler.END
     if not ticket_extended:
@@ -2098,7 +2082,7 @@ async def _receive_verification_image(
         await _send_clean_prompt(
             update,
             context,
-            "انتهت جلسة التوثيق. ابدأ طلبًا جديدًا من القائمة الرئيسية.",
+            texts.INLINE_MESSAGES["verification_session_expired"],
             reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
@@ -2111,14 +2095,8 @@ async def _receive_verification_image(
         )
         context.user_data[VERIFICATION_STEP_KEY] = next_kind
         prompts = {
-            "id_front": (
-                "اجتازت صورة الوجه فحص الوضوح والوجه والمحتوى. أرسل الآن "
-                "الجهة الأمامية للهوية كصورة واضحة من المعرض أو الكاميرا."
-            ),
-            "id_back": (
-                "اجتازت الصورة السابقة الفحص الأولي. أرسل الآن الجهة الخلفية "
-                "للهوية كصورة واضحة من المعرض أو الكاميرا."
-            ),
+            "id_front": texts.INLINE_MESSAGES["verification_face_passed_next_id"],
+            "id_back": texts.INLINE_MESSAGES["verification_image_passed_next_back"],
         }
         await _send_clean_prompt(update, context, prompts[next_kind])
         return next_state
@@ -2129,7 +2107,7 @@ async def _receive_verification_image(
         await _send_clean_prompt(
             update,
             context,
-            "لم يكتمل ترتيب الصور، لذلك لم يُرسل الطلب. ابدأه من جديد.",
+            texts.INLINE_MESSAGES["verification_image_sequence_invalid"],
             reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
@@ -2148,7 +2126,7 @@ async def _receive_verification_image(
         await _send_clean_prompt(
             update,
             context,
-            "تعذّر حفظ الطلب بأمان، ولم يُرسل للمراجعة. ابدأ طلبًا جديدًا لاحقًا.",
+            texts.INLINE_MESSAGES["verification_save_failed"],
             reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
@@ -2157,7 +2135,7 @@ async def _receive_verification_image(
         await _send_clean_prompt(
             update,
             context,
-            "انتهت جلسة التوثيق قبل اكتمال الإرسال. ابدأ طلبًا جديدًا.",
+            texts.INLINE_MESSAGES["verification_submission_session_expired"],
             reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
@@ -2169,8 +2147,7 @@ async def _receive_verification_image(
     await _send_clean_prompt(
         update,
         context,
-        "✅ اكتمل إرسال طلبك للمراجعة البشرية. فحص وضوح الوجه والمحتوى لا يثبت "
-        "أصالة الهوية أو أن الصورة حيّة. سنبلغك عند صدور القرار.",
+        texts.INLINE_MESSAGES["verification_submission_complete"],
         reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
     return ConversationHandler.END
@@ -2185,10 +2162,10 @@ async def _receive_verification_supplement_image(
         return ConversationHandler.END
     request_id = context.user_data.get("verification_supplement_request_id")
     if not isinstance(request_id, int):
-        await message.reply_text("ابدأ الاستكمال من زر طلب التوثيق الذي وصلك.")
+        await message.reply_text(texts.INLINE_MESSAGES["supplement_start_required"])
         return ConversationHandler.END
     if not message.photo:
-        await message.reply_text("أرسل الصورة المطلوبة كصورة في محادثة البوت.")
+        await message.reply_text(texts.INLINE_MESSAGES["supplement_image_required"])
         return ASK_VERIFICATION_SUPPLEMENT
     try:
         supplement = await _db(context).active_verification_supplement(
@@ -2196,12 +2173,12 @@ async def _receive_verification_supplement_image(
         )
     except Exception:
         logger.exception("Could not load verification supplement for user %s", user.id)
-        await message.reply_text("تعذّر تحميل طلب الاستكمال الآن. حاول مجددًا لاحقًا.")
+        await message.reply_text(texts.INLINE_MESSAGES["supplement_load_failed"])
         return ASK_VERIFICATION_SUPPLEMENT
     if not supplement:
         context.user_data.pop("verification_supplement_request_id", None)
         await message.reply_text(
-            "لا يوجد طلب استكمال نشط. أعد فتح حالة التوثيق من القائمة الرئيسية."
+            texts.INLINE_MESSAGES["supplement_missing"]
         )
         return ConversationHandler.END
     requested = supplement["requested_documents"]
@@ -2268,35 +2245,31 @@ async def _receive_verification_supplement_image(
             "Sightengine could not screen supplement selfie for user %s", user.id
         )
         await message.reply_text(
-            "تعذّر فحص صورة الوجه الآن، ولم تُحفظ. حاول مرة أخرى لاحقًا."
+            texts.INLINE_MESSAGES["supplement_sightengine_failed"]
         )
         return ASK_VERIFICATION_SUPPLEMENT
     except verified_reporters.VerificationUnavailable:
         logger.exception("Could not encrypt identity supplement for user %s", user.id)
-        await message.reply_text("تعذّر حفظ الصورة بأمان. لم تُحفظ؛ أعد المحاولة لاحقًا.")
+        await message.reply_text(texts.INLINE_MESSAGES["supplement_save_failed"])
         return ASK_VERIFICATION_SUPPLEMENT
     except ValueError as exc:
         logger.info("Rejected verification supplement for user %s: %s", user.id, exc)
-        await message.reply_text("هذه الصورة غير مطلوبة في طلب الاستكمال الحالي.")
+        await message.reply_text(texts.INLINE_MESSAGES["supplement_wrong_image"])
         return ASK_VERIFICATION_SUPPLEMENT
     except Exception:
         logger.exception("Could not save verification supplement for user %s", user.id)
-        await message.reply_text("تعذّر حفظ الصورة الآن. لم تُرسل للمراجعة؛ حاول مجددًا.")
+        await message.reply_text(texts.INLINE_MESSAGES["supplement_upload_failed"])
         return ASK_VERIFICATION_SUPPLEMENT
     if not saved:
         await message.reply_text(
-            "لم يعد طلب الاستكمال نشطًا، لذلك لم تُحفظ الصورة."
+            texts.INLINE_MESSAGES["supplement_expired"]
         )
         return ConversationHandler.END
     if not saved["completed"]:
         next_kind = saved["remaining_documents"][0]
         await message.reply_text(
-            "تم استلام الصورة المطلوبة. أرسل الآن فقط: "
-            + {
-                "selfie": "صورة الوجه",
-                "id_front": "الجهة الأمامية للهوية",
-                "id_back": "الجهة الخلفية للهوية",
-            }[next_kind]
+            texts.INLINE_MESSAGES["supplement_followup_image"]
+            + texts.VERIFICATION_DOCUMENT_LABELS[next_kind]
         )
         return ASK_VERIFICATION_SUPPLEMENT
 
@@ -2329,8 +2302,7 @@ async def _receive_verification_supplement_image(
         f"dashboard_notification={dashboard_notified}",
     )
     await message.reply_text(
-        "اكتمل إرسال الصور المطلوبة. بقي طلب التوثيق مفتوحًا للمراجعة، "
-        "وسنبلغك عند صدور القرار."
+        texts.INLINE_MESSAGES["verification_upload_complete"]
     )
     return ConversationHandler.END
 
@@ -2395,9 +2367,12 @@ async def _notify_verification_supplement_reviewers(
                 await context.bot.send_photo(
                     chat_id=recipient,
                     photo=io.BytesIO(content),
-                    caption=(
-                        f"وصلت صور الاستكمال لطلب توثيق المراسل #{request_id} "
-                        f"(المستخدم {user_id}، {kind}). راجع الطلب في لوحة التوثيق."
+                    caption=texts.INLINE_MESSAGES[
+                        "verification_supplement_caption"
+                    ].format(
+                        request_id=request_id,
+                        user_id=user_id,
+                        kind=kind,
                     ),
                 )
             except Exception:
@@ -2412,11 +2387,9 @@ async def _notify_verification_supplement_reviewers(
             try:
                 await context.bot.send_message(
                     chat_id=recipient,
-                    text=(
-                        f"وصل استكمال طلب التوثيق #{request_id}، "
-                        "لكن تعذر إرفاق الصور. افتح إشعار لوحة الإدارة "
-                        "للوصول إلى تفاصيل الطلب المحمية."
-                    ),
+                    text=texts.INLINE_MESSAGES[
+                        "verification_supplement_fallback"
+                    ].format(request_id=request_id),
                 )
             except Exception:
                 logger.info(
@@ -2466,7 +2439,7 @@ async def receive_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = (message.text or "").strip()
     rid = context.user_data.get("followup_report_id")
     if not isinstance(rid, int) or not 2 <= len(response) <= 2000:
-        await message.reply_text("يجب أن تكون المعلومات بين حرفين و2000 حرف.")
+        await message.reply_text(texts.INLINE_MESSAGES["followup_length"])
         return ASK_FOLLOWUP
     db = _db(context)
     report = await db.get_by_id(rid)
@@ -2483,7 +2456,7 @@ async def receive_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     ):
         context.user_data.pop("followup_report_id", None)
-        await message.reply_text("لم يعد هناك طلب معلومات مفتوح لهذا البلاغ.")
+        await message.reply_text(texts.INLINE_MESSAGES["followup_unavailable"])
         return ConversationHandler.END
 
     await db.save_followup_response(rid, response)
@@ -2496,10 +2469,11 @@ async def receive_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
-                text=(
-                    f"📩 معلومات إضافية للبلاغ {report.get('seq') or rid}\n"
-                    f"المبلّغ: {utils.esc(user.full_name or '-')} ({user.id})\n\n"
-                    f"{utils.esc(response)}"
+                text=texts.FOLLOWUP_ADMIN_NOTIF.format(
+                    seq=utils.esc(report.get("seq") or rid),
+                    name=utils.esc(user.full_name or "-"),
+                    user_id=user.id,
+                    message=utils.esc(response),
                 ),
                 parse_mode=ParseMode.HTML,
             )
@@ -2508,9 +2482,9 @@ async def receive_followup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning("تعذر إيصال متابعة البلاغ %s للمشرف %s", rid, admin_id)
     context.user_data.pop("followup_report_id", None)
     await message.reply_text(
-        "تم استلام المعلومات وإيصالها إلى الإدارة."
+        texts.INLINE_MESSAGES["followup_received"]
         if delivered
-        else "تم حفظ المعلومات، لكن تعذر إيصالها للمشرفين حاليًا."
+        else texts.INLINE_MESSAGES["followup_saved_no_notify"]
     )
     return ConversationHandler.END
 
@@ -2532,14 +2506,14 @@ async def receive_report_appeal(
         or not 2 <= len(text) <= 2000
     ):
         if message:
-            await message.reply_text("اكتب اعتراضًا بين حرفين و2000 حرف.")
+            await message.reply_text(texts.INLINE_MESSAGES["appeal_length"])
         return ASK_REPORT_APPEAL
 
     db = _db(context)
     appeal_id = await db.add_report_appeal(report_id, user.id, text)
     if appeal_id is None:
         context.user_data.pop("report_appeal_id", None)
-        await message.reply_text("لم يعد هذا البلاغ قابلًا لتقديم اعتراض جديد.")
+        await message.reply_text(texts.INLINE_MESSAGES["appeal_unavailable"])
         return ConversationHandler.END
     report = await db.get_by_id(report_id)
     delivered = 0
@@ -2547,11 +2521,11 @@ async def receive_report_appeal(
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
-                text=(
-                    f"✉️ طلب إعادة مراجعة للبلاغ {report.get('seq') or report_id}\n"
-                    f"المبلّغ: {utils.esc(user.full_name or '-')} ({user.id})\n\n"
-                    f"{utils.esc(text)}\n\n"
-                    "لم يُعَد فتح البلاغ تلقائيًا؛ راجعه من لوحة الإدارة."
+                text=texts.APPEAL_ADMIN_NOTIF.format(
+                    seq=utils.esc(report.get("seq") or report_id),
+                    name=utils.esc(user.full_name or "-"),
+                    user_id=user.id,
+                    message=utils.esc(text),
                 ),
                 parse_mode=ParseMode.HTML,
             )
@@ -2562,10 +2536,9 @@ async def receive_report_appeal(
             )
     context.user_data.pop("report_appeal_id", None)
     await message.reply_text(
-        "تم حفظ اعتراضك وإحالته للمراجعة؛ لم يُعَد فتح البلاغ تلقائيًا."
+        texts.INLINE_MESSAGES["appeal_saved_notified"]
         if delivered
-        else "تم حفظ اعتراضك، لكن تعذر إيصال إشعار للمشرفين حاليًا. "
-        "سيبقى البلاغ في قائمة المراجعة.",
+        else texts.INLINE_MESSAGES["appeal_saved_no_notify"],
         reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
     return ConversationHandler.END
@@ -2708,7 +2681,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             if parse_mode == ParseMode.HTML:
                 welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
             else:
-                welcome = "🛑 استقبال البلاغات الجديدة متوقف مؤقتًا.\n\n" + welcome
+                welcome = texts.INLINE_MESSAGES["reporting_paused_plain"] + welcome
         await query.edit_message_text(
             welcome,
             parse_mode=parse_mode,
@@ -2726,7 +2699,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             if parse_mode == ParseMode.HTML:
                 welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
             else:
-                welcome = "🛑 استقبال البلاغات الجديدة متوقف مؤقتًا.\n\n" + welcome
+                welcome = texts.INLINE_MESSAGES["reporting_paused_plain"] + welcome
         prompt = await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=welcome,
@@ -2837,7 +2810,9 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 <= datetime.now(timezone.utc).isoformat(timespec="seconds")
             )
         ):
-            await query.answer("لا يوجد طلب معلومات مفتوح لهذا البلاغ.", show_alert=True)
+            await query.answer(
+                texts.INLINE_MESSAGES["followup_unavailable"], show_alert=True
+            )
             return ConversationHandler.END
         context.user_data["followup_report_id"] = rid
         context.user_data["report_state"] = ASK_FOLLOWUP
@@ -2858,14 +2833,14 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             or int(report.get("user_id") or 0) != query.from_user.id
             or report.get("status") != STATUS_REJECTED
         ):
-            await query.answer("لا يمكن إرسال اعتراض لهذا البلاغ.", show_alert=True)
+            await query.answer(
+                texts.INLINE_MESSAGES["appeal_unavailable"], show_alert=True
+            )
             return ConversationHandler.END
         context.user_data.clear()
         context.user_data["report_appeal_id"] = rid
         await query.edit_message_text(
-            "أرسل اعتراضك أو المعلومات الإضافية المتعلقة بهذا البلاغ "
-            "(حتى 2000 حرف). سيصل الطلب إلى المشرف للمراجعة، ولن يُعاد فتح "
-            "البلاغ تلقائيًا.",
+            texts.INLINE_MESSAGES["appeal_prompt"],
             reply_markup=cancel_inline_kb(),
         )
         _remember_user_prompt(context, query.message)
@@ -2875,15 +2850,9 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "privacy":
         privacy_url = await _privacy_policy_url(db)
         if privacy_url:
-            message_text = (
-                "يمكنك قراءة سياسة الخصوصية عبر الرابط التالي. "
-                "راجعها قبل إرسال بلاغ أو بدء توثيق المراسل."
-            )
+            message_text = texts.INLINE_MESSAGES["privacy_link_intro"]
         else:
-            message_text = (
-                "لم يُضبط رابط سياسة الخصوصية بعد. لا تُرسل بيانات حساسة "
-                "ضمن البلاغ قبل مراجعة الإدارة."
-            )
+            message_text = texts.PRIVACY_POLICY
         await query.edit_message_text(
             message_text,
             reply_markup=keyboards.privacy_policy_kb(privacy_url),
@@ -2928,7 +2897,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         if not supplement:
             await query.edit_message_text(
-                "لا يوجد طلب استكمال نشط. راجع حالة توثيق الحساب من القائمة الرئيسية.",
+                texts.INLINE_MESSAGES["supplement_missing_status"],
                 reply_markup=back_to_menu_kb(),
             )
             _remember_user_prompt(context, query.message)
@@ -2941,15 +2910,12 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             ),
             None,
         )
-        labels = {
-            "selfie": "صورة الوجه",
-            "id_front": "الجهة الأمامية للهوية",
-            "id_back": "الجهة الخلفية للهوية",
-        }
+        labels = texts.VERIFICATION_DOCUMENT_LABELS
         await query.edit_message_text(
-            "أرسل فقط الصورة المطلوبة التالية كصورة في هذه المحادثة:\n"
-            f"{labels[kind]}\n\n"
-            "تبقى بقية صور الهوية محفوظة للمراجعة؛ لن تحتاج إلى إعادة إرسالها.",
+            texts.format_inline_message(
+                "supplement_prompt",
+                label=labels[kind]
+            ),
             reply_markup=cancel_inline_kb(),
         )
         _remember_user_prompt(context, query.message)
@@ -2958,14 +2924,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "verify-status":
         status = await db.verification_status(query.from_user.id)
         if not status:
-            message_text = "لم تقدّم طلب توثيق. يمكنك التقديم اختياريًا من القائمة الرئيسية."
+            message_text = texts.INLINE_MESSAGES["verification_status_not_started"]
         elif status["status"] == "verified":
-            message_text = "✅ حسابك موثّق كمراسل. هذه الشارة لا تعني اعتماد أي بلاغ تلقائيًا."
+            message_text = texts.INLINE_MESSAGES["verification_status_verified"]
         elif status["status"] == "capturing":
-            message_text = (
-                "طلب التوثيق غير مكتمل بعد. الصور لا تُحفظ للمراجعة حتى تنتهي "
-                "من إرسال الصور الثلاث واجتيازها الفحص المحلي."
-            )
+            message_text = texts.INLINE_MESSAGES["verification_status_capturing"]
         elif (
             status["status"] == "pending"
             and status.get("review_state") == "needs_info"
@@ -2975,27 +2938,22 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 kinds = json.loads(required)
             except (TypeError, json.JSONDecodeError):
                 kinds = []
-            labels = {
-                "selfie": "صورة الوجه",
-                "id_front": "الجهة الأمامية للهوية",
-                "id_back": "الجهة الخلفية للهوية",
-            }
-            message_text = (
-                "طلب التوثيق مفتوح وينتظر الصور التالية فقط:\n"
-                + "\n".join(f"• {labels[kind]}" for kind in kinds if kind in labels)
-                + f"\n\nملاحظة المشرف: {status.get('supplement_message') or ''}"
+            labels = texts.VERIFICATION_DOCUMENT_LABELS
+            message_text = texts.format_inline_message(
+                "verification_status_needs_info",
+                documents="\n".join(
+                    f"• {labels[kind]}" for kind in kinds if kind in labels
+                ),
+                message=status.get("supplement_message") or "",
             )
         elif status["status"] == "pending" and status.get("has_documents"):
-            message_text = "⏳ طلب التوثيق قيد المراجعة الإدارية."
+            message_text = texts.INLINE_MESSAGES["verification_status_pending"]
         elif status["status"] == "pending":
-            message_text = (
-                "تعذّر العثور على صور الطلب بعد استعادة بيانات النظام. "
-                "يمكنك بدء طلب جديد؛ لم تُستعد الصور من النسخ الاحتياطية."
-            )
+            message_text = texts.INLINE_MESSAGES["verification_status_missing_documents"]
         elif status["status"] == "rejected":
-            message_text = "لم يُعتمد طلب التوثيق. يمكنك إعادة التقديم من القائمة الرئيسية."
+            message_text = texts.INLINE_MESSAGES["verification_status_rejected"]
         else:
-            message_text = "لم يكتمل إرسال طلب التوثيق. ابدأ من جديد عند رغبتك."
+            message_text = texts.INLINE_MESSAGES["verification_status_incomplete"]
         await query.edit_message_text(
             message_text,
             reply_markup=back_to_menu_kb(),
@@ -3011,14 +2969,17 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if parts[1] == "verify":
         if query.message.chat.type != "private":
-            await query.answer("ابدأ التوثيق في المحادثة الخاصة مع البوت.", show_alert=True)
+            await query.answer(
+                texts.INLINE_MESSAGES["verification_private_only"],
+                show_alert=True,
+            )
             return context.user_data.get("report_state")
         if any(
             key in context.user_data
             for key in ("report_category", "app_draft", "followup_report_id")
         ):
             await query.answer(
-                "أكمل البلاغ الحالي أو ألغِه قبل بدء التوثيق.",
+                texts.INLINE_MESSAGES["verification_report_in_progress"],
                 show_alert=True,
             )
             return context.user_data.get("report_state")
@@ -3035,20 +2996,23 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if parts[1] == "verify-consent":
         if query.message.chat.type != "private":
-            await query.answer("ابدأ التوثيق في المحادثة الخاصة مع البوت.", show_alert=True)
+            await query.answer(
+                texts.INLINE_MESSAGES["verification_private_only"],
+                show_alert=True,
+            )
             return context.user_data.get("report_state")
         if any(
             key in context.user_data
             for key in ("report_category", "app_draft", "followup_report_id")
         ):
             await query.answer(
-                "أكمل البلاغ الحالي أو ألغِه قبل بدء التوثيق.",
+                texts.INLINE_MESSAGES["verification_report_in_progress"],
                 show_alert=True,
             )
             return context.user_data.get("report_state")
         if not verified_reporters.is_configured():
             await query.answer(
-                "التوثيق غير مفعّل بعد؛ إعداد التشفير الآمن غير مكتمل.",
+                texts.INLINE_MESSAGES["verification_not_configured"],
                 show_alert=True,
             )
             return ConversationHandler.END
@@ -3070,7 +3034,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             if not updated:
                 await query.answer(
-                    "تعذر تحديث الموافقة؛ أعد المحاولة لاحقًا.",
+                    texts.INLINE_MESSAGES["verification_consent_update_failed"],
                     show_alert=True,
                 )
                 return ConversationHandler.END
@@ -3081,8 +3045,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 f"consent_version={consent_version}",
             )
             await query.edit_message_text(
-                "تم تسجيل موافقتك على إفصاح التوثيق المحدّث. "
-                "لم نجمع وثائق إضافية.",
+                texts.INLINE_MESSAGES["verification_consent_updated"],
                 reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
             )
             _remember_user_prompt(context, query.message)
@@ -3098,8 +3061,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _send_clean_prompt(
             update,
             context,
-            "شارِك رقم هاتفك السوري عبر زر تيليجرام للانتقال إلى خطوات التوثيق. "
-            "يمكنك الإلغاء في أي وقت.",
+            texts.INLINE_MESSAGES["verification_phone_prompt"],
             parse_mode=ParseMode.HTML,
             reply_markup=keyboards.verification_contact_kb(),
         )
@@ -3137,7 +3099,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         target = parts[2]
         if target not in target_states or target not in allowed_back.get(current, set()):
             await query.edit_message_text(
-                "انتهت هذه الخطوة. ابدأ من القائمة الرئيسية.",
+                texts.INLINE_MESSAGES["step_expired"],
                 reply_markup=back_to_menu_kb(),
             )
             context.user_data.clear()
@@ -3148,7 +3110,9 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "category" and len(parts) == 3:
         category = parts[2]
         if category not in REPORT_CATEGORIES:
-            await query.answer("هذا القسم غير معروف.", show_alert=True)
+            await query.answer(
+                texts.INLINE_MESSAGES["unknown_category"], show_alert=True
+            )
             return ASK_CATEGORY
         context.user_data.clear()
         context.user_data.update(
@@ -3169,7 +3133,9 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "platform" and len(parts) == 3:
         platform_key = parts[2]
         if platform_key not in SOCIAL_PLATFORM_LABELS:
-            await query.answer("المنصة غير معروفة.", show_alert=True)
+            await query.answer(
+                texts.INLINE_MESSAGES["unknown_platform"], show_alert=True
+            )
             return ASK_PLATFORM
         context.user_data["platform"] = SOCIAL_PLATFORM_LABELS[platform_key]
         context.user_data["platform_key"] = platform_key
@@ -3242,7 +3208,9 @@ async def confirm_save_from_draft(update: Update, context: ContextTypes.DEFAULT_
     _pending_app_users.discard(user.id)
 
     if not draft:
-        await query.answer("لا توجد مسودة صالحة", show_alert=True)
+        await query.answer(
+            texts.INLINE_MESSAGES["invalid_draft"], show_alert=True
+        )
         return
 
     # نطلب الصورة لأن التطبيق لا يستطيع رفع الصور مباشرة عبر web_app_data
@@ -3297,9 +3265,9 @@ async def welcome_hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             exc_info=True,
                         )
                 await message.reply_text(
-                    "✅ وصلت رسالتك إلى الإدارة."
+                    texts.INLINE_MESSAGES["chat_saved_notified"]
                     if delivered
-                    else "✅ حُفظت رسالتك في سجل المحادثة، لكن تعذّر تنبيه الإدارة الآن."
+                    else texts.INLINE_MESSAGES["chat_saved_no_notify"]
                 )
                 return
     await update.effective_message.reply_text(texts.WELCOME_HINT, parse_mode=ParseMode.HTML)

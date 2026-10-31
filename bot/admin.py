@@ -198,7 +198,9 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not chat or chat.type != "private":
         if message:
-            await message.reply_text("أرسل الأمر في المحادثة الخاصة مع البوت.")
+            await message.reply_text(
+                texts.INLINE_MESSAGES["admin_private_only"]
+            )
         return
 
     db = _db(context)
@@ -435,15 +437,21 @@ async def receive_reject_reason(
         or time.time() - requested_at > REJECT_PROMPT_TTL
     ):
         clear_pending()
-        await message.reply_text("انتهت مهلة سبب الرفض؛ ابدأ الإجراء من جديد.")
+        await message.reply_text(
+            texts.INLINE_MESSAGES["admin_reject_expired"]
+        )
         raise ApplicationHandlerStop
 
     reason = message.text.strip()
     if not reason:
-        await message.reply_text("سبب الرفض مطلوب. أرسل سببًا غير فارغ أو ألغِ العملية.")
+        await message.reply_text(
+            texts.INLINE_MESSAGES["admin_reject_required"]
+        )
         raise ApplicationHandlerStop
     if len(reason) > 2000:
-        await message.reply_text("سبب الرفض يتجاوز الحد المسموح (2000 حرف).")
+        await message.reply_text(
+            texts.INLINE_MESSAGES["admin_reject_too_long"]
+        )
         raise ApplicationHandlerStop
 
     db = _db(context)
@@ -470,8 +478,14 @@ async def receive_reject_reason(
         STATUS_REJECTED,
         texts.REJECT_REASON_NOTIF.format(reason=utils.esc(reason)),
     )
-    status = "وتم إشعار المبلّغ" if notified else "لكن تعذر إشعار المبلّغ"
-    await message.reply_text(f"تم رفض البلاغ {report.get('seq') or rid} {status}.")
+    key = (
+        "report_rejected_notified"
+        if notified
+        else "report_rejected_not_notified"
+    )
+    await message.reply_text(
+        texts.INLINE_MESSAGES[key].format(seq=report.get("seq") or rid)
+    )
     raise ApplicationHandlerStop
 
 
@@ -601,7 +615,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.info("المشرف %s غيّر حالة البلاغ %s إلى %s",
                     update.effective_user.id, rid, new_status)
         await _notify_reporter(context, rid, new_status)
-        await query.answer("✅ تم تحديث الحالة", show_alert=False)
+        await query.answer(
+            texts.INLINE_MESSAGES["admin_status_updated"], show_alert=False
+        )
         await _refresh_view(update, context, db, rid)
 
     elif op == "stats":

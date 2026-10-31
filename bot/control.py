@@ -62,6 +62,10 @@ SKIP_LABEL = "⏭️ تخطي"
 BACK_LABEL = "↩️ رجوع"
 LOCATION_LABEL = "📍 مشاركة الموقع"
 SHARE_CONTACT_LABEL = "📞 مشاركة رقم هاتفي"
+INPUT_PLACEHOLDER = "✏️ اكتب هنا… أو اختر زرًا"
+CHOOSE_BUTTON_PLACEHOLDER = "اختر زرًا 👇"
+APP_INPUT_PLACEHOLDER = "✏️ اكتب هنا… أو اضغط زر التطبيق 🚀"
+VERIFICATION_CONTACT_PLACEHOLDER = "📞 شارك رقمك أو اختر إلغاء"
 
 MAX_REPLY_ROWS = 6
 MAX_REPLY_ROW_BUTTONS = 4
@@ -143,17 +147,17 @@ def default_reply_keyboards() -> dict[str, dict[str, Any]]:
     return {
         "cancel": {
             "rows": [row(btn(CANCEL_LABEL, "cancel"))],
-            "placeholder": "✏️ اكتب هنا… أو اختر زرًا",
+            "placeholder": INPUT_PLACEHOLDER,
             "persistent": False,
         },
         "confirm": {
             "rows": [row(btn(CONFIRM_LABEL, "confirm"), btn(CANCEL_LABEL, "cancel"))],
-            "placeholder": "اختر زرًا 👇",
+            "placeholder": CHOOSE_BUTTON_PLACEHOLDER,
             "persistent": False,
         },
         "app": {
             "rows": [row(btn(APP_LABEL, "web_app"))],
-            "placeholder": "✏️ اكتب هنا… أو اضغط زر التطبيق 🚀",
+            "placeholder": APP_INPUT_PLACEHOLDER,
             "persistent": True,
             "requires_url": app_url,
         },
@@ -162,7 +166,7 @@ def default_reply_keyboards() -> dict[str, dict[str, Any]]:
                 row(btn(SHARE_CONTACT_LABEL, "contact")),
                 row(btn(CANCEL_LABEL, "cancel")),
             ],
-            "placeholder": "📞 شارك رقمك أو اختر إلغاء",
+            "placeholder": VERIFICATION_CONTACT_PLACEHOLDER,
             "persistent": False,
         },
         "contact": {
@@ -172,7 +176,7 @@ def default_reply_keyboards() -> dict[str, dict[str, Any]]:
                 row(btn(BACK_LABEL, "back")),
                 row(btn(CANCEL_LABEL, "cancel")),
             ],
-            "placeholder": "اختر زرًا 👇",
+            "placeholder": CHOOSE_BUTTON_PLACEHOLDER,
             "persistent": False,
         },
         "location": {
@@ -182,7 +186,7 @@ def default_reply_keyboards() -> dict[str, dict[str, Any]]:
                 row(btn(BACK_LABEL, "back")),
                 row(btn(CANCEL_LABEL, "cancel")),
             ],
-            "placeholder": "اختر زرًا 👇",
+            "placeholder": CHOOSE_BUTTON_PLACEHOLDER,
             "persistent": False,
         },
     }

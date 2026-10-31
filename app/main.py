@@ -27,7 +27,7 @@ except Exception:
 
 from app import config  # noqa: E402  (بعد تهيئة الطرفية)
 from app import health_server  # noqa: E402
-from bot import admin, control, handlers, keyboards, tracking_bot
+from bot import admin, control, handlers, keyboards, texts, tracking_bot
 from services import archive, guards, hub_backup
 from database import Database  # noqa: E402
 from bot.tracking_bot import TrackedBot  # noqa: E402
@@ -71,7 +71,7 @@ async def command_access_control(
     if guards.is_public_command_allowed(user.id, command):
         return
     await message.reply_text(
-        "عذرًا، الأوامر المباشرة للمشرفين فقط. استخدم أزرار البوت التفاعلية."
+        texts.INLINE_MESSAGES["main_command_admin_only"]
     )
     raise ApplicationHandlerStop
 
@@ -112,6 +112,11 @@ async def post_init(app) -> None:
     runtime_settings = await app.bot_data["db"].get_runtime_settings()
     config.apply_runtime_settings(runtime_settings)
     app.bot_data["welcome_photo"] = await app.bot_data["db"].get_welcome_photo()
+    try:
+        loaded_texts = await texts.load_database_texts(app.bot_data["db"])
+        logger.info("تم تحميل %s نصًا من قاعدة البيانات", loaded_texts)
+    except Exception:  # noqa: BLE001
+        logger.exception("تعذر تحميل نصوص البوت من قاعدة البيانات")
 
     # تخطيط قائمة المستخدم المحفوظ من لوحة الإدارة (إن وُجد) — يُطبَّق فورًا.
     try:
@@ -234,6 +239,7 @@ async def user_menu_refresh_loop(app) -> None:
     last_snapshot = None
     while True:
         try:
+            await texts.load_database_texts(db, seed_defaults=False)
             raw = await db.get_state(keyboards.USER_MENU_STATE_KEY)
             keyboards.set_user_menu_layout(raw)
 
@@ -281,11 +287,9 @@ async def followup_deadline_loop(app) -> None:
                 try:
                     await app.bot.send_message(
                         chat_id=int(report["user_id"]),
-                        text=(
-                            f"أُغلق البلاغ {report.get('seq') or report['id']} "
-                            "تلقائيًا لانتهاء مهلة اليومين دون رد. "
-                            "يمكنك التواصل مع الإدارة إذا أردت طلب مراجعة."
-                        ),
+                        text=texts.INLINE_MESSAGES[
+                            "report_closed_no_followup"
+                        ].format(seq=report.get("seq") or report["id"]),
                     )
                 except Exception:
                     logger.warning(

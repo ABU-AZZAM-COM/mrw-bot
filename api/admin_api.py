@@ -627,22 +627,19 @@ async def _notify_user_verification_supplement(
     requested_documents: list[str],
     message: str,
 ) -> bool:
-    labels = {
-        "selfie": "صورة الوجه",
-        "id_front": "الجهة الأمامية للهوية",
-        "id_back": "الجهة الخلفية للهوية",
-    }
-
     async def _sender():
         bot, _loop = _bot_runtime()
         if bot is None:
             return False
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-        text = (
-            "نحتاج استكمال طلب توثيقك. أرسل الصور التالية فقط في محادثة البوت:\n"
-            + "\n".join(f"• {labels[kind]}" for kind in requested_documents)
-            + f"\n\nملاحظة المشرف: {utils.esc(message)}"
+        text = texts.format_inline_message(
+            "verification_supplement_notification",
+            documents="\n".join(
+                f"• {texts.VERIFICATION_DOCUMENT_LABELS[kind]}"
+                for kind in requested_documents
+            ),
+            message=utils.esc(message),
         )
         try:
             await bot.send_message(
@@ -652,7 +649,7 @@ async def _notify_user_verification_supplement(
                 reply_markup=InlineKeyboardMarkup(
                     [[
                         InlineKeyboardButton(
-                            "إرسال الصور المطلوبة",
+                            texts.INLINE_MESSAGES["verification_supplement_button"],
                             callback_data="usr:verify-supplement",
                         )
                     ]]
@@ -680,7 +677,9 @@ async def _send_direct_message_result(
         try:
             message = await bot.send_message(
                 chat_id=int(user_id),
-                text=f"📨 رسالة من الجهة المختصة:\n\n{text}",
+                text=texts.INLINE_MESSAGES["direct_admin_message"].format(
+                    text=text
+                ),
                 reply_markup=reply_markup,
             )
             return {
@@ -747,7 +746,7 @@ async def _send_unblock_notice(user_id: int) -> bool:
         try:
             await bot.send_message(
                 chat_id=int(user_id),
-                text="✅ تم رفع الحظر عن حسابك. يمكنك استخدام البوت وتقديم البلاغات من جديد.",
+                text=texts.INLINE_MESSAGES["account_unblocked"],
             )
             return True
         except Exception:
@@ -1707,6 +1706,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 (key, label, content, category, __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()))
             conn.commit(); conn.close(); ok = True
         if ok:
+            texts.apply_database_text(key, content)
             await db.audit(_admin_actor(request), "bot_text_updated", key, f"category={category}")
         return JSONResponse({"ok": ok, "key": key})
 

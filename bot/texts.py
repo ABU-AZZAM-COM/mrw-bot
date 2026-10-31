@@ -33,7 +33,7 @@ STATUS_BADGE = {name: f"{emoji} {name}" for name, emoji in STATUS_EMOJI.items()}
 
 def badge(status: str) -> str:
     """إرجاع "🟠 قيد المراجعة" مثلًا لحالة مخزنة في القاعدة."""
-    return STATUS_BADGE.get(status, f"⚪ {status}")
+    return STATUS_BADGE.get(status, UNKNOWN_STATUS_BADGE.format(status=status))
 
 
 STATUS_EXPLANATIONS = {
@@ -47,19 +47,636 @@ STATUS_EXPLANATIONS = {
 
 
 def status_explanation(status: str) -> str:
-    return STATUS_EXPLANATIONS.get(status, "تابع هذه البطاقة للاطلاع على أي تحديث.")
+    return STATUS_EXPLANATIONS.get(status, STATUS_EXPLANATION_FALLBACK)
+
+
+UNKNOWN_STATUS_BADGE = "⚪ {status}"
+STATUS_EXPLANATION_FALLBACK = "تابع هذه البطاقة للاطلاع على أي تحديث."
 
 # ------------------------------------------------------------------
-# دوال قراءة النصوص من قاعدة البيانات مع fallback
+# نصوص المستخدمين المباشرة التي كانت مكتوبة داخل المعالجات
 # ------------------------------------------------------------------
+INLINE_MESSAGES = {
+    "reply_usage": "الاستخدام: /reply رقم_البلاغ المعلومات الإضافية",
+    "reply_private_only": "أرسل المعلومات الإضافية في المحادثة الخاصة مع البوت.",
+    "followup_unavailable": "لا يوجد طلب معلومات مفتوح لهذا البلاغ.",
+    "followup_length": "يجب أن تكون المعلومات بين حرفين و2000 حرف.",
+    "followup_received": "تم استلام المعلومات وإيصالها إلى الإدارة.",
+    "followup_saved_no_notify": "تم حفظ المعلومات، لكن تعذر إيصالها للمشرفين حاليًا.",
+    "verification_image_format": (
+        "أرسل الصورة من المعرض أو الكاميرا كصورة عادية في المحادثة، "
+        "ولا ترسلها كملف. يمكنك الإلغاء في أي وقت."
+    ),
+    "verification_session_expired": "انتهت جلسة التوثيق. ابدأ طلبًا جديدًا من القائمة الرئيسية.",
+    "verification_privacy_unavailable": "تعذّر التحقق من إفصاح الخصوصية الآن. لم تُعالج الصورة؛ حاول مجددًا.",
+    "verification_privacy_changed": (
+        "تم تحديث إفصاح الخصوصية. ابدأ طلب التوثيق من جديد وراجع الإفصاح "
+        "المحدّث قبل إرسال الصور."
+    ),
+    "verification_sightengine_failed": (
+        "تعذّر فحص صورة الوجه للتأكد من خلوها من المحتوى غير اللائق. "
+        "لم تُحفظ الصورة؛ حاول مجددًا بعد قليل."
+    ),
+    "verification_encryption_failed": "تعذّر التشفير الآمن، لذلك لم تُحفظ الصورة. ابدأ طلبًا جديدًا لاحقًا.",
+    "verification_processing_failed": "تعذّر إكمال فحص الصورة الآن، ولم تُحفظ. حاول مرة أخرى بعد قليل.",
+    "verification_ticket_save_failed": "تعذّر متابعة التوثيق بسبب مشكلة مؤقتة في الحفظ. لم تُرسل الصور للمراجعة.",
+    "supplement_start_required": "ابدأ الاستكمال من زر طلب التوثيق الذي وصلك.",
+    "supplement_image_required": "أرسل الصورة المطلوبة كصورة في محادثة البوت.",
+    "supplement_load_failed": "تعذّر تحميل طلب الاستكمال الآن. حاول مجددًا لاحقًا.",
+    "supplement_missing": "لا يوجد طلب استكمال نشط. أعد فتح حالة التوثيق من القائمة الرئيسية.",
+    "supplement_sightengine_failed": "تعذّر فحص صورة الوجه الآن، ولم تُحفظ. حاول مرة أخرى لاحقًا.",
+    "supplement_save_failed": "تعذّر حفظ الصورة بأمان. لم تُحفظ؛ أعد المحاولة لاحقًا.",
+    "supplement_wrong_image": "هذه الصورة غير مطلوبة في طلب الاستكمال الحالي.",
+    "supplement_upload_failed": "تعذّر حفظ الصورة الآن. لم تُرسل للمراجعة؛ حاول مجددًا.",
+    "supplement_expired": "لم يعد طلب الاستكمال نشطًا، لذلك لم تُحفظ الصورة.",
+    "supplement_followup_image": "تم استلام الصورة المطلوبة. أرسل الآن فقط: ",
+    "appeal_length": "اكتب اعتراضًا بين حرفين و2000 حرف.",
+    "appeal_unavailable": "لم يعد هذا البلاغ قابلًا لتقديم اعتراض جديد.",
+    "admin_reject_expired": "انتهت مهلة سبب الرفض؛ ابدأ الإجراء من جديد.",
+    "admin_reject_required": "سبب الرفض مطلوب. أرسل سببًا غير فارغ أو ألغِ العملية.",
+    "admin_reject_too_long": "سبب الرفض يتجاوز الحد المسموح (2000 حرف).",
+    "admin_private_only": "أرسل الأمر في المحادثة الخاصة مع البوت.",
+    "main_command_admin_only": (
+        "عذرًا، الأوامر المباشرة للمشرفين فقط. استخدم أزرار البوت التفاعلية."
+    ),
+    "appeal_prompt": (
+        "أرسل اعتراضك أو المعلومات الإضافية المتعلقة بهذا البلاغ "
+        "(حتى 2000 حرف). سيصل الطلب إلى المشرف للمراجعة، ولن يُعاد فتح "
+        "البلاغ تلقائيًا."
+    ),
+    "privacy_link_intro": (
+        "يمكنك قراءة سياسة الخصوصية عبر الرابط التالي. "
+        "راجعها قبل إرسال بلاغ أو بدء توثيق المراسل."
+    ),
+    "privacy_link_missing": (
+        "لم يُضبط رابط سياسة الخصوصية بعد. لا تُرسل بيانات حساسة "
+        "ضمن البلاغ قبل مراجعة الإدارة."
+    ),
+    "supplement_missing_status": "لا يوجد طلب استكمال نشط. راجع حالة توثيق الحساب من القائمة الرئيسية.",
+    "supplement_prompt": (
+        "أرسل فقط الصورة المطلوبة التالية كصورة في هذه المحادثة:\n"
+        "{label}\n\n"
+        "تبقى بقية صور الهوية محفوظة للمراجعة؛ لن تحتاج إلى إعادة إرسالها."
+    ),
+    "verification_private_only": "ابدأ التوثيق في المحادثة الخاصة مع البوت.",
+    "verification_report_in_progress": "أكمل البلاغ الحالي أو ألغِه قبل بدء التوثيق.",
+    "verification_not_configured": "التوثيق غير مفعّل بعد؛ إعداد التشفير الآمن غير مكتمل.",
+    "verification_consent_update_failed": "تعذر تحديث الموافقة؛ أعد المحاولة لاحقًا.",
+    "verification_consent_updated": (
+        "تم تسجيل موافقتك على إفصاح التوثيق المحدّث. "
+        "لم نجمع وثائق إضافية."
+    ),
+    "verification_phone_prompt": (
+        "شارِك رقم هاتفك السوري عبر زر تيليجرام للانتقال إلى خطوات التوثيق. "
+        "يمكنك الإلغاء في أي وقت."
+    ),
+    "step_expired": "انتهت هذه الخطوة. ابدأ من القائمة الرئيسية.",
+    "unknown_category": "هذا القسم غير معروف.",
+    "unknown_platform": "المنصة غير معروفة.",
+    "invalid_draft": "لا توجد مسودة صالحة",
+    "violation_type_unavailable": (
+        "⚠️ نوع المخالفة المحدد لم يعد متاحًا. أعد فتح التطبيق واختر تصنيفًا من القائمة."
+    ),
+    "verification_image_format_invalid": "أرسل ملف صورة بصيغة JPEG أو PNG.",
+    "verification_image_size_invalid": "حجم الملف غير مناسب. أرسل صورة أصغر من 10 ميغابايت.",
+    "verification_image_dimensions_invalid": "دقة الصورة منخفضة. أعد الإرسال بصورة أكبر وأوضح.",
+    "verification_image_blurry": "الصورة غير واضحة بما يكفي. أعد تصويرها بإضاءة جيدة وثبّت الهاتف.",
+    "verification_image_unreadable": "تعذّر فتح الصورة. أعد إرسالها كصورة واضحة من المعرض.",
+    "verification_face_not_found": "لم يُعثر على وجه واضح في الصورة. أعد إرسال صورة شخصية يظهر فيها وجه واحد.",
+    "verification_face_multiple": "يجب أن يظهر وجه واحد فقط. أعد إرسال صورة شخصية منفردة.",
+    "verification_face_unclear": "الوجه صغير أو غير واضح. أعد إرسال صورة أقرب وأوضح.",
+    "verification_inspection_unavailable": (
+        "تعذّر التحقق من وضوح الصورة أو الوجه الآن. لم تُحفظ الصورة؛ "
+        "حاول مرة أخرى بعد قليل."
+    ),
+    "verification_inappropriate_content": (
+        "لم تُقبل الصورة لأن فحص المحتوى رصد مادة غير مناسبة. "
+        "أرسل صورة أخرى مناسبة وواضحة."
+    ),
+    "verification_image_check_failed": (
+        "لم تجتز الصورة الفحص الأولي. أعد إرسال صورة واضحة للخطوة الحالية."
+    ),
+    "direct_admin_message": "📨 رسالة من الجهة المختصة:\n\n{text}",
+    "account_unblocked": "✅ تم رفع الحظر عن حسابك. يمكنك استخدام البوت وتقديم البلاغات من جديد.",
+    "report_rejected_notified": "تم رفض البلاغ {seq} وتم إشعار المبلّغ.",
+    "report_rejected_not_notified": "تم رفض البلاغ {seq} لكن تعذر إشعار المبلّغ.",
+    "verification_supplement_caption": (
+        "وصلت صور الاستكمال لطلب توثيق المراسل #{request_id} "
+        "(المستخدم {user_id}، {kind}). راجع الطلب في لوحة التوثيق."
+    ),
+    "verification_supplement_fallback": (
+        "وصل استكمال طلب التوثيق #{request_id}، لكن تعذر إرفاق الصور. "
+        "افتح إشعار لوحة الإدارة للوصول إلى تفاصيل الطلب المحمية."
+    ),
+    "backup_document_caption": (
+        "نسخة احتياطية من قاعدة بيانات بلاغات المخالفات العسكرية."
+    ),
+    "photo_check_progress": "🔄 جارٍ فحص الصورة أمنيًا...",
+    "link_check_progress": "🔎 جار فحص الرابط عبر VirusTotal...",
+    "photo_check_interrupted": "⛔ أوقف النظام هذا البلاغ وفق نتيجة فحص الصورة.",
+    "photo_receipt_incomplete": "⚠️ لم يكتمل استلام الصورة. أعد إرسالها.",
+    "support_too_many_words": "رسالة التواصل لا تتجاوز 100 كلمة. اختصرها وأرسلها مجددًا.",
+    "support_rate_limited": (
+        "وصلت إلى حد رسائل التواصل. أعد المحاولة بعد انتهاء المهلة؛ "
+        "هذا لا يمنعك من استخدام بقية خدمات البوت."
+    ),
+    "support_filtered": (
+        "لم تُرسل الرسالة لأنها تحتوي على كلمة تمنعها قائمة الفلترة. "
+        "أعد صياغتها أو اختر إلغاء."
+    ),
+    "support_settings_unavailable": (
+        "تعذّر التحقق من إعدادات التواصل الآمنة. لم تُرسل رسالتك؛ "
+        "أعد المحاولة لاحقًا أو استخدم البلاغات."
+    ),
+    "verification_disabled": (
+        "ميزة التوثيق غير مفعّلة حاليًا لأن إعداد التشفير الآمن لم يكتمل."
+    ),
+    "verification_share_own_phone": (
+        "للمتابعة شارك رقم هاتفك أنت عبر زر المشاركة، أو ألغِ العملية. "
+        "لا ترسل رقم شخص آخر."
+    ),
+    "verification_syrian_phone_only": (
+        "نقبل أرقام الهاتف السورية فقط. أعد مشاركة رقمك السوري من تيليجرام."
+    ),
+    "verification_storage_unavailable": (
+        "تعذّر بدء التوثيق لأن خدمة الحفظ الآمن غير جاهزة. "
+        "لم يُحفظ رقم الهاتف."
+    ),
+    "verification_image_sequence_invalid": (
+        "لم يكتمل ترتيب الصور، لذلك لم يُرسل الطلب. ابدأه من جديد."
+    ),
+    "verification_submission_session_expired": (
+        "انتهت جلسة التوثيق قبل اكتمال الإرسال. ابدأ طلبًا جديدًا."
+    ),
+    "verification_already_verified": (
+        "حسابك موثّق بالفعل. لا حاجة لإرسال وثائقك مرة أخرى."
+    ),
+    "verification_already_pending": (
+        "طلب التوثيق قيد المراجعة. لا ترسل صور الهوية مرة أخرى؛ "
+        "سيظهر القرار في «حالة توثيق الحساب»."
+    ),
+    "verification_request_open": "يوجد طلب توثيق جارٍ. أعد فتحه من محادثة البوت.",
+    "verification_selfie_prompt": (
+        "تم استلام رقمك السوري. أرسل الآن صورة وجه واضحة من المعرض أو الكاميرا "
+        "كصورة عادية في المحادثة، ولا ترسلها كملف. يجب أن يظهر وجه واحد بوضوح. "
+        "ستُفحص صورة الوجه عبر Sightengine للتأكد من خلوها من المحتوى غير اللائق؛ "
+        "ولا تُرسل صور الهوية إلى هذه الخدمة."
+    ),
+    "verification_face_passed_next_id": (
+        "اجتازت صورة الوجه فحص الوضوح والوجه والمحتوى. أرسل الآن "
+        "الجهة الأمامية للهوية كصورة واضحة من المعرض أو الكاميرا."
+    ),
+    "verification_image_passed_next_back": (
+        "اجتازت الصورة السابقة الفحص الأولي. أرسل الآن الجهة الخلفية "
+        "للهوية كصورة واضحة من المعرض أو الكاميرا."
+    ),
+    "verification_submission_complete": (
+        "✅ اكتمل إرسال طلبك للمراجعة البشرية. فحص وضوح الوجه والمحتوى لا يثبت "
+        "أصالة الهوية أو أن الصورة حيّة. سنبلغك عند صدور القرار."
+    ),
+    "verification_save_failed": (
+        "تعذّر حفظ الطلب بأمان، ولم يُرسل للمراجعة. "
+        "ابدأ طلبًا جديدًا لاحقًا."
+    ),
+    "location_description_too_long": (
+        "اكتب وصفًا للمكان لا يتجاوز 120 حرفًا، أو اختر تخطي."
+    ),
+    "contact_must_be_own": "يرجى مشاركة رقمك أنت فقط أو اختيار تخطي.",
+    "duplicate_exact": (
+        "⚠️ يوجد بلاغ مطابق سابق (رقمه <code>{report_id}</code>).\n"
+        "سيُسجَّل بلاغك للمراجعة فقط ولن يُنشر تلقائيًا."
+    ),
+    "duplicate_similar": (
+        "⚠️ يوجد بلاغ مشابه لـ <code>{report_id}</code> "
+        "(تشابه {similarity}%).\n"
+        "سيُسجَّل بلاغك للمراجعة فقط ولن يُنشر تلقائيًا."
+    ),
+    "link_invalid_http": "❌ الرابط غير صالح. تأكد من أنه يبدأ بـ http أو https.",
+    "link_invalid": "❌ الرابط غير صالح.",
+    "link_host_missing": "❌ الرابط لا يحتوي اسم موقع.",
+    "link_domain_blocked": "❌ هذا النطاق محجوب في النظام.",
+    "link_private_host": "❌ الرابط يشير إلى عنوان داخلي غير مسموح.",
+    "unknown_social_platform": (
+        "ℹ️ لم أتمكّن من تحديد منصة التواصل من هذا الرابط.\n"
+        "اذكر في الوصف أين نُشر المنشور، وسيُراجع البلاغ للتأكد."
+    ),
+    "description_too_short": (
+        "✍️ الوصف قصير جدًا.\n"
+        "اكتب وصفًا أوضح (من {min_length} حرفًا على الأقل): "
+        "ما الذي حدث؟ أين؟ متى؟ وما تفاصيل المخالفة؟"
+    ),
+    "description_not_enough_words": (
+        "✍️ الوصف لا يحتوي معلومات كافية.\n"
+        "اكتب وصفًا أوضح (من {min_words} كلمات على الأقل)."
+    ),
+    "report_category_prompt": "اختر القسم الأقرب إلى موضوع بلاغك:",
+    "privacy_report_link": (
+        "\n\n<a href=\"{url}\">اطّلع على سياسة الخصوصية قبل إرسال البلاغ.</a>"
+    ),
+    "reporting_paused_plain": "🛑 استقبال البلاغات الجديدة متوقف مؤقتًا.\n\n",
+    "link_check_complete": "✅ اكتمل فحص الرابط.",
+    "photo_check_review_required": (
+        "⚠️ تعذر إكمال الفحص الآلي بالكامل؛ سيُحال البلاغ للمراجعة اليدوية."
+    ),
+    "photo_check_passed": "✅ اكتمل الفحص الآلي الأولي للصورة.",
+    "support_min_length": "اكتب رسالة من حرفين على الأقل، أو اختر إلغاء.",
+    "appeal_saved_notified": (
+        "تم حفظ اعتراضك وإحالته للمراجعة؛ لم يُعَد فتح البلاغ تلقائيًا."
+    ),
+    "appeal_saved_no_notify": (
+        "تم حفظ اعتراضك، لكن تعذر إيصال إشعار للمشرفين حاليًا. "
+        "سيبقى البلاغ في قائمة المراجعة."
+    ),
+    "chat_saved_notified": "✅ وصلت رسالتك إلى الإدارة.",
+    "chat_saved_no_notify": (
+        "✅ حُفظت رسالتك في سجل المحادثة، لكن تعذّر تنبيه الإدارة الآن."
+    ),
+    "report_photo_received": "✅ مستلمة",
+    "report_photo_missing": "غير مرفقة",
+    "report_link_missing": "غير مرفق",
+    "app_duplicate_manual_review": (
+        "⚠️ سيُحال البلاغ للمراجعة اليدوية بسبب تشابهه مع بلاغ سابق.\n\n"
+    ),
+    "verification_status_not_started": (
+        "لم تقدّم طلب توثيق. يمكنك التقديم اختياريًا من القائمة الرئيسية."
+    ),
+    "verification_status_verified": (
+        "✅ حسابك موثّق كمراسل. هذه الشارة لا تعني اعتماد أي بلاغ تلقائيًا."
+    ),
+    "verification_status_capturing": (
+        "طلب التوثيق غير مكتمل بعد. الصور لا تُحفظ للمراجعة حتى تنتهي "
+        "من إرسال الصور الثلاث واجتيازها الفحص المحلي."
+    ),
+    "verification_status_needs_info": (
+        "طلب التوثيق مفتوح وينتظر الصور التالية فقط:\n"
+        "{documents}\n\nملاحظة المشرف: {message}"
+    ),
+    "verification_status_pending": "⏳ طلب التوثيق قيد المراجعة الإدارية.",
+    "verification_status_missing_documents": (
+        "تعذّر العثور على صور الطلب بعد استعادة بيانات النظام. "
+        "يمكنك بدء طلب جديد؛ لم تُستعد الصور من النسخ الاحتياطية."
+    ),
+    "verification_status_rejected": (
+        "لم يُعتمد طلب التوثيق. يمكنك إعادة التقديم من القائمة الرئيسية."
+    ),
+    "verification_status_incomplete": (
+        "لم يكتمل إرسال طلب التوثيق. ابدأ من جديد عند رغبتك."
+    ),
+    "verification_supplement_notification": (
+        "نحتاج استكمال طلب توثيقك. أرسل الصور التالية فقط في محادثة البوت:\n"
+        "{documents}\n\nملاحظة المشرف: {message}"
+    ),
+    "verification_supplement_button": "إرسال الصور المطلوبة",
+    "unspecified_value": "غير محدد",
+    "verification_checking_photo": "🔄 جارٍ فحص الصورة أمنيًا...",
+    "verification_upload_complete": (
+        "اكتمل إرسال الصور المطلوبة. بقي طلب التوثيق مفتوحًا للمراجعة، "
+        "وسنبلغك عند صدور القرار."
+    ),
+    "expired_consent_start_over": "ابدأ طلبًا جديدًا من القائمة الرئيسية.",
+    "admin_status_updated": "✅ تم تحديث الحالة",
+    "report_closed_no_followup": (
+        "أُغلق البلاغ {seq} تلقائيًا لانتهاء مهلة اليومين دون رد. "
+        "يمكنك التواصل مع الإدارة إذا أردت طلب مراجعة."
+    ),
+}
+
+VERIFICATION_DOCUMENT_LABELS = {
+    "selfie": "صورة الوجه",
+    "id_front": "الجهة الأمامية للهوية",
+    "id_back": "الجهة الخلفية للهوية",
+}
+
+
+class _MissingTextPlaceholder(dict):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+def format_inline_message(key: str, **values: object) -> str:
+    return INLINE_MESSAGES[key].format_map(_MissingTextPlaceholder(values))
+
+
+# ------------------------------------------------------------------
+# دليل الخصوصية المعروض داخل البوت عند عدم إعداد رابط خارجي
+# ------------------------------------------------------------------
+PRIVACY_POLICY = (
+    "🔒 <b>سياسة الخصوصية</b>\n"
+    "تُحفظ البيانات اللازمة لمعالجة البلاغات وطلبات التوثيق في قاعدة بيانات "
+    "مخصصة. يقتصر الاطلاع على المشرفين المخولين، وتُسجل عمليات الوصول إلى "
+    "الوثائق. لا تُرسل بياناتك إلى خدمات خارجية إلا عند توضيح ذلك في خطوة "
+    "الإرسال أو بموجب المتطلبات النظامية. مشاركة رقم الهاتف والموقع اختيارية."
+)
+
+KEYBOARD_LABELS = {
+    "report_start": "📝 تقديم بلاغ جديد",
+    "consent_continue": "متابعة والموافقة",
+    "cancel": "❌ إلغاء",
+    "cancel_plain": "إلغاء",
+    "privacy_policy": "سياسة الخصوصية",
+    "privacy_read": "قراءة سياسة الخصوصية",
+    "return_menu": "العودة إلى القائمة",
+    "main_menu": "🏠 القائمة الرئيسية",
+    "back_to_category": "⬅️ رجوع للقسم",
+    "skip": "⏭️ تخطي",
+    "location": "📍 مشاركة الموقع",
+    "back": "⬅️ رجوع",
+    "confirm_report": "✅ إرسال البلاغ",
+    "review_report": "⬅️ مراجعة البيانات",
+    "home": "🏠 القائمة الرئيسية",
+    "back_menu": "↩️ الرجوع للقائمة",
+    "return_to_reports": "⬅️ عودة إلى بلاغاتي",
+    "send_followup": "📩 إرسال المعلومات المطلوبة",
+    "send_appeal": "✉️ اعتراض أو معلومات إضافية",
+    "submit_appeal": "إرسال اعتراض أو معلومات إضافية",
+    "skip_photo": "⏭️ تخطي وإكمال البلاغ",
+    "skip_link": "⏭️ لا أملك رابطًا",
+    "skip_location": "⏭️ تخطي الموقع",
+    "skip_contact": "⏭️ تخطي بيانات التواصل",
+    "report_type_prefix": "📌 {type}",
+    "last_report_type": "🔁 نفس تصنيفي السابق: {type}",
+}
+
+ADMIN_KEYBOARD_LABELS = {
+    "previous": "◀️ السابق",
+    "next": "التالي ▶️",
+    "all_reports": "🗂 كل البلاغات",
+    "export_excel": "📥 تصدير Excel",
+    "export_text": "📄 تصدير نصي",
+    "stats": "📊 إحصائيات",
+    "home": "🏠 القائمة الرئيسية",
+    "reject_reason": "❌ رفض بسبب",
+    "back_to_list": "⬅️ رجوع للقائمة",
+    "main": "🏠 الرئيسية",
+    "approve_now": "✅ اعتماد فوري",
+    "send_review": "🟠 إحالة للمراجعة",
+    "details": "ℹ️ التفاصيل",
+    "cancel_rejection": "🚫 إلغاء الرفض",
+    "new_reports": "🆕 البلاغات الجديدة ({count})",
+    "page": "📄 {current}/{total}",
+}
+
+# قوالب الإشعارات التي تتضمن بيانات متغيرة.
+FOLLOWUP_ADMIN_NOTIF = (
+    "📩 معلومات إضافية للبلاغ {seq}\n"
+    "المبلّغ: {name} ({user_id})\n\n{message}"
+)
+APPEAL_ADMIN_NOTIF = (
+    "✉️ طلب إعادة مراجعة للبلاغ {seq}\n"
+    "المبلّغ: {name} ({user_id})\n\n{message}\n\n"
+    "لم يُعَد فتح البلاغ تلقائيًا؛ راجعه من لوحة الإدارة."
+)
+
+# ------------------------------------------------------------------
+# تحميل دليل النصوص من قاعدة البيانات
+# ------------------------------------------------------------------
+_TEXT_ALIASES = {
+    "welcome_message": ("WELCOME",),
+    "verify_consent": ("VERIFICATION_CONSENT_DEFAULT",),
+    "help_text": ("HELP",),
+    "privacy_policy": ("PRIVACY_POLICY",),
+    "about_system": ("ABOUT_SYSTEM",),
+    "status_update": ("STATUS_UPDATE_NOTIF",),
+}
+_TEXT_EXCLUDED = {"VERIFICATION_CONSENT_DB_KEY"}
+_TEXT_FALLBACKS: dict[str, tuple[str, str]] = {}
+_TEXT_RUNTIME: dict[str, str] = {}
+
+
+def _catalog_defaults() -> dict[str, tuple[str, str]]:
+    defaults: dict[str, tuple[str, str]] = {}
+    alias_names = {
+        name
+        for (name,) in _TEXT_ALIASES.values()
+    }
+
+    def add_mapping(
+        name: str, values: dict, prefix: str = "", *, module: str = "texts"
+    ) -> None:
+        for subkey, content in values.items():
+            path = f"{prefix}.{subkey}" if prefix else str(subkey)
+            if isinstance(content, str) and content:
+                key = f"bot.{module}.{name}.{path}" if module != "texts" else f"bot.{name}.{path}"
+                defaults[key] = (
+                    f"نص البوت — {name} / {path}",
+                    content,
+                )
+            elif isinstance(content, dict):
+                add_mapping(name, content, path, module=module)
+
+    for name, value in tuple(globals().items()):
+        if (
+            not name.isupper()
+            or name.startswith("_")
+            or name in _TEXT_EXCLUDED
+            or name in alias_names
+        ):
+            continue
+        if isinstance(value, str) and value:
+            defaults[f"bot.{name}"] = (f"نص البوت — {name}", value)
+        elif isinstance(value, dict):
+            add_mapping(name, value)
+    from bot import control, keyboards
+
+    for module_name, module, names in (
+        (
+            "control",
+            control,
+            (
+                "CANCEL_LABEL",
+                "CONFIRM_LABEL",
+                "APP_LABEL",
+                "SKIP_LABEL",
+                "BACK_LABEL",
+                "LOCATION_LABEL",
+                "SHARE_CONTACT_LABEL",
+                "INPUT_PLACEHOLDER",
+                "CHOOSE_BUTTON_PLACEHOLDER",
+                "APP_INPUT_PLACEHOLDER",
+                "VERIFICATION_CONTACT_PLACEHOLDER",
+            ),
+        ),
+        (
+            "keyboards",
+            keyboards,
+            (
+                "APP_BUTTON_TEXT",
+                "USER_MENU_ACTIONS",
+                "REPORT_CATEGORIES",
+                "SOCIAL_PLATFORM_LABELS",
+                "FILTER_LABELS",
+                "STATUS_LABELS",
+            ),
+        ),
+    ):
+        for name in names:
+            value = getattr(module, name)
+            if isinstance(value, str) and value:
+                defaults[f"bot.{module_name}.{name}"] = (
+                    f"نص البوت — {name}",
+                    value,
+                )
+            elif isinstance(value, dict):
+                add_mapping(name, value, module=module_name)
+    for key, (name,) in _TEXT_ALIASES.items():
+        defaults[key] = (name, globals()[name])
+    return defaults
+
+
+def _apply_catalog_value(key: str, content: str) -> bool:
+    target = key.removeprefix("bot.")
+    for alias, (name,) in _TEXT_ALIASES.items():
+        if key == alias:
+            target = name
+            break
+    parts = target.split(".")
+    if parts[0] in {"control", "keyboards"}:
+        from bot import control, keyboards
+
+        module = control if parts[0] == "control" else keyboards
+        if len(parts) < 2:
+            return False
+        name, *path = parts[1:]
+        value = getattr(module, name, None)
+        if not path:
+            if not isinstance(value, str):
+                return False
+            old_value = value
+            setattr(module, name, content)
+            _refresh_external_keyboard_text(parts[0], name, old_value, content)
+            return True
+        if not isinstance(value, dict):
+            return False
+        for subkey in path[:-1]:
+            value = value.get(subkey)
+            if not isinstance(value, dict):
+                return False
+        if path[-1] not in value:
+            return False
+        old_value = value[path[-1]]
+        value[path[-1]] = content
+        _refresh_external_keyboard_text(
+            parts[0],
+            ".".join(parts[1:]),
+            old_value if isinstance(old_value, str) else None,
+            content,
+        )
+        return True
+    if len(parts) == 1:
+        if parts[0] not in globals() or not parts[0].isupper():
+            return False
+        globals()[parts[0]] = content
+        return True
+    name, *path = parts
+    value = globals().get(name)
+    if not name.isupper() or not isinstance(value, dict):
+        return False
+    for subkey in path[:-1]:
+        value = value.get(subkey)
+        if not isinstance(value, dict):
+            return False
+    if not path or path[-1] not in value:
+        return False
+    value[path[-1]] = content
+    return True
+
+
+def _refresh_external_keyboard_text(
+    module_name: str, name: str, old_value: str | None, content: str
+) -> None:
+    from bot import control, keyboards
+
+    if module_name == "control":
+        semantic = {
+            "CANCEL_LABEL": "cancel",
+            "CONFIRM_LABEL": "confirm",
+            "APP_LABEL": "web_app",
+            "SKIP_LABEL": "skip",
+            "BACK_LABEL": "back",
+            "LOCATION_LABEL": "location",
+            "SHARE_CONTACT_LABEL": "contact",
+        }.get(name)
+        if semantic:
+            current = control.current_reply_keyboards()
+            changed = False
+            for config in current.values():
+                for row in config.get("rows", []):
+                    for button in row:
+                        if (
+                            button.get("type") == semantic
+                            and old_value is not None
+                            and button.get("text") == old_value
+                        ):
+                            button["text"] = content
+                            changed = True
+            if changed:
+                control.set_reply_keyboards(current)
+            mirror_name = {
+                "CANCEL_LABEL": "CANCEL_TEXT",
+                "CONFIRM_LABEL": "CONFIRM_TEXT",
+            }.get(name)
+            if mirror_name:
+                setattr(keyboards, mirror_name, content)
+        if name.endswith("_PLACEHOLDER") and old_value is not None:
+            current = control.current_reply_keyboards()
+            changed = False
+            for config in current.values():
+                if config.get("placeholder") == old_value:
+                    config["placeholder"] = content
+                    changed = True
+            if changed:
+                control.set_reply_keyboards(current)
+    elif module_name == "keyboards" and name.startswith("USER_MENU_ACTIONS."):
+        action = name.split(".", 1)[1]
+        current = keyboards.current_user_menu_layout()
+        changed = False
+        for row in current:
+            for button in row:
+                if (
+                    button.get("action") == action
+                    and old_value is not None
+                    and button.get("label") == old_value
+                ):
+                    button["label"] = content
+                    changed = True
+        if changed:
+            keyboards.set_user_menu_layout(current)
+
+
+async def load_database_texts(db, *, seed_defaults: bool = True) -> int:
+    if seed_defaults:
+        defaults = _catalog_defaults()
+        if not _TEXT_FALLBACKS:
+            _TEXT_FALLBACKS.update(defaults)
+        await db.ensure_bot_text_defaults([
+            (key, label, content, "user_facing")
+            for key, (label, content) in defaults.items()
+        ])
+    rows = await db.get_all_bot_texts()
+    loaded = 0
+    for row in rows:
+        key = str(row.get("key") or "")
+        content = str(row.get("content") or "")
+        if not content:
+            fallback = _TEXT_FALLBACKS.get(key)
+            content = fallback[1] if fallback else ""
+        if content and _apply_catalog_value(key, content):
+            _TEXT_RUNTIME[key] = content
+            loaded += 1
+    return loaded
+
+
+def apply_database_text(key: str, content: str) -> bool:
+    if not content:
+        return False
+    if not _apply_catalog_value(key, content):
+        return False
+    _TEXT_RUNTIME[key] = content
+    return True
+
+
 async def get_text(key: str, fallback: str = "") -> str:
-    try:
-        from database import Database
-        db = Database()
-        val = await db.get_bot_text(key)
-        return val if val else fallback
-    except Exception:
-        return fallback
+    return _TEXT_RUNTIME.get(key, fallback)
 
 # نص الموافقة للتوثيق - يقرأ من DB مع fallback لل النص الكامل
 VERIFICATION_CONSENT_DB_KEY = "verify_consent"

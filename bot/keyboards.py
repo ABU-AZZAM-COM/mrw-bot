@@ -402,7 +402,7 @@ def main_menu_kb(viewer_id: Optional[int] = None) -> InlineKeyboardMarkup:
         if buttons:
             rows.append(buttons)
     if not rows:
-        rows = [[_cb("📝 تقديم بلاغ جديد", f"{USR_PREFIX}report")]]
+        rows = [[_cb(texts.KEYBOARD_LABELS["report_start"], f"{USR_PREFIX}report")]]
     return InlineKeyboardMarkup(rows)
 
 
@@ -426,13 +426,13 @@ def verification_consent_kb(
     consent_version: str = "reporter-consent-v1",
 ) -> InlineKeyboardMarkup:
     rows = [
-        [_cb("متابعة والموافقة", f"{USR_PREFIX}verify-consent:{consent_version}")],
-        [_cb("إلغاء", f"{USR_PREFIX}cancel")],
+        [_cb(texts.KEYBOARD_LABELS["consent_continue"], f"{USR_PREFIX}verify-consent:{consent_version}")],
+        [_cb(texts.KEYBOARD_LABELS["cancel_plain"], f"{USR_PREFIX}cancel")],
     ]
     if privacy_url and privacy_url.startswith("https://"):
         rows.insert(
             0,
-            [InlineKeyboardButton("سياسة الخصوصية", url=privacy_url)],
+            [InlineKeyboardButton(texts.KEYBOARD_LABELS["privacy_policy"], url=privacy_url)],
         )
     return InlineKeyboardMarkup(rows)
 
@@ -440,8 +440,8 @@ def verification_consent_kb(
 def privacy_policy_kb(privacy_url: str | None = None) -> InlineKeyboardMarkup:
     rows = []
     if privacy_url and privacy_url.startswith("https://"):
-        rows.append([InlineKeyboardButton("قراءة سياسة الخصوصية", url=privacy_url)])
-    rows.append([_cb("العودة إلى القائمة", f"{USR_PREFIX}menu")])
+        rows.append([InlineKeyboardButton(texts.KEYBOARD_LABELS["privacy_read"], url=privacy_url)])
+    rows.append([_cb(texts.KEYBOARD_LABELS["return_menu"], f"{USR_PREFIX}menu")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -463,13 +463,19 @@ def report_type_kb(
         for j in range(2):
             if i + j < len(types):
                 vtype = types[i + j]
-                row.append(_cb(f"📌 {vtype}", f"{USR_PREFIX}type:{vtype}"))
+                row.append(_cb(
+                    texts.KEYBOARD_LABELS["report_type_prefix"].format(type=vtype),
+                    f"{USR_PREFIX}type:{vtype}",
+                ))
         rows.append(row)
     if last_type and last_type in types:
         rows.append([
-            _cb(f"🔁 نفس تصنيفي السابق: {last_type}", f"{USR_PREFIX}type:{last_type}"),
+            _cb(
+                texts.KEYBOARD_LABELS["last_report_type"].format(type=last_type),
+                f"{USR_PREFIX}type:{last_type}",
+            ),
         ])
-    rows.append([_cb("❌ إلغاء", f"{USR_PREFIX}cancel")])
+    rows.append([_cb(texts.KEYBOARD_LABELS["cancel"], f"{USR_PREFIX}cancel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -495,7 +501,7 @@ def report_category_kb() -> InlineKeyboardMarkup:
             [_cb(label, f"{USR_PREFIX}category:{key}")]
             for key, label in REPORT_CATEGORIES.items()
         ]
-        + [[_cb("🏠 القائمة الرئيسية", f"{USR_PREFIX}menu")]]
+        + [[_cb(texts.KEYBOARD_LABELS["main_menu"], f"{USR_PREFIX}menu")]]
     )
 
 
@@ -507,8 +513,8 @@ def social_platform_kb() -> InlineKeyboardMarkup:
         ]
         + [
             [
-                _cb("⬅️ رجوع للقسم", f"{USR_PREFIX}back:category"),
-                _cb("❌ إلغاء", f"{USR_PREFIX}cancel"),
+                _cb(texts.KEYBOARD_LABELS["back_to_category"], f"{USR_PREFIX}back:category"),
+                _cb(texts.KEYBOARD_LABELS["cancel"], f"{USR_PREFIX}cancel"),
             ]
         ]
     )
@@ -516,10 +522,10 @@ def social_platform_kb() -> InlineKeyboardMarkup:
 
 def optional_step_kb(step: str) -> InlineKeyboardMarkup:
     labels = {
-        "photo": "⏭️ تخطي وإكمال البلاغ",
-        "link": "⏭️ لا أملك رابطًا",
-        "location": "⏭️ تخطي الموقع",
-        "contact": "⏭️ تخطي بيانات التواصل",
+        "photo": texts.KEYBOARD_LABELS["skip_photo"],
+        "link": texts.KEYBOARD_LABELS["skip_link"],
+        "location": texts.KEYBOARD_LABELS["skip_location"],
+        "contact": texts.KEYBOARD_LABELS["skip_contact"],
     }
     if step not in labels:
         raise ValueError(f"Unknown optional report step: {step}")
@@ -532,8 +538,8 @@ def optional_step_kb(step: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [_cb(labels[step], f"{USR_PREFIX}skip:{step}")],
         [
-            _cb("⬅️ رجوع", f"{USR_PREFIX}back:{previous_step}"),
-            _cb("❌ إلغاء", f"{USR_PREFIX}cancel"),
+            _cb(texts.KEYBOARD_LABELS["back"], f"{USR_PREFIX}back:{previous_step}"),
+            _cb(texts.KEYBOARD_LABELS["cancel"], f"{USR_PREFIX}cancel"),
         ],
     ])
 
@@ -545,8 +551,8 @@ def contact_request_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(text=texts.SHARE_CONTACT, request_contact=True)],
-            [KeyboardButton(text="⏭️ تخطي")],
-            [KeyboardButton(text="↩️ رجوع")],
+            [KeyboardButton(text=control.SKIP_LABEL)],
+            [KeyboardButton(text=control.BACK_LABEL)],
             [KeyboardButton(text=CANCEL_TEXT)],
         ],
         resize_keyboard=True,
@@ -560,9 +566,9 @@ def location_request_kb() -> ReplyKeyboardMarkup:
         return markup
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton(text="📍 مشاركة الموقع", request_location=True)],
-            [KeyboardButton(text="⏭️ تخطي")],
-            [KeyboardButton(text="↩️ رجوع")],
+            [KeyboardButton(text=control.LOCATION_LABEL, request_location=True)],
+            [KeyboardButton(text=control.SKIP_LABEL)],
+            [KeyboardButton(text=control.BACK_LABEL)],
             [KeyboardButton(text=CANCEL_TEXT)],
         ],
         resize_keyboard=True,
@@ -573,8 +579,8 @@ def location_request_kb() -> ReplyKeyboardMarkup:
 def cancel_inline_kb(back_to: str | None = None) -> InlineKeyboardMarkup:
     rows = []
     if back_to:
-        rows.append([_cb("⬅️ رجوع", f"{USR_PREFIX}back:{back_to}")])
-    rows.append([_cb("❌ إلغاء", f"{USR_PREFIX}cancel")])
+        rows.append([_cb(texts.KEYBOARD_LABELS["back"], f"{USR_PREFIX}back:{back_to}")])
+    rows.append([_cb(texts.KEYBOARD_LABELS["cancel"], f"{USR_PREFIX}cancel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -582,24 +588,24 @@ def confirm_report_kb() -> InlineKeyboardMarkup:
     """أزرار تأكيد الإرسال النهائي أو الإلغاء."""
     return InlineKeyboardMarkup([
         [
-            _cb("✅ إرسال البلاغ", f"{USR_PREFIX}confirm"),
-            _cb("❌ إلغاء", f"{USR_PREFIX}cancel"),
+            _cb(texts.KEYBOARD_LABELS["confirm_report"], f"{USR_PREFIX}confirm"),
+            _cb(texts.KEYBOARD_LABELS["cancel"], f"{USR_PREFIX}cancel"),
         ],
-        [_cb("⬅️ مراجعة البيانات", f"{USR_PREFIX}back:contact")],
+        [_cb(texts.KEYBOARD_LABELS["review_report"], f"{USR_PREFIX}back:contact")],
     ])
 
 
 def saved_receipt_kb() -> InlineKeyboardMarkup:
     """Keep the saved-report receipt intact when the user returns to the menu."""
     return InlineKeyboardMarkup([
-        [_cb("🏠 القائمة الرئيسية", f"{USR_PREFIX}home")],
+        [_cb(texts.KEYBOARD_LABELS["home"], f"{USR_PREFIX}home")],
     ])
 
 
 def back_to_menu_kb() -> InlineKeyboardMarkup:
     """زر الرجوع الوحيد الذي يبقى بعد تلاشي بقية الأزرار لإعادة إظهار القائمة."""
     return InlineKeyboardMarkup([
-        [_cb("↩️ الرجوع للقائمة", f"{USR_PREFIX}menu")],
+        [_cb(texts.KEYBOARD_LABELS["back_menu"], f"{USR_PREFIX}menu")],
     ])
 
 
@@ -609,7 +615,7 @@ def my_reports_kb(items: list[dict]) -> InlineKeyboardMarkup:
         [_cb(f"{status_emoji(r['status'])} {r['seq']}", f"{USR_PREFIX}r:{r['id']}")]
         for r in items
     ]
-    rows.append([_cb("🏠 العودة إلى القائمة", f"{USR_PREFIX}menu")])
+    rows.append([_cb(texts.KEYBOARD_LABELS["main_menu"], f"{USR_PREFIX}menu")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -621,25 +627,25 @@ def report_open_kb(
     """أزرار بطاقة بلاغ مفرد في «بلاغاتي»: عودة للقائمة أو للقائمة الرئيسية."""
     rows = []
     if followup_requested:
-        rows.append([_cb("📩 إرسال المعلومات المطلوبة", f"{USR_PREFIX}followup:{report_id}")])
+        rows.append([_cb(texts.KEYBOARD_LABELS["send_followup"], f"{USR_PREFIX}followup:{report_id}")])
     if can_appeal:
-        rows.append([_cb("✉️ اعتراض أو معلومات إضافية", f"{USR_PREFIX}appeal:{report_id}")])
+        rows.append([_cb(texts.KEYBOARD_LABELS["send_appeal"], f"{USR_PREFIX}appeal:{report_id}")])
     rows.extend([
-        [_cb("⬅️ عودة إلى بلاغاتي", f"{USR_PREFIX}status")],
-        [_cb("🏠 القائمة الرئيسية", f"{USR_PREFIX}menu")],
+        [_cb(texts.KEYBOARD_LABELS["return_to_reports"], f"{USR_PREFIX}status")],
+        [_cb(texts.KEYBOARD_LABELS["main_menu"], f"{USR_PREFIX}menu")],
     ])
     return InlineKeyboardMarkup(rows)
 
 
 def report_followup_reply_kb(report_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[_cb("📩 إرسال المعلومات المطلوبة", f"{USR_PREFIX}followup:{report_id}")]]
+        [[_cb(texts.KEYBOARD_LABELS["send_followup"], f"{USR_PREFIX}followup:{report_id}")]]
     )
 
 
 def report_appeal_kb(report_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[_cb("إرسال اعتراض أو معلومات إضافية", f"{USR_PREFIX}appeal:{report_id}")]]
+        [[_cb(texts.KEYBOARD_LABELS["submit_appeal"], f"{USR_PREFIX}appeal:{report_id}")]]
     )
 
 
@@ -654,13 +660,16 @@ def admin_menu_buttons(new_count: int) -> InlineKeyboardMarkup:
     """القائمة الرئيسية للوحة المشرف."""
     return InlineKeyboardMarkup(
         [
-            [_cb(f"🆕 البلاغات الجديدة ({new_count})", "adm:list:new:0")],
-            [_cb("🗂 كل البلاغات", "adm:list:all:0")],
+            [_cb(
+                texts.ADMIN_KEYBOARD_LABELS["new_reports"].format(count=new_count),
+                "adm:list:new:0",
+            )],
+            [_cb(texts.ADMIN_KEYBOARD_LABELS["all_reports"], "adm:list:all:0")],
             [
-                _cb("📥 تصدير Excel", "adm:exp:xlsx"),
-                _cb("📄 تصدير نصي", "adm:exp:txt"),
+                _cb(texts.ADMIN_KEYBOARD_LABELS["export_excel"], "adm:exp:xlsx"),
+                _cb(texts.ADMIN_KEYBOARD_LABELS["export_text"], "adm:exp:txt"),
             ],
-            [_cb("📊 إحصائيات", "adm:stats")],
+            [_cb(texts.ADMIN_KEYBOARD_LABELS["stats"], "adm:stats")],
         ]
     )
 
@@ -669,14 +678,19 @@ def admin_list_buttons(code: str, page: int, pages: int) -> InlineKeyboardMarkup
     """أزرار التنقل بين صفحات قائمة البلاغات."""
     nav = []
     if page > 0:
-        nav.append(_cb("◀️ السابق", f"adm:list:{code}:{page - 1}"))
-    nav.append(_cb(f"📄 {page + 1}/{pages}", "adm:noop"))
+        nav.append(_cb(texts.ADMIN_KEYBOARD_LABELS["previous"], f"adm:list:{code}:{page - 1}"))
+    nav.append(_cb(
+        texts.ADMIN_KEYBOARD_LABELS["page"].format(
+            current=page + 1, total=pages
+        ),
+        "adm:noop",
+    ))
     if page < pages - 1:
-        nav.append(_cb("التالي ▶️", f"adm:list:{code}:{page + 1}"))
+        nav.append(_cb(texts.ADMIN_KEYBOARD_LABELS["next"], f"adm:list:{code}:{page + 1}"))
     return InlineKeyboardMarkup(
         [
             nav,
-            [_cb("🏠 القائمة الرئيسية", "adm:menu")],
+            [_cb(texts.ADMIN_KEYBOARD_LABELS["home"], "adm:menu")],
         ]
     )
 
@@ -704,8 +718,11 @@ def admin_view_buttons(rid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             status_row,
-            [_cb("❌ رفض بسبب", f"adm:rj:{rid}")],
-            [_cb("⬅️ رجوع للقائمة", "adm:back"), _cb("🏠 الرئيسية", "adm:menu")],
+            [_cb(texts.ADMIN_KEYBOARD_LABELS["reject_reason"], f"adm:rj:{rid}")],
+            [
+                _cb(texts.ADMIN_KEYBOARD_LABELS["back_to_list"], "adm:back"),
+                _cb(texts.ADMIN_KEYBOARD_LABELS["main"], "adm:menu"),
+            ],
         ]
     )
 
@@ -720,16 +737,18 @@ def admin_notify_buttons(rid: int) -> InlineKeyboardMarkup:
     """
     return InlineKeyboardMarkup([
         [
-            _cb("✅ اعتماد فوري", f"adm:s:{rid}:approved"),
-            _cb("🟠 إحالة للمراجعة", f"adm:s:{rid}:review"),
+            _cb(texts.ADMIN_KEYBOARD_LABELS["approve_now"], f"adm:s:{rid}:approved"),
+            _cb(texts.ADMIN_KEYBOARD_LABELS["send_review"], f"adm:s:{rid}:review"),
         ],
         [
-            _cb("❌ رفض بسبب", f"adm:rj:{rid}"),
-            _cb("ℹ️ التفاصيل", f"adm:v:{rid}"),
+            _cb(texts.ADMIN_KEYBOARD_LABELS["reject_reason"], f"adm:rj:{rid}"),
+            _cb(texts.ADMIN_KEYBOARD_LABELS["details"], f"adm:v:{rid}"),
         ],
     ])
 
 
 def admin_reject_cancel_kb(rid: int) -> InlineKeyboardMarkup:
     """زر التراجع عن كتابة سبب الرفض قبل إرساله."""
-    return InlineKeyboardMarkup([[_cb("🚫 إلغاء الرفض", f"adm:rc:{rid}")]])
+    return InlineKeyboardMarkup([[
+        _cb(texts.ADMIN_KEYBOARD_LABELS["cancel_rejection"], f"adm:rc:{rid}")
+    ]])

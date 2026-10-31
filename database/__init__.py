@@ -4849,6 +4849,24 @@ class Database:
     async def get_all_bot_texts(self) -> list[dict]:
         return await asyncio.to_thread(self.get_all_bot_texts_sync)
 
+    async def ensure_bot_text_defaults(
+        self, defaults: list[tuple[str, str, str, str]]
+    ) -> None:
+        await asyncio.to_thread(self.ensure_bot_text_defaults_sync, defaults)
+
+    def ensure_bot_text_defaults_sync(
+        self, defaults: list[tuple[str, str, str, str]]
+    ) -> None:
+        self._create_bot_texts_table()
+        with self._lock:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO bot_texts "
+                "(key, label, content, category, updated_at) "
+                "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                defaults,
+            )
+            self._conn.commit()
+
     async def update_bot_text(self, key: str, content: str, category: str = "user_facing") -> bool:
         return await asyncio.to_thread(self.update_bot_text_sync, key, content, category)
 

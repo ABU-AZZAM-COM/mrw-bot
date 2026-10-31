@@ -518,9 +518,9 @@ async def check_duplicate(db, link: str, description: str,
                 allowed=True,
                 code="exact_duplicate",
                 severity="warn",
-                message=(
-                    f"⚠️ يوجد بلاغ مطابق سابق (رقمه <code>{row.get('report_id')}</code>).\n"
-                    "سيُسجَّل بلاغك للمراجعة فقط ولن يُنشر تلقائيًا."
+                message=texts.format_inline_message(
+                    "duplicate_exact",
+                    report_id=row.get("report_id")
                 ),
                 extra={"duplicate_of": row.get("report_id")},
             )
@@ -538,10 +538,10 @@ async def check_duplicate(db, link: str, description: str,
             allowed=True,
             code="similar_duplicate",
             severity="warn",
-            message=(
-                f"⚠️ يوجد بلاغ مشابه لـ <code>{best_id}</code> "
-                f"(تشابه {int(best_score * 100)}%).\n"
-                "سيُسجَّل بلاغك للمراجعة فقط ولن يُنشر تلقائيًا."
+            message=texts.format_inline_message(
+                "duplicate_similar",
+                report_id=best_id,
+                similarity=int(best_score * 100),
             ),
             extra={"duplicate_of": best_id, "similarity": best_score},
         )
@@ -556,35 +556,35 @@ def check_link(url: str) -> Verdict:
     """يتأكد أن الرابط آمن وصالح: http/https فقط، بلا عناوين داخلية."""
     if not utils.is_valid_url(url):
         return Verdict(allowed=False, code="bad_url", severity="block",
-                       message="❌ الرابط غير صالح. تأكد من أنه يبدأ بـ http أو https.")
+                       message=texts.INLINE_MESSAGES["link_invalid_http"])
 
     try:
         parts = urlparse(url)
     except ValueError:
         return Verdict(allowed=False, code="bad_url", severity="block",
-                       message="❌ الرابط غير صالح.")
+                       message=texts.INLINE_MESSAGES["link_invalid"])
 
     host = (parts.hostname or "").lower()
     if not host:
         return Verdict(allowed=False, code="bad_url", severity="block",
-                       message="❌ الرابط لا يحتوي اسم موقع.")
+                       message=texts.INLINE_MESSAGES["link_host_missing"])
 
     # نطاقات محجوبة
     for blocked in config.BLOCKED_DOMAINS:
         if host == blocked or host.endswith("." + blocked):
             return Verdict(allowed=False, code="blocked_domain", severity="block",
-                           message="❌ هذا النطاق محجوب في النظام.")
+                           message=texts.INLINE_MESSAGES["link_domain_blocked"])
 
     # عناوين داخلية/خاصة (حماية SSRF إن أضفنا لاحقًا جلب الروابط)
     if any(pattern in host for pattern in _PRIVATE_HOST_PATTERNS):
         return Verdict(allowed=False, code="private_host", severity="block",
-                       message="❌ الرابط يشير إلى عنوان داخلي غير مسموح.")
+                       message=texts.INLINE_MESSAGES["link_private_host"])
 
     try:
         ip = ipaddress.ip_address(host)
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
             return Verdict(allowed=False, code="private_host", severity="block",
-                           message="❌ الرابط يشير إلى عنوان داخلي غير مسموح.")
+                           message=texts.INLINE_MESSAGES["link_private_host"])
     except ValueError:
         pass  # ليس عنوان IP — عادي
 
@@ -596,10 +596,7 @@ def check_link(url: str) -> Verdict:
             allowed=True,
             code="unknown_platform",
             severity="warn",
-            message=(
-                "ℹ️ لم أتمكّن من تحديد منصة التواصل من هذا الرابط.\n"
-                "اذكر في الوصف أين نُشر المنشور، وسيُراجع البلاغ للتأكد."
-            ),
+            message=texts.INLINE_MESSAGES["unknown_social_platform"],
             extra={"platform": ""},
         )
 
@@ -617,10 +614,9 @@ def check_substance(description: str) -> Verdict:
             allowed=False,
             code="thin_description",
             severity="warn",
-            message=(
-                "✍️ الوصف قصير جدًا.\n"
-                f"اكتب وصفًا أوضح (من {config.MIN_DESC_LEN} حرفًا على الأقل): "
-                "ما الذي حدث؟ أين؟ متى؟ وما تفاصيل المخالفة؟"
+            message=texts.format_inline_message(
+                "description_too_short",
+                min_length=config.MIN_DESC_LEN
             ),
         )
     words = [w for w in re.split(r"\s+", text) if w]
@@ -629,9 +625,9 @@ def check_substance(description: str) -> Verdict:
             allowed=False,
             code="thin_description",
             severity="warn",
-            message=(
-                "✍️ الوصف لا يحتوي معلومات كافية.\n"
-                f"اكتب وصفًا أوضح (من {config.MIN_DESC_WORDS} كلمات على الأقل)."
+            message=texts.format_inline_message(
+                "description_not_enough_words",
+                min_words=config.MIN_DESC_WORDS
             ),
         )
     return Verdict(allowed=True)
