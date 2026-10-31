@@ -438,7 +438,11 @@ _TEXT_ALIASES = {
     "about_system": ("ABOUT_SYSTEM",),
     "status_update": ("STATUS_UPDATE_NOTIF",),
 }
-_TEXT_EXCLUDED = {"VERIFICATION_CONSENT_DB_KEY", "STATUS_EMOJI"}
+_TEXT_EXCLUDED = {
+    "VERIFICATION_CONSENT_DB_KEY",
+    "BOT_PROFILE_DEFAULT_WELCOME",
+    "STATUS_EMOJI",
+}
 _TEXT_FALLBACKS: dict[str, tuple[str, str]] = {}
 _TEXT_RUNTIME: dict[str, str] = {}
 

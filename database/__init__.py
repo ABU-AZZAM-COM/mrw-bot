@@ -4873,7 +4873,11 @@ class Database:
     def update_bot_text_sync(self, key: str, content: str, category: str = "user_facing") -> bool:
         self._create_bot_texts_table()
         with self._lock:
-            cursor = self._conn.execute("UPDATE bot_texts SET content = ?, category = ? WHERE key = ?", (content, category, key))
+            cursor = self._conn.execute(
+                "UPDATE bot_texts SET content = ?, category = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE key = ?",
+                (content, category, key),
+            )
             self._conn.commit()
             if cursor.rowcount == 0:
                 self._conn.execute("INSERT OR IGNORE INTO bot_texts (key, label, content, category, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)", (key, key, content, category))

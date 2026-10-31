@@ -185,6 +185,13 @@ class _BotCommandsPageState extends State<BotCommandsPage> {
   }
 
   Future<void> _save({Map<String, dynamic>? payload}) async {
+    if (payload == null) {
+      final validationError = _validate();
+      if (validationError != null) {
+        toast(context, validationError, error: true);
+        return;
+      }
+    }
     final body = payload ?? {
       'items': {'scopes': [for (final scope in _scopes) scope.toJson()]},
     };

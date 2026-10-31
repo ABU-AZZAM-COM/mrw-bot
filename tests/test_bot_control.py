@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import os
 import sys
 import threading
@@ -73,6 +74,10 @@ class FakeDB:
             "category": category,
         }
         return True
+
+    async def get_bot_text(self, key):
+        item = self.bot_texts.get(key)
+        return item.get("content") if item else None
 
     async def get_all_bot_texts(self):
         return list(self.bot_texts.values())
@@ -215,6 +220,7 @@ class BotControlEndpointsTests(unittest.TestCase):
         control.set_commands_config(None)
         control.set_menu_button_config(None)
         control.set_settings(None)
+        keyboards.set_user_menu_layout(None)
 
     def test_reply_keyboards_save_and_reset(self):
         loaded = self.client.get(
@@ -350,6 +356,91 @@ class BotControlEndpointsTests(unittest.TestCase):
         ask_desc = next(item for item in catalog if item["key"] == "bot.ASK_DESC")
         self.assertTrue(ask_desc["content"])
         self.assertFalse(any(item["key"] == "bot.STATUS_EMOJI.legacy" for item in catalog))
+
+    def test_text_catalog_reads_the_effective_welcome_and_menu_button(self):
+        layout = [[{"label": "زر القائمة الفعلي", "action": "report"}]]
+        self.db.state[keyboards.USER_MENU_STATE_KEY] = json.dumps(
+            layout, ensure_ascii=False
+        )
+        self.db.state["bot_profile"] = json.dumps(
+            {"welcome_text": "رسالة الترحيب الفعلية"}, ensure_ascii=False
+        )
+        response = self.client.get("/admin_api/texts", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        catalog = {item["key"]: item for item in response.json()["texts"]}
+        self.assertEqual(
+            catalog["bot.keyboards.USER_MENU_ACTIONS.report"]["content"],
+            "زر القائمة الفعلي",
+        )
+        self.assertEqual(
+            catalog["welcome_message"]["content"], "رسالة الترحيب الفعلية"
+        )
+        self.assertNotIn("bot.BOT_PROFILE_DEFAULT_WELCOME", catalog)
+
+    def test_editing_menu_button_updates_the_persisted_live_layout(self):
+        self.db.state[keyboards.USER_MENU_STATE_KEY] = json.dumps(
+            [[{"label": "قديم", "action": "report"}]], ensure_ascii=False
+        )
+        response = self.client.post(
+            "/admin_api/texts/update",
+            headers=self.headers,
+            json={
+                "key": "bot.keyboards.USER_MENU_ACTIONS.report",
+                "content": "تقديم بلاغ",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["applied"])
+        layout = keyboards.normalize_user_menu_layout(
+            self.db.state[keyboards.USER_MENU_STATE_KEY]
+        )
+        self.assertEqual(layout[0][0]["label"], "تقديم بلاغ")
+        self.assertEqual(keyboards.current_user_menu_layout()[0][0]["label"], "تقديم بلاغ")
+
+    def test_editing_reply_button_updates_saved_keyboard_not_only_default(self):
+        layout = control.default_reply_keyboards()
+        layout["cancel"]["rows"][0][0]["text"] = "زر الإلغاء المخصص"
+        self.db.state[control.REPLY_STATE_KEY] = json.dumps(
+            layout, ensure_ascii=False
+        )
+        response = self.client.post(
+            "/admin_api/texts/update",
+            headers=self.headers,
+            json={
+                "key": "bot.control.CANCEL_LABEL",
+                "content": "إلغاء العملية",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        saved = control.normalize_reply_keyboards(
+            self.db.state[control.REPLY_STATE_KEY]
+        )
+        self.assertEqual(saved["cancel"]["rows"][0][0]["text"], "إلغاء العملية")
+        self.assertEqual(
+            control.current_reply_keyboards()["cancel"]["rows"][0][0]["text"],
+            "إلغاء العملية",
+        )
+
+    def test_editing_welcome_clears_the_shadowing_profile_override(self):
+        original = texts.WELCOME
+        self.db.state["bot_profile"] = json.dumps(
+            {
+                "name": "Bot",
+                "welcome_text": "نص ملف البوت القديم",
+                "privacy_policy_url": "",
+            },
+            ensure_ascii=False,
+        )
+        response = self.client.post(
+            "/admin_api/texts/update",
+            headers=self.headers,
+            json={"key": "welcome_message", "content": "ترحيب جديد"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(texts.WELCOME, "ترحيب جديد")
+        profile = json.loads(self.db.state["bot_profile"])
+        self.assertNotIn("welcome_text", profile)
+        texts.WELCOME = original
 
     def test_commands_save_and_scope_delete_tracking(self):
         loaded = self.client.get("/api/admin/bot-commands", headers=self.headers)

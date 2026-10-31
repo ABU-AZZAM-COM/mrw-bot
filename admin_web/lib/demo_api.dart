@@ -56,10 +56,10 @@ class DemoApi implements AdminApi {
     'types': ['callback', 'url', 'web_app', 'copy', 'inline'],
     'visibility': ['all', 'admins', 'non_admins'],
   };
-  List<List<Map<String, String>>>? _botMenu;
+  List<List<Map<String, dynamic>>>? _botMenu;
   bool get _botMenuCustomized => _botMenu != null;
 
-  List<List<Map<String, String>>> _defaultBotMenuRows() => [
+  List<List<Map<String, dynamic>>> _defaultBotMenuRows() => [
     [
       {'label': '📝 تقديم بلاغ جديد', 'action': 'report'},
     ],
@@ -81,7 +81,7 @@ class DemoApi implements AdminApi {
     ],
   ];
 
-  List<List<Map<String, String>>> _botMenuRows() =>
+  List<List<Map<String, dynamic>>> _botMenuRows() =>
       _botMenu ?? _defaultBotMenuRows();
 
   // ---- مركز التحكم (نسخة تجريبية) ----
@@ -913,7 +913,7 @@ class DemoApi implements AdminApi {
             [
               for (final item in row)
                 if (item is Map)
-                  {
+                  <String, dynamic>{
                     'label': '${item['label']}',
                     'type': '${item['type'] ?? 'callback'}',
                     'action': '${item['action'] ?? ''}',
@@ -942,7 +942,7 @@ class DemoApi implements AdminApi {
     if (path == '/api/admin/bot-reply-keyboards') {
       final items = body['items'];
       if (items is! Map) throw ApiException(422, 'bad_bot_reply_keyboards');
-      _demoReply = (items as Map).cast<String, dynamic>();
+      _demoReply = items.cast<String, dynamic>();
       _record('bot_reply_keyboards_changed', 'لوحات رد محلية');
       return {
         'ok': true,
@@ -965,7 +965,7 @@ class DemoApi implements AdminApi {
     if (path == '/api/admin/bot-commands') {
       final items = body['items'];
       if (items is! Map) throw ApiException(422, 'bad_bot_commands');
-      _demoCommands = (items as Map).cast<String, dynamic>();
+      _demoCommands = items.cast<String, dynamic>();
       _record('bot_commands_changed', 'أوامر محلية');
       return {
         'ok': true,
@@ -978,7 +978,7 @@ class DemoApi implements AdminApi {
     if (path == '/api/admin/bot-menu-button') {
       final items = body['items'];
       if (items is! Map) throw ApiException(422, 'bad_bot_menu_button');
-      _demoMenuButton = (items as Map).cast<String, dynamic>();
+      _demoMenuButton = items.cast<String, dynamic>();
       _record('bot_menu_button_changed', 'زر قائمة محلي');
       return {
         'ok': true,
@@ -991,7 +991,7 @@ class DemoApi implements AdminApi {
     if (path == '/api/admin/bot-settings') {
       final items = body['items'];
       if (items is! Map) throw ApiException(422, 'bad_bot_settings');
-      _demoBotSettings = (items as Map).cast<String, dynamic>();
+      _demoBotSettings = items.cast<String, dynamic>();
       _record('bot_settings_changed', 'إعدادات بوت محلية');
       return {
         'ok': true,

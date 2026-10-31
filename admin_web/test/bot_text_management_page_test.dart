@@ -8,10 +8,25 @@ import 'package:flutter_test/flutter_test.dart';
 class _TextApi implements AdminApi {
   final texts = <Map<String, dynamic>>[
     {
+      'key': 'bot.keyboards.USER_MENU_ACTIONS.report',
+      'label': 'إرسال بلاغ جديد',
+      'content': 'إرسال بلاغ جديد',
+      'category': 'user_facing',
+      'kind': 'button',
+    },
+    {
+      'key': 'bot.INLINE_MESSAGES.report_category_prompt',
+      'label': 'طلب اختيار القسم',
+      'content': 'اختر القسم الأقرب إلى موضوع البلاغ',
+      'category': 'user_facing',
+      'kind': 'message',
+    },
+    {
       'key': 'bot.INLINE_MESSAGES.followup_length',
       'label': 'رسالة طول المعلومات الإضافية',
       'content': 'النص الافتراضي',
       'category': 'user_facing',
+      'kind': 'message',
     },
     {
       'key': 'bot.CATEGORY_INTROS.field',
@@ -71,28 +86,37 @@ class _TextApi implements AdminApi {
 }
 
 void main() {
-  testWidgets('يعرض النصوص كشجرة ويتيح البحث والحفظ', (tester) async {
+  testWidgets('يعرض أزرار التدفقات ورسائلها ويتيح البحث والحفظ', (
+    tester,
+  ) async {
     final api = _TextApi();
     await tester.pumpWidget(MaterialApp(home: BotTextManagementPage(api: api)));
     await tester.pumpAndSettle();
 
-    expect(find.text('رسائل وتفاعلات البوت'), findsOneWidget);
-    await tester.tap(find.text('رسائل وتفاعلات البوت'));
+    expect(find.text('أزرار ورسائل البوت'), findsOneWidget);
+    expect(find.text('إرسال بلاغ جديد'), findsWidgets);
+    await tester.tap(find.text('إرسال بلاغ جديد').first);
+    await tester.pumpAndSettle();
+    expect(find.text('النصوص المرتبطة بالزر المحدد'), findsOneWidget);
+    expect(find.text('طلب اختيار القسم'), findsOneWidget);
+
+    final followupChip = find.textContaining('المتابعة والتواصل');
+    await tester.ensureVisible(followupChip);
+    await tester.tap(followupChip);
     await tester.pumpAndSettle();
     expect(find.text('رسالة طول المعلومات الإضافية'), findsOneWidget);
 
     await tester.tap(find.text('رسالة طول المعلومات الإضافية'));
     await tester.pumpAndSettle();
-    expect(find.text('حفظ وتطبيق على البوت'), findsOneWidget);
+    expect(find.text('حفظ وتطبيق مباشرة'), findsOneWidget);
     await tester.enterText(find.byType(TextField).last, 'نص محدث');
-    await tester.tap(find.text('حفظ وتطبيق على البوت'));
+    await tester.tap(find.text('حفظ وتطبيق مباشرة'));
     await tester.pumpAndSettle();
-    expect(api.texts.first['content'], 'نص محدث');
+    expect(api.texts[2]['content'], 'نص محدث');
     expect(find.text('تم الحفظ والتطبيق على البوت مباشرة'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField).first, 'ميدانية');
     await tester.pumpAndSettle();
-    expect(find.text('مقدمات الأقسام'), findsOneWidget);
     expect(find.text('مقدمة البلاغات الميدانية'), findsOneWidget);
   });
 }
