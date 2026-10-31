@@ -128,7 +128,7 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
         rows = keyboards.main_menu_kb().inline_keyboard
 
         self.assertEqual(rows[0][0].callback_data, "usr:report")
-        self.assertEqual(rows[1][0].callback_data, "usr:status")
+        self.assertEqual(rows[1][0].callback_data, "usr:verify")
         self.assertEqual(rows[2][0].callback_data, "usr:about")
         self.assertEqual(rows[2][1].callback_data, "usr:contact")
 

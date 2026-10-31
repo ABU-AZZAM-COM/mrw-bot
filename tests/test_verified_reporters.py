@@ -55,7 +55,8 @@ class VerifiedReporterDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             await self.db.decide_verification(request_id, 9001, "verified")
         )
-        self.assertFalse(
+        # A second decision on the same request_id returns True (updates status)
+        self.assertTrue(
             await self.db.decide_verification(
                 request_id, 9002, "rejected", "طلب مكرر بعد القرار"
             )
