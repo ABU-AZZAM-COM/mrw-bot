@@ -6,7 +6,7 @@ import sys
 import threading
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -166,12 +166,26 @@ class ControlNormalizationTests(unittest.TestCase):
     def test_settings_validate_url_and_rights(self):
         cfg = control.default_settings()
         self.assertIsNotNone(control.normalize_settings(cfg))
+        for key in ("can_post_stories", "can_edit_stories", "can_delete_stories"):
+            self.assertFalse(cfg["default_admin_rights"][key])
         bad_url = copy.deepcopy(cfg)
         bad_url["mini_app_url"] = "http://insecure.test"
         self.assertIsNone(control.normalize_settings(bad_url))
         bad_rights = copy.deepcopy(cfg)
         bad_rights["default_admin_rights"]["can_pin_messages"] = "yes"
         self.assertIsNone(control.normalize_settings(bad_rights))
+
+    def test_default_admin_rights_include_current_telegram_story_permissions(self):
+        bot = types.SimpleNamespace(set_my_default_administrator_rights=AsyncMock())
+        cfg = control.default_settings()
+        cfg["default_admin_rights_customized"] = True
+
+        asyncio.run(control.apply_default_admin_rights(bot, cfg))
+
+        rights = bot.set_my_default_administrator_rights.await_args.kwargs["rights"]
+        self.assertFalse(rights.can_post_stories)
+        self.assertFalse(rights.can_edit_stories)
+        self.assertFalse(rights.can_delete_stories)
 
     def test_deep_links_sanitize_payload(self):
         self.assertEqual(control.sanitize_payload("a b!c_1-2"), "abc_1-2")

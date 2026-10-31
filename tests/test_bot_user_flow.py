@@ -139,7 +139,10 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[4][1].callback_data, "usr:contact")
 
     async def test_main_menu_shows_verification_when_encryption_is_ready(self):
-        with patch.object(verified_reporters, "is_configured", return_value=True):
+        with (
+            patch.object(keyboards, "_user_menu_layout", None),
+            patch.object(verified_reporters, "is_configured", return_value=True),
+        ):
             rows = keyboards.main_menu_kb().inline_keyboard
 
         self.assertEqual(rows[1][0].callback_data, "usr:verify")
