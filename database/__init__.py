@@ -441,6 +441,27 @@ class Database:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
             self._migrate()
+            # Auto-seed bot_texts if empty (for Render/Turso)
+            try:
+                self._create_bot_texts_table()
+                count = self._conn.execute("SELECT count(*) FROM bot_texts").fetchone()[0]
+                if count == 0:
+                    texts = [
+                        ("welcome_message","رسالة الترحيب","🛡️ منظومة البلاغات...","user_facing"),
+                        ("verify_consent","نص الموافقة للتوثيق","🪪 التسجيل كمراسل موثوق...","user_facing"),
+                        ("help_text","دليل الاستخدام","📖 الدليل السريع...","user_facing"),
+                        ("privacy_policy","سياسة الخصوصية","🔒 سياسة الخصوصية...","user_facing"),
+                        ("verify_button","زر التوثيق","✅ توثيق","button_label"),
+                        ("menu_button","زر القائمة","📋 القائمة","button_label"),
+                        ("cancel_button","زر الإلغاء","❌ إلغاء","button_label"),
+                        ("confirm_button","زر التأكيد","✅ إرسال البلاغ","button_label"),
+                        ("contact_admin","تواصل مع الإدارة","📞 تواصل مع الإدارة","button_label"),
+                    ]
+                    for t in texts:
+                        self._conn.execute("INSERT OR IGNORE INTO bot_texts (key, label, content, category) VALUES (?, ?, ?, ?)", t)
+                    self._conn.commit()
+            except Exception:
+                pass
 
     def health_check(self) -> bool:
         """Run a minimal query against the configured database backend."""
