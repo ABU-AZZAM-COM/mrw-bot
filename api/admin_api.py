@@ -1674,8 +1674,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
     async def get_texts(request: Request) -> JSONResponse:
         refuse = _auth(request)
         if refuse: return refuse
-        from database import Database
-        db = Database()
+        db = db_of()
         texts = await db.get_all_bot_texts()
         if not texts:
             texts = [
@@ -1698,8 +1697,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         label = str(body.get("label") or "").strip()
         category = str(body.get("category") or "user_facing").strip()
         if not key: return bad("missing_key")
-        from database import Database
-        db = Database()
+        db = db_of()
         ok = await db.update_bot_text(key, content, category)
         if not ok:
             import sqlite3
