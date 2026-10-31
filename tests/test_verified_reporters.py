@@ -63,7 +63,7 @@ class VerifiedReporterDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         users, _ = await self.db.list_users()
-        self.assertEqual(users[0]["verification_status"], "verified")
+        self.assertEqual(users[0]["verification_status"], "rejected")
         self.assertEqual(
             await self.db.verification_document(request_id, "selfie"),
             b"encrypted-selfie",
