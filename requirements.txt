@@ -1,5 +1,5 @@
 # مكتبات المشروع — التثبيت عبر: pip install -r requirements.txt
-python-telegram-bot~=22.1
+python-telegram-bot~=22.8
 python-dotenv~=1.0
 fastapi~=0.115
 python-multipart~=0.0.20
