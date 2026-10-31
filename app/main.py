@@ -8,6 +8,7 @@
   4) بدء Webhook في الإنتاج أو polling محليًا
 """
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -26,7 +27,7 @@ except Exception:
 
 from app import config  # noqa: E402  (بعد تهيئة الطرفية)
 from app import health_server  # noqa: E402
-from bot import admin, handlers, keyboards, tracking_bot
+from bot import admin, control, handlers, keyboards, tracking_bot
 from services import archive, guards, hub_backup
 from database import Database  # noqa: E402
 from bot.tracking_bot import TrackedBot  # noqa: E402
@@ -122,35 +123,27 @@ async def post_init(app) -> None:
         saved_menu = None
     keyboards.set_user_menu_layout(saved_menu)
 
-    base_commands = [BotCommand("start", "فتح الواجهة الرئيسية")]
-    await app.bot.set_my_commands(base_commands)
+    # إعدادات مركز التحكم (لوحات الرد، الأوامر، زر القائمة، الإعدادات)
+    try:
+        await control.load_from_state(app.bot_data["db"])
+    except Exception:  # noqa: BLE001
+        logger.warning("تعذر تحميل إعدادات مركز التحكم — ستُستخدم الافتراضية")
 
-    # للمشرفين فقط: أمر اللوحة + أمر النسخة الفورية
-    admin_commands = [
-        *base_commands,
-        BotCommand("cancel", "إلغاء العملية الحالية"),
-        BotCommand("reply", "إرسال معلومات إضافية عن بلاغ"),
-        BotCommand("status", "عرض بلاغاتي"),
-        BotCommand("chatid", "معرّف هذه المحادثة (للإعداد)"),
-        BotCommand("admin", "لوحة إدارة البلاغات"),
-        BotCommand("reports", "عرض لوحة البلاغات"),
-        BotCommand("report", "بدء بلاغ من المحادثة"),
-        BotCommand("stats", "إحصائيات المستخدمين والبلاغات"),
-        BotCommand("backup", "رفع نسخة احتياطية فورية"),
-        BotCommand("panic", "إيقاف استقبال البلاغات طارئًا"),
-        BotCommand("resume", "استئناف استقبال البلاغات"),
-        BotCommand("audit", "عرض سجل التدقيق"),
-        BotCommand("app", "فتح تطبيق البلاغ"),
-        BotCommand("help", "عرض التعليمات"),
-    ]
-    for admin_id in config.ADMIN_IDS:
+    # أوامر البوت: تُبنى من الإعدادات المحفوظة (أو الافتراضية) لكل نطاق ولغة.
+    try:
+        command_result = await control.apply_commands(
+            app.bot, control.current_commands_config()
+        )
+        for error in command_result.get("errors", []):
+            logger.warning("أوامر البوت: %s", error)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("تعذر تطبيق أوامر البوت: %s", exc)
         try:
             await app.bot.set_my_commands(
-                admin_commands,
-                scope=BotCommandScopeChat(chat_id=admin_id),
+                [BotCommand("start", "فتح الواجهة الرئيسية")]
             )
-        except Exception as exc:
-            logger.warning("تعذر ضبط أوامر المشرف %s: %s", admin_id, exc)
+        except Exception:  # noqa: BLE001
+            pass
 
     logger.info("✅ البوت جاهز ويستقبل الرسائل …")
 
@@ -163,7 +156,7 @@ async def post_init(app) -> None:
         name="report-followup-deadlines",
     )
     app.create_task(
-        user_menu_refresh_loop(app.bot_data["db"]),
+        user_menu_refresh_loop(app),
         name="user-menu-layout-refresh",
     )
     app.create_task(
@@ -176,12 +169,23 @@ async def post_init(app) -> None:
     # الزر يظهر بجانب مربع الكتابة لكل مستخدم → سهولة الوصول (المهم: أن يعرف
     # الجميع وجود التطبيق دون شرح).
     # ------------------------------------------------------------------
-    # زر القائمة الجانبي: عودة إلى الأوامر الافتراضية (☰) — بلا زر تطبيق.
+    # زر القائمة الجانبي: من إعدادات اللوحة (افتراضي/أوامر/تطبيق ويب)
     # ------------------------------------------------------------------
     try:
-        await app.bot.set_chat_menu_button(menu_button=MenuButtonDefault())
+        await control.apply_menu_button(app.bot, control.current_menu_button_config())
     except Exception as exc:
-        logger.warning("تعذر ضبط زر القائمة الافتراضي: %s", exc)
+        logger.warning("تعذر ضبط زر القائمة: %s", exc)
+        try:
+            await app.bot.set_chat_menu_button(menu_button=MenuButtonDefault())
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        await control.apply_default_admin_rights(
+            app.bot, control.current_settings()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("تعذر ضبط صلاحيات المشرف الافتراضية: %s", exc)
 
     # ------------------------------------------------------------------
     # القناة الرسمية: التحقق من الصلاحيات فقط (لا تُرسل أي رسالة)
@@ -220,20 +224,51 @@ async def post_init(app) -> None:
         )
 
 
-async def user_menu_refresh_loop(db) -> None:
-    """يزامن تخطيط أزرار القائمة مع القاعدة كل دقيقة.
+async def user_menu_refresh_loop(app) -> None:
+    """يزامن تخطيط أزرار القائمة وإعدادات مركز التحكم مع القاعدة كل دقيقة.
 
     التغيير من اللوحة يُطبَّق مباشرة في الذاكرة (نفس العملية)، وهذا الحلقة
     تغطي إعادة التشغيل أو تشغيل أكثر من نسخة على نفس القاعدة.
     """
+    db = app.bot_data["db"]
+    last_snapshot = None
     while True:
         try:
             raw = await db.get_state(keyboards.USER_MENU_STATE_KEY)
             keyboards.set_user_menu_layout(raw)
+
+            # مزامنة إعدادات مركز التحكم (لوحات الرد، الأوامر، زر القائمة، الإعدادات)
+            snapshot = {
+                "reply": await db.get_state(control.REPLY_STATE_KEY),
+                "commands": await db.get_state(control.COMMANDS_STATE_KEY),
+                "menu": await db.get_state(control.MENU_BUTTON_STATE_KEY),
+                "settings": await db.get_state(control.SETTINGS_STATE_KEY),
+            }
+            serialized = json.dumps(snapshot, sort_keys=True, default=str)
+            if serialized != last_snapshot:
+                last_snapshot = serialized
+                await control.load_from_state(db)
+                bot = app.bot
+                try:
+                    await control.apply_commands(bot, control.current_commands_config())
+                except Exception:  # noqa: BLE001
+                    logger.warning("تعذر مزامنة أوامر البوت", exc_info=True)
+                try:
+                    await control.apply_menu_button(
+                        bot, control.current_menu_button_config()
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning("تعذر مزامنة زر القائمة", exc_info=True)
+                try:
+                    await control.apply_default_admin_rights(
+                        bot, control.current_settings()
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning("تعذر مزامنة صلاحيات المشرف الافتراضية", exc_info=True)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
-            logger.warning("تعذر مزامنة تخطيط أزرار القائمة", exc_info=True)
+            logger.warning("تعذر مزامنة إعدادات مركز التحكم", exc_info=True)
         await asyncio.sleep(60)
 
 

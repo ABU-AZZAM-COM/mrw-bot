@@ -15,13 +15,45 @@ class _MenuButton {
     required this.id,
     required this.label,
     required this.action,
+    this.type = 'callback',
+    this.style,
+    this.icon,
+    this.disabled = false,
+    this.url = '',
+    this.copyText = '',
+    this.inlineQuery = '',
+    this.visibility = 'all',
   });
 
   final int id;
   String label;
   String action;
+  String type;
+  String? style;
+  String? icon;
+  bool disabled;
+  String url;
+  String copyText;
+  String inlineQuery;
+  String visibility;
 
-  Map<String, dynamic> toJson() => {'label': label, 'action': action};
+  Map<String, dynamic> toJson() {
+    final data = <String, dynamic>{
+      'label': label,
+      'type': type,
+      'disabled': disabled,
+      'visibility': visibility,
+    };
+    if (type == 'callback') {
+      data['action'] = action;
+    }
+    if (style != null && style!.isNotEmpty) data['style'] = style;
+    if (icon != null && icon!.isNotEmpty) data['icon'] = icon;
+    if (type == 'url' || type == 'web_app') data['url'] = url;
+    if (type == 'copy') data['copy_text'] = copyText;
+    if (type == 'inline') data['inline_query'] = inlineQuery;
+    return data;
+  }
 }
 
 /// محرر حي لأزرار قائمة المستخدم في البوت.
@@ -44,10 +76,21 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
     'max_row_buttons': 3,
     'max_buttons': 16,
     'max_label': 40,
+    'max_url': 512,
+    'max_copy': 256,
   };
 
   final List<List<_MenuButton>> _rows = [];
   List<_MenuAction> _actions = const [];
+  List<String> _styles = const ['primary', 'success', 'danger'];
+  List<String> _types = const [
+    'callback',
+    'url',
+    'web_app',
+    'copy',
+    'inline',
+  ];
+  List<String> _visibilities = const ['all', 'admins', 'non_admins'];
   Map<String, int> _limits = Map<String, int>.from(_defaultLimits);
   bool _loading = true;
   bool _saving = false;
@@ -113,6 +156,21 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
             : _defaultLimits[key]!,
     };
     _customized = data['customized'] == true;
+    final options = data['options'];
+    if (options is Map) {
+      final styles = options['styles'];
+      final types = options['types'];
+      final visibility = options['visibility'];
+      if (styles is List) {
+        _styles = [for (final value in styles) '$value'];
+      }
+      if (types is List) {
+        _types = [for (final value in types) '$value'];
+      }
+      if (visibility is List) {
+        _visibilities = [for (final value in visibility) '$value'];
+      }
+    }
     _rows
       ..clear()
       ..addAll(_parseRows(data['items']));
@@ -127,10 +185,28 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
       for (final item in row) {
         if (item is! Map) continue;
         final label = '${item['label'] ?? ''}'.trim();
+        final type = '${item['type'] ?? 'callback'}'.trim();
         final action = '${item['action'] ?? ''}'.trim();
-        if (label.isEmpty || action.isEmpty) continue;
+        if (label.isEmpty) continue;
+        if (type == 'callback' && action.isEmpty) continue;
         buttons.add(
-          _MenuButton(id: _nextButtonId++, label: label, action: action),
+          _MenuButton(
+            id: _nextButtonId++,
+            label: label,
+            action: action,
+            type: type,
+            style: item['style'] is String && '${item['style']}'.isNotEmpty
+                ? '${item['style']}'
+                : null,
+            icon: item['icon'] is String && '${item['icon']}'.isNotEmpty
+                ? '${item['icon']}'
+                : null,
+            disabled: item['disabled'] == true,
+            url: '${item['url'] ?? ''}',
+            copyText: '${item['copy_text'] ?? ''}',
+            inlineQuery: '${item['inline_query'] ?? ''}',
+            visibility: '${item['visibility'] ?? 'all'}',
+          ),
         );
       }
       if (buttons.isNotEmpty) rows.add(buttons);
@@ -173,6 +249,63 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
 
   String _labelFor(String actionId) =>
       _actionById(actionId)?.label ?? actionId;
+
+  static String _typeLabel(String type) {
+    switch (type) {
+      case 'callback':
+        return 'إجراء داخلي';
+      case 'url':
+        return 'رابط خارجي';
+      case 'web_app':
+        return 'تطبيق ويب';
+      case 'copy':
+        return 'نسخ نص';
+      case 'inline':
+        return 'استعلام إنلاين';
+      default:
+        return type;
+    }
+  }
+
+  static String _styleLabel(String style) {
+    switch (style) {
+      case 'primary':
+        return 'أزرق (أساسي)';
+      case 'success':
+        return 'أخضر (نجاح)';
+      case 'danger':
+        return 'أحمر (خطر)';
+      default:
+        return style;
+    }
+  }
+
+  static String _visibilityLabel(String value) {
+    switch (value) {
+      case 'all':
+        return 'الجميع';
+      case 'admins':
+        return 'المشرفون فقط';
+      case 'non_admins':
+        return 'غير المشرفين';
+      default:
+        return value;
+    }
+  }
+
+  /// لون معاينة الزر حسب اللون المختار في تيليجرام.
+  Color _styleColor(BuildContext context, String? style) {
+    final colors = Theme.of(context).colorScheme;
+    switch (style) {
+      case 'success':
+        return Colors.green.shade700;
+      case 'danger':
+        return colors.error;
+      case 'primary':
+      default:
+        return colors.primary;
+    }
+  }
 
   void _addRow() {
     if (_rows.length >= _maxRows) {
@@ -270,6 +403,20 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
     });
   }
 
+  void _changeType(_MenuButton button, String? type) {
+    if (type == null || type == button.type) return;
+    setState(() {
+      button.type = type;
+      if (type == 'callback' && button.action.isEmpty) {
+        final action = _firstUnusedAction;
+        if (action != null) {
+          button.action = action.id;
+          button.label = action.label;
+        }
+      }
+    });
+  }
+
   void _toast(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -292,11 +439,26 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
         if (label.length > _maxLabel) {
           return 'نص الزر "$label" يتجاوز $_maxLabel حرفًا.';
         }
-        if (_actionById(button.action) == null) {
-          return 'إجراء غير معروف: ${button.action}';
+        if (button.type == 'url' || button.type == 'web_app') {
+          final url = button.url.trim();
+          if (url.isEmpty) {
+            return 'الزر "$label" من نوع رابط — أدخل الرابط.';
+          }
+          if (button.type == 'web_app' &&
+              !url.toLowerCase().startsWith('https://')) {
+            return 'تطبيق الويب يتطلب رابط HTTPS.';
+          }
         }
-        if (!used.add(button.action)) {
-          return 'الإجراء ${button.action} مكرر في أكثر من زر.';
+        if (button.type == 'copy' && button.copyText.trim().isEmpty) {
+          return 'الزر "$label" من نوع نسخ — أدخل النص المطلوب نسخه.';
+        }
+        if (button.type == 'callback') {
+          if (_actionById(button.action) == null) {
+            return 'إجراء غير معروف: ${button.action}';
+          }
+          if (!used.add(button.action)) {
+            return 'الإجراء ${button.action} مكرر في أكثر من زر.';
+          }
         }
       }
     }
@@ -516,25 +678,192 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
             ],
           ),
           const SizedBox(height: 6),
-          DropdownButtonFormField<String>(
-            key: ValueKey('menu-action-$rowIndex-$buttonIndex-${button.id}'),
-            isExpanded: true,
-            initialValue: _actionById(button.action) == null
-                ? null
-                : button.action,
-            decoration: const InputDecoration(
-              labelText: 'الإجراء عند الضغط',
-              isDense: true,
-              border: OutlineInputBorder(),
-            ),
-            items: [
-              for (final action in _actions)
-                DropdownMenuItem(
-                  value: action.id,
-                  child: Text(action.label, overflow: TextOverflow.ellipsis),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              SizedBox(
+                width: 190,
+                child: DropdownButtonFormField<String>(
+                  key: ValueKey(
+                    'menu-type-$rowIndex-$buttonIndex-${button.id}',
+                  ),
+                  isExpanded: true,
+                  initialValue: _types.contains(button.type)
+                      ? button.type
+                      : 'callback',
+                  decoration: const InputDecoration(
+                    labelText: 'نوع الزر',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    for (final type in _types)
+                      DropdownMenuItem(
+                        value: type,
+                        child: Text(_typeLabel(type)),
+                      ),
+                  ],
+                  onChanged: (value) => _changeType(button, value),
                 ),
+              ),
+              SizedBox(
+                width: 150,
+                child: DropdownButtonFormField<String?>(
+                  key: ValueKey(
+                    'menu-style-$rowIndex-$buttonIndex-${button.id}',
+                  ),
+                  isExpanded: true,
+                  initialValue:
+                      button.style != null && _styles.contains(button.style)
+                      ? button.style
+                      : null,
+                  decoration: const InputDecoration(
+                    labelText: 'اللون',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    const DropdownMenuItem<String?>(
+                      value: null,
+                      child: Text('بلا لون'),
+                    ),
+                    for (final style in _styles)
+                      DropdownMenuItem<String?>(
+                        value: style,
+                        child: Text(_styleLabel(style)),
+                      ),
+                  ],
+                  onChanged: (value) => setState(() => button.style = value),
+                ),
+              ),
+              SizedBox(
+                width: 190,
+                child: DropdownButtonFormField<String>(
+                  key: ValueKey(
+                    'menu-vis-$rowIndex-$buttonIndex-${button.id}',
+                  ),
+                  isExpanded: true,
+                  initialValue: _visibilities.contains(button.visibility)
+                      ? button.visibility
+                      : 'all',
+                  decoration: const InputDecoration(
+                    labelText: 'يظهر لـ',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  items: [
+                    for (final value in _visibilities)
+                      DropdownMenuItem(
+                        value: value,
+                        child: Text(_visibilityLabel(value)),
+                      ),
+                  ],
+                  onChanged: (value) => setState(
+                    () => button.visibility = value ?? 'all',
+                  ),
+                ),
+              ),
             ],
-            onChanged: (value) => _changeAction(button, value),
+          ),
+          const SizedBox(height: 8),
+          if (button.type == 'callback')
+            DropdownButtonFormField<String>(
+              key: ValueKey('menu-action-$rowIndex-$buttonIndex-${button.id}'),
+              isExpanded: true,
+              initialValue: _actionById(button.action) == null
+                  ? null
+                  : button.action,
+              decoration: const InputDecoration(
+                labelText: 'الإجراء عند الضغط',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                for (final action in _actions)
+                  DropdownMenuItem(
+                    value: action.id,
+                    child: Text(action.label, overflow: TextOverflow.ellipsis),
+                  ),
+              ],
+              onChanged: (value) => _changeAction(button, value),
+            ),
+          if (button.type == 'url' || button.type == 'web_app')
+            TextFormField(
+              key: ValueKey('menu-url-$rowIndex-$buttonIndex-${button.id}'),
+              initialValue: button.url,
+              maxLength: _limits['max_url'] ?? 512,
+              keyboardType: TextInputType.url,
+              decoration: InputDecoration(
+                labelText: button.type == 'web_app'
+                    ? 'رابط تطبيق الويب (HTTPS)'
+                    : 'الرابط',
+                hintText: 'https://…',
+                isDense: true,
+                border: const OutlineInputBorder(),
+                counterText: '',
+              ),
+              onChanged: (value) => button.url = value,
+            ),
+          if (button.type == 'copy')
+            TextFormField(
+              key: ValueKey('menu-copy-$rowIndex-$buttonIndex-${button.id}'),
+              initialValue: button.copyText,
+              maxLength: _limits['max_copy'] ?? 256,
+              decoration: const InputDecoration(
+                labelText: 'النص الذي يُنسخ عند الضغط',
+                isDense: true,
+                border: OutlineInputBorder(),
+                counterText: '',
+              ),
+              onChanged: (value) => button.copyText = value,
+            ),
+          if (button.type == 'inline')
+            TextFormField(
+              key: ValueKey('menu-inline-$rowIndex-$buttonIndex-${button.id}'),
+              initialValue: button.inlineQuery,
+              maxLength: _limits['max_copy'] ?? 256,
+              decoration: const InputDecoration(
+                labelText: 'استعلام الإنلاين المبدئي (اختياري)',
+                isDense: true,
+                border: OutlineInputBorder(),
+                counterText: '',
+              ),
+              onChanged: (value) => button.inlineQuery = value,
+            ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  key: ValueKey(
+                    'menu-icon-$rowIndex-$buttonIndex-${button.id}',
+                  ),
+                  initialValue: button.icon ?? '',
+                  maxLength: 32,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'معرّف إيموجي مخصص (اختياري)',
+                    helperText: 'أرقام فقط — من Custom Emoji ID',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    counterText: '',
+                  ),
+                  onChanged: (value) =>
+                      button.icon = value.trim().isEmpty ? null : value.trim(),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Column(
+                children: [
+                  const Text('معطّل', style: TextStyle(fontSize: 12)),
+                  Switch(
+                    value: button.disabled,
+                    onChanged: (value) => setState(() => button.disabled = value),
+                  ),
+                ],
+              ),
+            ],
           ),
         ],
       ),
@@ -656,25 +985,68 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
                     for (var i = 0; i < row.length; i++) ...[
                       if (i > 0) const SizedBox(width: 6),
                       Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: colors.primary.withValues(alpha: .08),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: colors.primary.withValues(alpha: .3),
-                            ),
-                          ),
-                          child: Text(
-                            row[i].label,
-                            textAlign: TextAlign.center,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
+                        child: Builder(
+                          builder: (context) {
+                            final button = row[i];
+                            final tint = _styleColor(context, button.style);
+                            return Opacity(
+                              opacity: button.disabled ? .45 : 1,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 10,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: tint.withValues(alpha: .09),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: tint.withValues(alpha: .38),
+                                  ),
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      button.label,
+                                      textAlign: TextAlign.center,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: tint,
+                                            fontWeight: FontWeight.w600,
+                                            decoration: button.disabled
+                                                ? TextDecoration.lineThrough
+                                                : null,
+                                          ),
+                                    ),
+                                    if (button.visibility != 'all' ||
+                                        button.type != 'callback')
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 2),
+                                        child: Text(
+                                          button.visibility != 'all'
+                                              ? _visibilityLabel(button.visibility)
+                                              : _typeLabel(button.type),
+                                          textAlign: TextAlign.center,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelSmall
+                                              ?.copyWith(
+                                                fontSize: 9,
+                                                color: tint.withValues(
+                                                  alpha: .75,
+                                                ),
+                                              ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       ),
                     ],

@@ -48,6 +48,13 @@ class DemoApi implements AdminApi {
     'max_row_buttons': 3,
     'max_buttons': 16,
     'max_label': 40,
+    'max_url': 512,
+    'max_copy': 256,
+  };
+  static const Map<String, List<String>> _botMenuOptions = {
+    'styles': ['primary', 'success', 'danger'],
+    'types': ['callback', 'url', 'web_app', 'copy', 'inline'],
+    'visibility': ['all', 'admins', 'non_admins'],
   };
   List<List<Map<String, String>>>? _botMenu;
   bool get _botMenuCustomized => _botMenu != null;
@@ -76,6 +83,139 @@ class DemoApi implements AdminApi {
 
   List<List<Map<String, String>>> _botMenuRows() =>
       _botMenu ?? _defaultBotMenuRows();
+
+  // ---- مركز التحكم (نسخة تجريبية) ----
+  static const List<Map<String, dynamic>> _demoReplyIds = [
+    {'id': 'cancel', 'label': 'لوحة الإلغاء (أثناء إدخال البلاغ)'},
+    {'id': 'confirm', 'label': 'لوحة تأكيد الإرسال'},
+    {'id': 'app', 'label': 'لوحة فتح تطبيق البلاغ'},
+    {'id': 'verification_contact', 'label': 'لوحة توثيق المراسل'},
+    {'id': 'contact', 'label': 'لوحة التواصل مع الإدارة'},
+    {'id': 'location', 'label': 'لوحة طلب الموقع'},
+  ];
+  static Map<String, dynamic> _demoReplyDefaults() => {
+    'cancel': {
+      'rows': [
+        [
+          {'text': '❌ إلغاء', 'type': 'cancel'},
+        ],
+      ],
+      'placeholder': '✏️ اكتب هنا… أو اختر زرًا',
+      'persistent': false,
+    },
+    'confirm': {
+      'rows': [
+        [
+          {'text': '✅ إرسال البلاغ', 'type': 'confirm'},
+          {'text': '❌ إلغاء', 'type': 'cancel'},
+        ],
+      ],
+      'placeholder': 'اختر زرًا 👇',
+      'persistent': false,
+    },
+    'app': {
+      'rows': [
+        [
+          {'text': '🚀 فتح تطبيق البلاغ', 'type': 'web_app'},
+        ],
+      ],
+      'placeholder': '✏️ اكتب هنا… أو اضغط زر التطبيق 🚀',
+      'persistent': true,
+    },
+    'verification_contact': {
+      'rows': [
+        [
+          {'text': '📞 مشاركة رقم هاتفي', 'type': 'contact'},
+        ],
+        [
+          {'text': '❌ إلغاء', 'type': 'cancel'},
+        ],
+      ],
+      'placeholder': '📞 شارك رقمك أو اختر إلغاء',
+      'persistent': false,
+    },
+    'contact': {
+      'rows': [
+        [
+          {'text': '📞 مشاركة رقم هاتفي', 'type': 'contact'},
+        ],
+        [
+          {'text': '⏭️ تخطي', 'type': 'skip'},
+        ],
+        [
+          {'text': '↩️ رجوع', 'type': 'back'},
+        ],
+        [
+          {'text': '❌ إلغاء', 'type': 'cancel'},
+        ],
+      ],
+      'placeholder': 'اختر زرًا 👇',
+      'persistent': false,
+    },
+    'location': {
+      'rows': [
+        [
+          {'text': '📍 مشاركة الموقع', 'type': 'location'},
+        ],
+        [
+          {'text': '⏭️ تخطي', 'type': 'skip'},
+        ],
+        [
+          {'text': '↩️ رجوع', 'type': 'back'},
+        ],
+        [
+          {'text': '❌ إلغاء', 'type': 'cancel'},
+        ],
+      ],
+      'placeholder': 'اختر زرًا 👇',
+      'persistent': false,
+    },
+  };
+  Map<String, dynamic>? _demoReply;
+  Map<String, dynamic>? _demoCommands;
+  Map<String, dynamic>? _demoMenuButton;
+  Map<String, dynamic>? _demoBotSettings;
+  final Map<String, int> _demoAnalytics = {'report': 42, 'status': 17, 'about': 9};
+
+  static Map<String, dynamic> _demoCommandsDefaults() => {
+    'scopes': [
+      {
+        'scope': 'default',
+        'chat_id': null,
+        'language': '',
+        'commands': [
+          {'command': 'start', 'description': 'فتح الواجهة الرئيسية'},
+        ],
+      },
+      {
+        'scope': 'chat',
+        'chat_id': 1557500001,
+        'language': '',
+        'commands': [
+          {'command': 'start', 'description': 'فتح الواجهة الرئيسية'},
+          {'command': 'admin', 'description': 'لوحة إدارة البلاغات'},
+          {'command': 'stats', 'description': 'إحصائيات البلاغات'},
+        ],
+      },
+    ],
+  };
+
+  static Map<String, dynamic> _demoSettingsDefaults() => {
+    'mini_app_url': 'https://example.com/app',
+    'default_admin_rights': {
+      'is_anonymous': false,
+      'can_manage_chat': true,
+      'can_delete_messages': true,
+      'can_manage_video_chats': true,
+      'can_restrict_members': true,
+      'can_promote_members': false,
+      'can_change_info': true,
+      'can_invite_users': true,
+      'can_pin_messages': true,
+      'can_manage_topics': true,
+    },
+    'default_admin_rights_customized': false,
+  };
   int _publicationJobId = 0;
   Map<String, dynamic>? _publicationJob;
   final List<Map<String, dynamic>> _reports = [
@@ -288,6 +428,120 @@ class DemoApi implements AdminApi {
         'customized': _botMenuCustomized,
         'actions': _botMenuActions,
         'limits': _botMenuLimits,
+        'options': _botMenuOptions,
+      };
+    }
+    if (path == '/api/admin/bot-reply-keyboards') {
+      final reply = _demoReply ?? _demoReplyDefaults();
+      return {
+        'ok': true,
+        'items': reply,
+        'defaults': _demoReplyDefaults(),
+        'ids': _demoReplyIds,
+        'customized': _demoReply != null,
+        'bot_ready': true,
+        'mini_app_url': (_demoBotSettings ?? _demoSettingsDefaults())['mini_app_url'],
+        'types': [
+          'text',
+          'cancel',
+          'confirm',
+          'contact',
+          'location',
+          'skip',
+          'back',
+          'web_app',
+        ],
+        'styles': ['primary', 'success', 'danger'],
+      };
+    }
+    if (path == '/api/admin/bot-commands') {
+      return {
+        'ok': true,
+        'items': _demoCommands ?? _demoCommandsDefaults(),
+        'defaults': _demoCommandsDefaults(),
+        'customized': _demoCommands != null,
+        'scopes': [
+          {'id': 'default', 'label': 'الافتراضي (كل المحادثات)'},
+          {'id': 'all_private_chats', 'label': 'كل المحادثات الخاصة'},
+          {'id': 'all_group_chats', 'label': 'كل المجموعات'},
+          {'id': 'all_chat_administrators', 'label': 'كل مشرفي المحادثات'},
+          {'id': 'chat', 'label': 'محادثة محددة'},
+          {'id': 'chat_administrators', 'label': 'مشرفو محادثة محددة'},
+        ],
+        'bot_ready': true,
+        'limits': {'max_commands': 100, 'max_scopes': 50},
+      };
+    }
+    if (path == '/api/admin/bot-menu-button') {
+      return {
+        'ok': true,
+        'items':
+            _demoMenuButton ??
+            {'type': 'default', 'text': 'فتح التطبيق', 'url': ''},
+        'defaults': {'type': 'default', 'text': 'فتح التطبيق', 'url': ''},
+        'customized': _demoMenuButton != null,
+        'bot_ready': true,
+        'mini_app_url': (_demoBotSettings ?? _demoSettingsDefaults())['mini_app_url'],
+      };
+    }
+    if (path == '/api/admin/bot-settings') {
+      final values = _demoBotSettings ?? _demoSettingsDefaults();
+      return {
+        'ok': true,
+        'items': values,
+        'defaults': _demoSettingsDefaults(),
+        'customized': _demoBotSettings != null,
+        'bot_ready': true,
+        'bot': {
+          'username': 'demo_bot',
+          'supports_inline_queries': false,
+          'can_join_groups': true,
+          'can_read_all_group_messages': false,
+        },
+        'rights_keys': [
+          for (final key
+              in (_demoSettingsDefaults()['default_admin_rights'] as Map).keys)
+            '$key',
+        ],
+      };
+    }
+    if (path == '/api/admin/bot-analytics') {
+      return {
+        'ok': true,
+        'items': [
+          for (final entry in _demoAnalytics.entries)
+            {
+              'action': entry.key,
+              'label': switch (entry.key) {
+                'report' => 'تقديم بلاغ',
+                'status' => 'متابعة بلاغاتي',
+                'about' => 'دليل الاستخدام',
+                _ => entry.key,
+              },
+              'presses': entry.value,
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            },
+        ],
+        'total': _demoAnalytics.values.fold<int>(0, (sum, value) => sum + value),
+        'tracked_actions': _demoAnalytics.length,
+      };
+    }
+    if (path == '/api/admin/bot-links') {
+      final payload = query?['payload'] ?? '';
+      final base = 'https://t.me/demo_bot';
+      return {
+        'ok': true,
+        'payload': payload,
+        'username': 'demo_bot',
+        'links': {
+          'start': payload.isEmpty ? base : '$base?start=$payload',
+          'startgroup': payload.isEmpty
+              ? base
+              : '$base?startgroup=$payload',
+          'startapp': payload.isEmpty ? base : '$base?startapp=$payload',
+          'plain': base,
+        },
+        'mini_app_url': (_demoBotSettings ?? _demoSettingsDefaults())['mini_app_url'],
       };
     }
     if (path == '/api/admin/meta') {
@@ -473,7 +727,13 @@ class DemoApi implements AdminApi {
     String path,
     Map<String, dynamic> body,
   ) async {
-    if (path == '/api/admin/publications/send') {
+    if (path == '/api/admin/bot-apply') {
+      _record('bot_apply_all', 'إعادة تطبيق محلية');
+      return {
+        'ok': true,
+        'result': {'ok': true, 'command_errors': <String>[]},
+      };
+    }    if (path == '/api/admin/publications/send') {
       _publicationJobId++;
       _publicationJob = {
         'job_id': _publicationJobId,
@@ -655,7 +915,17 @@ class DemoApi implements AdminApi {
                 if (item is Map)
                   {
                     'label': '${item['label']}',
-                    'action': '${item['action']}',
+                    'type': '${item['type'] ?? 'callback'}',
+                    'action': '${item['action'] ?? ''}',
+                    if (item['style'] != null) 'style': '${item['style']}',
+                    if (item['icon'] != null) 'icon': '${item['icon']}',
+                    'disabled': item['disabled'] == true,
+                    'visibility': '${item['visibility'] ?? 'all'}',
+                    if (item['url'] != null) 'url': '${item['url']}',
+                    if (item['copy_text'] != null)
+                      'copy_text': '${item['copy_text']}',
+                    if (item['inline_query'] != null)
+                      'inline_query': '${item['inline_query']}',
                   },
             ],
       ];
@@ -666,6 +936,69 @@ class DemoApi implements AdminApi {
         'customized': true,
         'actions': _botMenuActions,
         'limits': _botMenuLimits,
+        'options': _botMenuOptions,
+      };
+    }
+    if (path == '/api/admin/bot-reply-keyboards') {
+      final items = body['items'];
+      if (items is! Map) throw ApiException(422, 'bad_bot_reply_keyboards');
+      _demoReply = (items as Map).cast<String, dynamic>();
+      _record('bot_reply_keyboards_changed', 'لوحات رد محلية');
+      return {
+        'ok': true,
+        'items': _demoReply,
+        'ids': _demoReplyIds,
+        'customized': true,
+        'types': [
+          'text',
+          'cancel',
+          'confirm',
+          'contact',
+          'location',
+          'skip',
+          'back',
+          'web_app',
+        ],
+        'styles': ['primary', 'success', 'danger'],
+      };
+    }
+    if (path == '/api/admin/bot-commands') {
+      final items = body['items'];
+      if (items is! Map) throw ApiException(422, 'bad_bot_commands');
+      _demoCommands = (items as Map).cast<String, dynamic>();
+      _record('bot_commands_changed', 'أوامر محلية');
+      return {
+        'ok': true,
+        'items': _demoCommands,
+        'customized': true,
+        'applied': {'ok': true, 'errors': <String>[]},
+        'bot_ready': true,
+      };
+    }
+    if (path == '/api/admin/bot-menu-button') {
+      final items = body['items'];
+      if (items is! Map) throw ApiException(422, 'bad_bot_menu_button');
+      _demoMenuButton = (items as Map).cast<String, dynamic>();
+      _record('bot_menu_button_changed', 'زر قائمة محلي');
+      return {
+        'ok': true,
+        'items': _demoMenuButton,
+        'customized': true,
+        'applied': true,
+        'bot_ready': true,
+      };
+    }
+    if (path == '/api/admin/bot-settings') {
+      final items = body['items'];
+      if (items is! Map) throw ApiException(422, 'bad_bot_settings');
+      _demoBotSettings = (items as Map).cast<String, dynamic>();
+      _record('bot_settings_changed', 'إعدادات بوت محلية');
+      return {
+        'ok': true,
+        'items': _demoBotSettings,
+        'customized': true,
+        'applied': true,
+        'bot_ready': true,
       };
     }
     if (path == '/api/admin/templates') {
@@ -724,7 +1057,45 @@ class DemoApi implements AdminApi {
         'customized': false,
         'actions': _botMenuActions,
         'limits': _botMenuLimits,
+        'options': _botMenuOptions,
       };
+    }
+    if (path == '/api/admin/bot-reply-keyboards') {
+      _demoReply = null;
+      _record('bot_reply_keyboards_reset', 'لوحات رد محلية');
+      return {
+        'ok': true,
+        'items': _demoReplyDefaults(),
+        'ids': _demoReplyIds,
+        'customized': false,
+        'types': [
+          'text',
+          'cancel',
+          'confirm',
+          'contact',
+          'location',
+          'skip',
+          'back',
+          'web_app',
+        ],
+        'styles': ['primary', 'success', 'danger'],
+      };
+    }
+    if (path == '/api/admin/bot-menu-button') {
+      _demoMenuButton = null;
+      _record('bot_menu_button_reset', 'زر قائمة محلي');
+      return {
+        'ok': true,
+        'items': {'type': 'default', 'text': 'فتح التطبيق', 'url': ''},
+        'customized': false,
+        'applied': true,
+        'bot_ready': true,
+      };
+    }
+    if (path == '/api/admin/bot-analytics') {
+      _demoAnalytics.clear();
+      _record('bot_analytics_reset', 'تحليلات محلية');
+      return {'ok': true, 'items': <Map<String, dynamic>>[], 'total': 0};
     }
     final source = RegExp(r'^/api/admin/osint/sources/(\d+)$').firstMatch(path);
     if (source != null) {

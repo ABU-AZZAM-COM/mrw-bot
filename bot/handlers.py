@@ -47,7 +47,7 @@ from telegram.ext import (
 )
 
 from app import config
-from bot import admin, keyboards, texts
+from bot import admin, control, keyboards, texts
 from services import (
     archive,
     guards,
@@ -138,6 +138,17 @@ VERIFICATION_TICKET_MINUTES = 30
 # نصوص الأزرار (أنماط regex) لإلغاء العملية وتأكيد الحفظ
 CANCEL_RE = r"^\s*❌\s*إلغاء\s*$"
 CONFIRM_RE = r"^\s*✅\s*إرسال\s+البلاغ\s*$"
+
+
+class _SemanticTextFilter(filters.MessageFilter):
+    """يطابق نص زر لوحة الرد بعد تعديله من اللوحة (وليس النص القديم فقط)."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        self.kind = kind
+
+    def filter(self, message) -> bool:  # noqa: ANN001
+        return control.is_semantic_text(self.kind, message.text)
 
 # بادئة استدعاءات المستخدم (تعريف أصلي في keyboards — يُستعمل هنا للفحص السريع)
 USR_PREFIX = "usr:"
@@ -427,7 +438,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context,
         welcome,
         parse_mode=parse_mode,
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
     return ConversationHandler.END
 
@@ -1000,9 +1011,9 @@ async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["place"] = ""
     else:
         place = (message.text or "").strip()
-        if place == "↩️ رجوع":
+        if place == control.semantic_text("back", "↩️ رجوع"):
             return await _show_report_step(update, context, ASK_PHOTO)
-        if place != "⏭️ تخطي":
+        if place != control.semantic_text("skip", "⏭️ تخطي"):
             if not place or len(place) > 120:
                 await _send_clean_prompt(
                     update,
@@ -1022,7 +1033,9 @@ async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     contact = message.contact
-    if not contact and (message.text or "").strip() == "↩️ رجوع":
+    if not contact and (message.text or "").strip() == control.semantic_text(
+        "back", "↩️ رجوع"
+    ):
         return await _show_report_step(
             update, context, _contact_back_step(context)
         )
@@ -1036,7 +1049,9 @@ async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ASK_CONTACT
         context.user_data["contact_phone"] = contact.phone_number[:32]
-    elif (message.text or "").strip() == "⏭️ تخطي":
+    elif (message.text or "").strip() == control.semantic_text(
+        "skip", "⏭️ تخطي"
+    ):
         context.user_data["contact_phone"] = ""
     else:
         await _send_clean_prompt(
@@ -1503,7 +1518,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         texts.HELP,
         parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
 
 
@@ -1707,7 +1722,7 @@ async def receive_support_message(
         prompt = await message.reply_text(
             texts.SUPPORT_UNAVAILABLE,
             parse_mode=ParseMode.HTML,
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         _remember_user_prompt(context, prompt)
         return ConversationHandler.END
@@ -1768,7 +1783,7 @@ async def receive_support_message(
     prompt = await message.reply_text(
         texts.SUPPORT_RECEIVED if delivered else texts.SUPPORT_SAVED_NO_NOTIFY,
         parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
     _remember_user_prompt(context, prompt)
     context.user_data.pop("support_pending", None)
@@ -1789,7 +1804,7 @@ async def receive_verification_phone(
             context,
             texts.WELCOME_HINT,
             parse_mode=ParseMode.HTML,
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
     if not verified_reporters.is_configured():
@@ -1797,7 +1812,7 @@ async def receive_verification_phone(
             update,
             context,
             "ميزة التوثيق غير مفعّلة حاليًا لأن إعداد التشفير الآمن لم يكتمل.",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         context.user_data.clear()
         return ConversationHandler.END
@@ -1846,7 +1861,7 @@ async def receive_verification_phone(
             update,
             context,
             "تعذّر بدء التوثيق لأن خدمة الحفظ الآمن غير جاهزة. لم يُحفظ رقم الهاتف.",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         context.user_data.clear()
         return ConversationHandler.END
@@ -1867,7 +1882,7 @@ async def receive_verification_phone(
             update,
             context,
             message_text,
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
 
@@ -1948,7 +1963,7 @@ async def _receive_verification_image(
             update,
             context,
             "انتهت جلسة التوثيق. ابدأ طلبًا جديدًا من القائمة الرئيسية.",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
     try:
@@ -1968,7 +1983,7 @@ async def _receive_verification_image(
             context,
             "تم تحديث إفصاح الخصوصية. ابدأ طلب التوثيق من جديد وراجع الإفصاح "
             "المحدّث قبل إرسال الصور.",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
 
@@ -2048,7 +2063,7 @@ async def _receive_verification_image(
             update,
             context,
             "تعذّر التشفير الآمن، لذلك لم تُحفظ الصورة. ابدأ طلبًا جديدًا لاحقًا.",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
     except Exception:
@@ -2084,7 +2099,7 @@ async def _receive_verification_image(
             update,
             context,
             "انتهت جلسة التوثيق. ابدأ طلبًا جديدًا من القائمة الرئيسية.",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
 
@@ -2115,7 +2130,7 @@ async def _receive_verification_image(
             update,
             context,
             "لم يكتمل ترتيب الصور، لذلك لم يُرسل الطلب. ابدأه من جديد.",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
     try:
@@ -2134,7 +2149,7 @@ async def _receive_verification_image(
             update,
             context,
             "تعذّر حفظ الطلب بأمان، ولم يُرسل للمراجعة. ابدأ طلبًا جديدًا لاحقًا.",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
     if request_id is None:
@@ -2143,7 +2158,7 @@ async def _receive_verification_image(
             update,
             context,
             "انتهت جلسة التوثيق قبل اكتمال الإرسال. ابدأ طلبًا جديدًا.",
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         return ConversationHandler.END
 
@@ -2156,7 +2171,7 @@ async def _receive_verification_image(
         context,
         "✅ اكتمل إرسال طلبك للمراجعة البشرية. فحص وضوح الوجه والمحتوى لا يثبت "
         "أصالة الهوية أو أن الصورة حيّة. سنبلغك عند صدور القرار.",
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
     return ConversationHandler.END
 
@@ -2551,7 +2566,7 @@ async def receive_report_appeal(
         if delivered
         else "تم حفظ اعتراضك، لكن تعذر إيصال إشعار للمشرفين حاليًا. "
         "سيبقى البلاغ في قائمة المراجعة.",
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
     return ConversationHandler.END
 
@@ -2617,7 +2632,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context,
         texts.CANCELLED,
         parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
     return ConversationHandler.END
 
@@ -2678,6 +2693,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if data != f"{USR_PREFIX}home":
         _remember_user_prompt(context, query.message)
     parts = data.split(":")
+    if len(parts) > 1:
+        try:
+            await db.record_button_press(parts[1][:64])
+        except Exception:  # noqa: BLE001
+            logger.debug("تعذر تسجيل ضغطة الزر", exc_info=True)
 
     # --- القائمة الرئيسية ---
     if parts[1] == "menu":
@@ -2692,7 +2712,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text(
             welcome,
             parse_mode=parse_mode,
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         _remember_user_prompt(context, query.message)
         return ConversationHandler.END
@@ -2711,7 +2731,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             chat_id=query.message.chat_id,
             text=welcome,
             parse_mode=parse_mode,
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         _remember_user_prompt(context, prompt)
         return ConversationHandler.END
@@ -3063,7 +3083,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.edit_message_text(
                 "تم تسجيل موافقتك على إفصاح التوثيق المحدّث. "
                 "لم نجمع وثائق إضافية.",
-                reply_markup=main_menu_kb(),
+                reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
             )
             _remember_user_prompt(context, query.message)
             return ConversationHandler.END
@@ -3200,7 +3220,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         _pending_app_users.discard(query.from_user.id)
         await query.edit_message_text(
             texts.CANCELLED, parse_mode=ParseMode.HTML,
-            reply_markup=main_menu_kb(),
+            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
         )
         _remember_user_prompt(context, query.message)
         return ConversationHandler.END
@@ -3350,20 +3370,20 @@ def build_conversation() -> ConversationHandler:
         ],
         states={
             ASK_CATEGORY: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],
             ASK_PLATFORM: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],
             ASK_DESC: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_desc),
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, remind_desc),
             ],
             ASK_PHOTO: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_photo),
                 MessageHandler(
                     ~filters.PHOTO & ~filters.Document.IMAGE & ~filters.COMMAND,
@@ -3371,12 +3391,12 @@ def build_conversation() -> ConversationHandler:
                 ),
             ],
             ASK_LINK: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_link),
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, remind_link),
             ],
             ASK_LOCATION: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(
                     (filters.LOCATION | filters.TEXT) & ~filters.COMMAND,
                     receive_location,
@@ -3384,7 +3404,7 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
             ],
             ASK_CONTACT: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(
                     (filters.CONTACT | filters.TEXT) & ~filters.COMMAND,
                     receive_contact,
@@ -3392,9 +3412,9 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
             ],
             CONFIRM: [
-                MessageHandler(filters.Regex(CONFIRM_RE), confirm_save),
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
-                MessageHandler(~filters.Regex(CONFIRM_RE), unmatched),
+                MessageHandler(_SemanticTextFilter("confirm"), confirm_save),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
+                MessageHandler(~_SemanticTextFilter("confirm"), unmatched),
             ],
             ASK_FOLLOWUP: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_followup),
@@ -3408,7 +3428,7 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
             ],
             ASK_VERIFICATION_PHONE: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(
                     (filters.CONTACT | filters.TEXT) & ~filters.COMMAND,
                     receive_verification_phone,
@@ -3416,7 +3436,7 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],
             ASK_VERIFICATION_SELFIE: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(
                     filters.Document.ALL | filters.PHOTO,
                     receive_verification_selfie,
@@ -3424,7 +3444,7 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],
             ASK_VERIFICATION_ID_FRONT: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(
                     filters.Document.ALL | filters.PHOTO,
                     receive_verification_id_front,
@@ -3432,7 +3452,7 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],
             ASK_VERIFICATION_ID_BACK: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(
                     filters.Document.ALL | filters.PHOTO,
                     receive_verification_id_back,
@@ -3440,12 +3460,12 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],
             ASK_VERIFICATION_SUPPLEMENT: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(filters.PHOTO, _receive_verification_supplement_image),
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],
             ASK_SUPPORT: [
-                MessageHandler(filters.Regex(CANCEL_RE), cmd_cancel),
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(filters.ALL & ~filters.COMMAND, receive_support_message),
             ],
         },

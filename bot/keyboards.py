@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
 from telegram import (
+    CopyTextButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -23,12 +25,12 @@ from database import (
     STATUS_REJECTED,
 )
 from app import config
-from bot import texts
+from bot import control, texts
 from services import verified_reporters
 
 # نصوص أزرار لوحة المفاتيح العادية (تُرسل كنص عادي)
-CANCEL_TEXT = "❌ إلغاء"
-CONFIRM_TEXT = "✅ إرسال البلاغ"
+CANCEL_TEXT = control.CANCEL_LABEL
+CONFIRM_TEXT = control.CONFIRM_LABEL
 
 # نص زر فتح التطبيق داخل تيليغرام
 APP_BUTTON_TEXT = "🚀 فتح تطبيق البلاغ"
@@ -88,7 +90,10 @@ def _cb(text: str, data: str) -> InlineKeyboardButton:
 # لوحات المستخدم العادي
 # ------------------------------------------------------------------
 def cancel_kb() -> ReplyKeyboardMarkup:
-    """زر إلغاء يظهر أثناء خطوات إدخال البلاغ."""
+    """زر إلغاء يظهر أثناء خطوات إدخال البلاغ (قابل للتعديل من اللوحة)."""
+    markup = control.build_reply_keyboard("cancel")
+    if markup is not None:
+        return markup
     return ReplyKeyboardMarkup(
         [[CANCEL_TEXT]],
         resize_keyboard=True,
@@ -97,7 +102,10 @@ def cancel_kb() -> ReplyKeyboardMarkup:
 
 
 def confirm_kb() -> ReplyKeyboardMarkup:
-    """أزرار التأكيد النهائي قبل حفظ البلاغ."""
+    """أزرار التأكيد النهائي قبل حفظ البلاغ (قابلة للتعديل من اللوحة)."""
+    markup = control.build_reply_keyboard("confirm")
+    if markup is not None:
+        return markup
     return ReplyKeyboardMarkup(
         [[CONFIRM_TEXT, CANCEL_TEXT]],
         resize_keyboard=True,
@@ -120,14 +128,9 @@ def app_kb() -> ReplyKeyboardMarkup | None:
     لهذا السبب صار الزر هنا، مع بقاء المسار الخادمي الموثّق
     (/api/app-data) احتياطًا يعمل من أي طريقة فتح.
     """
-    if not config.MINI_APP_URL:
+    if not control.mini_app_url():
         return None
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(text=APP_BUTTON_TEXT, web_app=WebAppInfo(url=config.MINI_APP_URL))]],
-        resize_keyboard=True,
-        is_persistent=True,
-        input_field_placeholder="✏️ اكتب هنا… أو اضغط زر التطبيق 🚀",
-    )
+    return control.build_reply_keyboard("app")
 
 
 # ==================================================================
@@ -162,6 +165,13 @@ MAX_USER_MENU_ROWS = 8
 MAX_USER_MENU_ROW_BUTTONS = 3
 MAX_USER_MENU_BUTTONS = 16
 MAX_USER_MENU_LABEL = 40
+MAX_USER_MENU_URL = 512
+MAX_USER_MENU_COPY = 256
+
+MENU_BUTTON_TYPES = ("callback", "url", "web_app", "copy", "inline")
+MENU_VISIBILITY = ("all", "admins", "non_admins")
+
+_MENU_URL_RE = re.compile(r"^(https://|http://|tg://|mailto:)[^\s]+$", re.IGNORECASE)
 
 # آخر تخطيط مُحمَّل — None يعني استخدام الافتراضي المضمّن في الكود.
 _user_menu_layout: Optional[list[list[dict[str, str]]]] = None
@@ -191,13 +201,88 @@ def default_user_menu_layout() -> list[list[dict[str, str]]]:
     return rows
 
 
+def _clean_menu_button(item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """يتحقق من زر واحد في القائمة ويعيد نسخة نظيفة أو None."""
+    label = item.get("label")
+    if not isinstance(label, str):
+        return None
+    label = label.strip()
+    if not label or len(label) > MAX_USER_MENU_LABEL:
+        return None
+
+    kind = item.get("type", "callback")
+    if not isinstance(kind, str) or kind not in MENU_BUTTON_TYPES:
+        return None
+
+    clean: dict[str, Any] = {"label": label, "type": kind}
+
+    if kind == "callback":
+        action = item.get("action")
+        if not isinstance(action, str) or action.strip() not in USER_MENU_ACTIONS:
+            return None
+        clean["action"] = action.strip()
+    else:
+        clean["action"] = ""
+
+    style = item.get("style")
+    if style is not None and style != "":
+        if not isinstance(style, str) or style not in control.STYLE_VALUES:
+            return None
+        clean["style"] = style
+
+    icon = item.get("icon")
+    if icon is not None and icon != "":
+        if not isinstance(icon, str) or not icon.strip().isdigit():
+            return None
+        clean["icon"] = icon.strip()
+
+    disabled = item.get("disabled", False)
+    if not isinstance(disabled, bool):
+        return None
+    clean["disabled"] = disabled
+
+    visibility = item.get("visibility", "all")
+    if not isinstance(visibility, str) or visibility not in MENU_VISIBILITY:
+        return None
+    if visibility != "all":
+        clean["visibility"] = visibility
+
+    if kind in ("url", "web_app"):
+        url = item.get("url")
+        if not isinstance(url, str):
+            return None
+        url = url.strip()
+        if not url or len(url) > MAX_USER_MENU_URL:
+            return None
+        if kind == "web_app" and not url.lower().startswith("https://"):
+            return None
+        if not _MENU_URL_RE.match(url):
+            return None
+        clean["url"] = url
+    elif kind == "copy":
+        copy_text = item.get("copy_text")
+        if not isinstance(copy_text, str):
+            return None
+        copy_text = copy_text.strip()
+        if not copy_text or len(copy_text) > MAX_USER_MENU_COPY:
+            return None
+        clean["copy_text"] = copy_text
+    elif kind == "inline":
+        query = item.get("inline_query", "")
+        if not isinstance(query, str) or len(query) > MAX_USER_MENU_COPY:
+            return None
+        clean["inline_query"] = query.strip()
+
+    return clean
+
+
 def normalize_user_menu_layout(
     raw: Any,
-) -> Optional[list[list[dict[str, str]]]]:
+) -> Optional[list[list[dict[str, Any]]]]:
     """يتحقق من تخطيط قائمة المستخدم ويعيده نظيفًا، أو None إن كان غير صالح.
 
-    يقبل قائمة جاهزة أو نص JSON مخزّنًا في القاعدة. أي زر نصه فارغ أو
-    إجراؤه غير معروف يُسقط التخطيط كاملًا (لا نصف تطبيق).
+    يقبل قائمة جاهزة أو نص JSON مخزّنًا في القاعدة، ويقبل التخطيطات القديمة
+    التي تحمل ``label`` و``action`` فقط (تُفسَّر كأزرار callback).
     """
     if raw is None:
         return None
@@ -213,7 +298,7 @@ def normalize_user_menu_layout(
         return None
     if len(raw) > MAX_USER_MENU_ROWS:
         return None
-    rows: list[list[dict[str, str]]] = []
+    rows: list[list[dict[str, Any]]] = []
     seen_actions: set[str] = set()
     total = 0
     for row in raw:
@@ -221,24 +306,19 @@ def normalize_user_menu_layout(
             return None
         if len(row) > MAX_USER_MENU_ROW_BUTTONS:
             return None
-        clean_row: list[dict[str, str]] = []
+        clean_row: list[dict[str, Any]] = []
         for item in row:
             if not isinstance(item, dict):
                 return None
-            label = item.get("label")
-            action = item.get("action")
-            if not isinstance(label, str) or not isinstance(action, str):
+            clean = _clean_menu_button(item)
+            if clean is None:
                 return None
-            label = label.strip()
-            action = action.strip()
-            if not label or len(label) > MAX_USER_MENU_LABEL:
-                return None
-            if action not in USER_MENU_ACTIONS:
-                return None
-            if action in seen_actions:
-                return None
-            seen_actions.add(action)
-            clean_row.append({"label": label, "action": action})
+            if clean["type"] == "callback":
+                action = clean["action"]
+                if action in seen_actions:
+                    return None
+                seen_actions.add(action)
+            clean_row.append(clean)
             total += 1
         rows.append(clean_row)
     if not 1 <= total <= MAX_USER_MENU_BUTTONS:
@@ -246,21 +326,58 @@ def normalize_user_menu_layout(
     return rows
 
 
-def set_user_menu_layout(raw: Any) -> Optional[list[list[dict[str, str]]]]:
+def set_user_menu_layout(raw: Any) -> Optional[list[list[dict[str, Any]]]]:
     """يثبّت التخطيط في الذاكرة. None أو تخطيط تالف = العودة للافتراضي."""
     global _user_menu_layout
     _user_menu_layout = normalize_user_menu_layout(raw)
     return _user_menu_layout
 
 
-def current_user_menu_layout() -> list[list[dict[str, str]]]:
+def current_user_menu_layout() -> list[list[dict[str, Any]]]:
     """التخطيط الفعلي المعروض للمستخدم الآن."""
     if _user_menu_layout is not None:
         return [list(row) for row in _user_menu_layout]
     return default_user_menu_layout()
 
 
-def main_menu_kb() -> InlineKeyboardMarkup:
+def _menu_inline_button(item: dict[str, Any]) -> Optional[InlineKeyboardButton]:
+    kind = item.get("type", "callback")
+    kwargs: dict[str, Any] = {"text": item["label"]}
+    if item.get("style"):
+        kwargs["style"] = item["style"]
+    if item.get("icon"):
+        kwargs["icon_custom_emoji_id"] = item["icon"]
+    if item.get("disabled"):
+        kwargs["api_kwargs"] = {"disabled": {"is_disabled": True}}
+
+    if kind == "callback" or not kind:
+        return InlineKeyboardButton(
+            callback_data=f"{USR_PREFIX}{item['action']}", **kwargs
+        )
+    if kind == "url":
+        return InlineKeyboardButton(url=item["url"], **kwargs)
+    if kind == "web_app":
+        return InlineKeyboardButton(web_app=WebAppInfo(url=item["url"]), **kwargs)
+    if kind == "copy":
+        return InlineKeyboardButton(
+            copy_text=CopyTextButton(text=item["copy_text"]), **kwargs
+        )
+    if kind == "inline":
+        return InlineKeyboardButton(
+            switch_inline_query_current_chat=item.get("inline_query", ""), **kwargs
+        )
+    return None
+
+
+def menu_button_visible(item: dict[str, Any], viewer_id: Optional[int]) -> bool:
+    visibility = item.get("visibility", "all")
+    if visibility == "all" or viewer_id is None:
+        return True
+    is_admin = int(viewer_id) in getattr(config, "ADMIN_IDS", set())
+    return is_admin if visibility == "admins" else not is_admin
+
+
+def main_menu_kb(viewer_id: Optional[int] = None) -> InlineKeyboardMarkup:
     """قائمة المستخدم: إجراء البلاغ والمتابعة أولًا، والخدمات المساندة بعدها.
 
     تُبنى من التخطيط المحفوظ في اللوحة إن وُجد، وإلا من الافتراضي.
@@ -269,11 +386,19 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     verification_ready = verified_reporters.is_configured()
     rows: list[list[InlineKeyboardButton]] = []
     for row in current_user_menu_layout():
-        buttons = [
-            _cb(item["label"], f"{USR_PREFIX}{item['action']}")
-            for item in row
-            if verification_ready or item["action"] not in _VERIFICATION_MENU_ACTIONS
-        ]
+        buttons: list[InlineKeyboardButton] = []
+        for item in row:
+            if (
+                item.get("type", "callback") == "callback"
+                and not verification_ready
+                and item.get("action") in _VERIFICATION_MENU_ACTIONS
+            ):
+                continue
+            if not menu_button_visible(item, viewer_id):
+                continue
+            button = _menu_inline_button(item)
+            if button is not None:
+                buttons.append(button)
         if buttons:
             rows.append(buttons)
     if not rows:
@@ -283,6 +408,9 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 def verification_contact_kb() -> ReplyKeyboardMarkup:
     """Request the user's own Telegram contact before issuing a camera ticket."""
+    markup = control.build_reply_keyboard("verification_contact")
+    if markup is not None:
+        return markup
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(text=texts.SHARE_CONTACT, request_contact=True)],
@@ -411,6 +539,9 @@ def optional_step_kb(step: str) -> InlineKeyboardMarkup:
 
 
 def contact_request_kb() -> ReplyKeyboardMarkup:
+    markup = control.build_reply_keyboard("contact")
+    if markup is not None:
+        return markup
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(text=texts.SHARE_CONTACT, request_contact=True)],
@@ -424,6 +555,9 @@ def contact_request_kb() -> ReplyKeyboardMarkup:
 
 
 def location_request_kb() -> ReplyKeyboardMarkup:
+    markup = control.build_reply_keyboard("location")
+    if markup is not None:
+        return markup
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(text="📍 مشاركة الموقع", request_location=True)],

@@ -139,7 +139,14 @@ class AdminManagementTests(unittest.TestCase):
         )
         self.assertEqual(saved.status_code, 200)
         self.assertTrue(saved.json()["customized"])
-        self.assertEqual(saved.json()["items"], layout)
+        saved_items = saved.json()["items"]
+        self.assertEqual(
+            [[item["label"] for item in row] for row in saved_items],
+            [["بلاغ جديد", "بلاغاتي"], ["الخصوصية"]],
+        )
+        self.assertEqual(saved_items[0][0]["action"], "report")
+        self.assertEqual(saved_items[0][0]["type"], "callback")
+        self.assertFalse(saved_items[0][0]["disabled"])
         self.assertEqual(
             self.db.audit_entries[-1][1], "bot_menu_changed"
         )

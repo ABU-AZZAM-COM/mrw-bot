@@ -308,6 +308,13 @@ CREATE INDEX IF NOT EXISTS idx_notifications_read_created
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at
     ON notifications(created_at);
 
+-- عدّاد ضغطات أزرار البوت (تحليلات لوحة التحكم)
+CREATE TABLE IF NOT EXISTS bot_button_stats (
+    action     TEXT PRIMARY KEY,
+    presses    INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS user_contact_settings (
     user_id INTEGER PRIMARY KEY,
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -2342,6 +2349,47 @@ class Database:
 
     async def set_state(self, key: str, value: Optional[str]) -> None:
         await asyncio.to_thread(self._set_state, key, value)
+
+    def _record_button_press(self, action: str) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO bot_button_stats (action, presses, updated_at) "
+                "VALUES (?, 1, ?) "
+                "ON CONFLICT(action) DO UPDATE SET "
+                "presses = presses + 1, updated_at = excluded.updated_at",
+                (action, now),
+            )
+            self._conn.commit()
+
+    async def record_button_press(self, action: str) -> None:
+        await asyncio.to_thread(self._record_button_press, action)
+
+    def _button_stats(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT action, presses, updated_at FROM bot_button_stats "
+                "ORDER BY presses DESC, action ASC"
+            ).fetchall()
+        return [
+            {
+                "action": str(row["action"]),
+                "presses": int(row["presses"]),
+                "updated_at": str(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
+    async def button_stats(self) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._button_stats)
+
+    def _reset_button_stats(self) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM bot_button_stats")
+            self._conn.commit()
+
+    async def reset_button_stats(self) -> None:
+        await asyncio.to_thread(self._reset_button_stats)
 
     def _get_welcome_photo(self) -> dict[str, Any] | None:
         with self._lock:
