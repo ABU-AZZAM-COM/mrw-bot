@@ -29,6 +29,53 @@ class DemoApi implements AdminApi {
   };
   final List<Map<String, dynamic>> _audit = [];
   final List<Map<String, dynamic>> _osintSources = [];
+
+  // ---- أزرار قائمة المستخدم (نسخة تجريبية داخلية) ----
+  static const List<Map<String, String>> _botMenuActions = [
+    {'id': 'report', 'label': '📝 تقديم بلاغ جديد'},
+    {'id': 'status', 'label': '📊 متابعة بلاغاتي'},
+    {'id': 'about', 'label': 'ℹ️ دليل الاستخدام'},
+    {'id': 'contact', 'label': '📞 التواصل مع الإدارة'},
+    {'id': 'privacy', 'label': '🔒 سياسة الخصوصية'},
+    {'id': 'verify', 'label': '🪪 التسجيل كمراسل موثوق'},
+    {'id': 'verify-status', 'label': '🔎 حالة توثيق الحساب'},
+    {'id': 'menu', 'label': '🏠 القائمة الرئيسية'},
+    {'id': 'home', 'label': '🏠 العودة للقائمة'},
+    {'id': 'cancel', 'label': '❌ إلغاء'},
+  ];
+  static const Map<String, int> _botMenuLimits = {
+    'max_rows': 8,
+    'max_row_buttons': 3,
+    'max_buttons': 16,
+    'max_label': 40,
+  };
+  List<List<Map<String, String>>>? _botMenu;
+  bool get _botMenuCustomized => _botMenu != null;
+
+  List<List<Map<String, String>>> _defaultBotMenuRows() => [
+    [
+      {'label': '📝 تقديم بلاغ جديد', 'action': 'report'},
+    ],
+    [
+      {'label': '🪪 التسجيل كمراسل موثوق', 'action': 'verify'},
+    ],
+    [
+      {'label': '🔎 حالة توثيق الحساب', 'action': 'verify-status'},
+    ],
+    [
+      {'label': '📊 متابعة بلاغاتي', 'action': 'status'},
+    ],
+    [
+      {'label': 'ℹ️ دليل الاستخدام', 'action': 'about'},
+      {'label': '📞 التواصل مع الإدارة', 'action': 'contact'},
+    ],
+    [
+      {'label': '🔒 سياسة الخصوصية', 'action': 'privacy'},
+    ],
+  ];
+
+  List<List<Map<String, String>>> _botMenuRows() =>
+      _botMenu ?? _defaultBotMenuRows();
   int _publicationJobId = 0;
   Map<String, dynamic>? _publicationJob;
   final List<Map<String, dynamic>> _reports = [
@@ -231,6 +278,16 @@ class DemoApi implements AdminApi {
       return {
         'ok': true,
         'items': [..._types],
+      };
+    }
+    if (path == '/api/admin/bot-buttons') {
+      return {
+        'ok': true,
+        'items': _botMenuRows(),
+        'defaults': _defaultBotMenuRows(),
+        'customized': _botMenuCustomized,
+        'actions': _botMenuActions,
+        'limits': _botMenuLimits,
       };
     }
     if (path == '/api/admin/meta') {
@@ -585,6 +642,32 @@ class DemoApi implements AdminApi {
         'items': [..._types],
       };
     }
+    if (path == '/api/admin/bot-buttons') {
+      final items = body['items'];
+      if (items is! List || items.isEmpty) {
+        throw ApiException(422, 'bad_bot_menu_layout');
+      }
+      _botMenu = [
+        for (final row in items)
+          if (row is List)
+            [
+              for (final item in row)
+                if (item is Map)
+                  {
+                    'label': '${item['label']}',
+                    'action': '${item['action']}',
+                  },
+            ],
+      ];
+      _record('bot_menu_changed', 'أزرار محلية');
+      return {
+        'ok': true,
+        'items': _botMenuRows(),
+        'customized': true,
+        'actions': _botMenuActions,
+        'limits': _botMenuLimits,
+      };
+    }
     if (path == '/api/admin/templates') {
       _templates
         ..clear()
@@ -631,6 +714,18 @@ class DemoApi implements AdminApi {
     String path,
     Map<String, dynamic> body,
   ) async {
+    if (path == '/api/admin/bot-buttons') {
+      _botMenu = null;
+      _record('bot_menu_reset', 'أزرار محلية');
+      return {
+        'ok': true,
+        'items': _botMenuRows(),
+        'defaults': _defaultBotMenuRows(),
+        'customized': false,
+        'actions': _botMenuActions,
+        'limits': _botMenuLimits,
+      };
+    }
     final source = RegExp(r'^/api/admin/osint/sources/(\d+)$').firstMatch(path);
     if (source != null) {
       final id = int.parse(source.group(1)!);

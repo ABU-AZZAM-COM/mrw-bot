@@ -26,7 +26,7 @@ except Exception:
 
 from app import config  # noqa: E402  (بعد تهيئة الطرفية)
 from app import health_server  # noqa: E402
-from bot import admin, handlers, tracking_bot
+from bot import admin, handlers, keyboards, tracking_bot
 from services import archive, guards, hub_backup
 from database import Database  # noqa: E402
 from bot.tracking_bot import TrackedBot  # noqa: E402
@@ -112,6 +112,16 @@ async def post_init(app) -> None:
     config.apply_runtime_settings(runtime_settings)
     app.bot_data["welcome_photo"] = await app.bot_data["db"].get_welcome_photo()
 
+    # تخطيط قائمة المستخدم المحفوظ من لوحة الإدارة (إن وُجد) — يُطبَّق فورًا.
+    try:
+        saved_menu = await app.bot_data["db"].get_state(
+            keyboards.USER_MENU_STATE_KEY
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("تعذر قراءة تخطيط أزرار القائمة — سيُستخدم الافتراضي")
+        saved_menu = None
+    keyboards.set_user_menu_layout(saved_menu)
+
     base_commands = [BotCommand("start", "فتح الواجهة الرئيسية")]
     await app.bot.set_my_commands(base_commands)
 
@@ -152,6 +162,79 @@ async def post_init(app) -> None:
         followup_deadline_loop(app),
         name="report-followup-deadlines",
     )
+    app.create_task(
+        user_menu_refresh_loop(app.bot_data["db"]),
+        name="user-menu-layout-refresh",
+    )
+    app.create_task(
+        notifications_cleanup_loop(app.bot_data["db"]),
+        name="notifications-cleanup",
+    )
+
+    # ------------------------------------------------------------------
+    # التطبيق (Mini App): زر القائمة الدائم + أمر فتح التطبيق
+    # الزر يظهر بجانب مربع الكتابة لكل مستخدم → سهولة الوصول (المهم: أن يعرف
+    # الجميع وجود التطبيق دون شرح).
+    # ------------------------------------------------------------------
+    # زر القائمة الجانبي: عودة إلى الأوامر الافتراضية (☰) — بلا زر تطبيق.
+    # ------------------------------------------------------------------
+    try:
+        await app.bot.set_chat_menu_button(menu_button=MenuButtonDefault())
+    except Exception as exc:
+        logger.warning("تعذر ضبط زر القائمة الافتراضي: %s", exc)
+
+    # ------------------------------------------------------------------
+    # القناة الرسمية: التحقق من الصلاحيات فقط (لا تُرسل أي رسالة)
+    # ------------------------------------------------------------------
+    if config.ARCHIVE_CHAT_ID:
+        try:
+            info = await app.bot.get_chat(config.ARCHIVE_CHAT_ID)
+            logger.info(
+                "📁 القناة الرسمية جاهزة: %s",
+                getattr(info, "title", config.ARCHIVE_CHAT_ID),
+            )
+        except Exception as exc:
+            logger.warning(
+                "تعذّر الوصول إلى القناة الرسمية (%s) — تأكد أنك أضفت البوت مشرفًا فيها: %s",
+                config.ARCHIVE_CHAT_ID, exc,
+            )
+
+    # ------------------------------------------------------------------
+    # المهام الخلفية: إبقاء الاستضافة نشطة + النسخ الاحتياطي الدوري
+    # ------------------------------------------------------------------
+    if config.KEEPALIVE_URL:
+        app.create_task(archive.keepalive_loop(config.KEEPALIVE_URL))
+    if (
+        config.DB_BACKEND == "sqlite"
+        and config.ARCHIVE_CHAT_ID
+        and config.BACKUP_INTERVAL_MIN > 0
+    ):
+        app.create_task(
+            archive.backup_loop(app.bot, config.DB_PATH, config.BACKUP_INTERVAL_MIN)
+        )
+    if hub_backup.is_configured() and config.BACKUP_INTERVAL_MIN > 0:
+        app.create_task(
+            hub_backup.database_backup_loop(
+                app.bot_data["db"], config.BACKUP_INTERVAL_MIN
+            )
+        )
+
+
+async def user_menu_refresh_loop(db) -> None:
+    """يزامن تخطيط أزرار القائمة مع القاعدة كل دقيقة.
+
+    التغيير من اللوحة يُطبَّق مباشرة في الذاكرة (نفس العملية)، وهذا الحلقة
+    تغطي إعادة التشغيل أو تشغيل أكثر من نسخة على نفس القاعدة.
+    """
+    while True:
+        try:
+            raw = await db.get_state(keyboards.USER_MENU_STATE_KEY)
+            keyboards.set_user_menu_layout(raw)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("تعذر مزامنة تخطيط أزرار القائمة", exc_info=True)
+        await asyncio.sleep(60)
 
 
 async def followup_deadline_loop(app) -> None:
@@ -181,55 +264,6 @@ async def followup_deadline_loop(app) -> None:
         except Exception:
             logger.exception("تعذر معالجة المهل المنتهية لطلبات معلومات البلاغ")
             await asyncio.sleep(60)
-    app.create_task(
-        notifications_cleanup_loop(app.bot_data["db"]),
-        name="notifications-cleanup",
-    )
-
-    # ------------------------------------------------------------------
-    # التطبيق (Mini App): زر القائمة الدائم + أمر فتح التطبيق
-    # الزر يظهر بجانب مربع الكتابة لكل مستخدم → سهولة الوصول (المهم: أن يعرف
-    # الجميع وجود التطبيق دون شرح).
-    # ------------------------------------------------------------------
-    # زر القائمة الجانبي: عودة إلى الأوامر الافتراضية (☰) — بلا زر تطبيق.
-    # ------------------------------------------------------------------
-    try:
-        await app.bot.set_chat_menu_button(menu_button=MenuButtonDefault())
-    except Exception as exc:
-        logger.warning("تعذر ضبط زر القائمة الافتراضي: %s", exc)
-
-    # ------------------------------------------------------------------
-    # القناة الرسمية: التحقق من الصلاحيات فقط (لا تُرسل أي رسالة)
-    # ------------------------------------------------------------------
-    if config.ARCHIVE_CHAT_ID:
-        try:
-            info = await app.bot.get_chat(config.ARCHIVE_CHAT_ID)
-            logger.info("📁 القناة الرسمية جاهزة: %s", getattr(info, "title", config.ARCHIVE_CHAT_ID))
-        except Exception as exc:
-            logger.warning(
-                "تعذّر الوصول إلى القناة الرسمية (%s) — تأكد أنك أضفت البوت مشرفًا فيها: %s",
-                config.ARCHIVE_CHAT_ID, exc,
-            )
-
-    # ------------------------------------------------------------------
-    # المهام الخلفية: إبقاء الاستضافة نشطة + النسخ الاحتياطي الدوري
-    # ------------------------------------------------------------------
-    if config.KEEPALIVE_URL:
-        app.create_task(archive.keepalive_loop(config.KEEPALIVE_URL))
-    if (
-        config.DB_BACKEND == "sqlite"
-        and config.ARCHIVE_CHAT_ID
-        and config.BACKUP_INTERVAL_MIN > 0
-    ):
-        app.create_task(
-            archive.backup_loop(app.bot, config.DB_PATH, config.BACKUP_INTERVAL_MIN)
-        )
-    if hub_backup.is_configured() and config.BACKUP_INTERVAL_MIN > 0:
-        app.create_task(
-            hub_backup.database_backup_loop(
-                app.bot_data["db"], config.BACKUP_INTERVAL_MIN
-            )
-        )
 
 
 # ==================================================================

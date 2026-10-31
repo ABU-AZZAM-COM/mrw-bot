@@ -24,3 +24,7 @@ bot_buttons_live.html
 # التوثيق/الصور التجريبية
 media/fake.jpg
 test_photo_*.jpg
+
+# Python cache
+__pycache__/
+*.pyc

@@ -3,6 +3,9 @@
 """
 from __future__ import annotations
 
+import json
+from typing import Any, Optional
+
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -131,26 +134,150 @@ def app_kb() -> ReplyKeyboardMarkup | None:
 # لوحات المستخدم العادي — أزرار مضمنة (بدون أوامر كتابية في المحادثة)
 # ==================================================================
 
-def main_menu_kb() -> InlineKeyboardMarkup:
-    """قائمة المستخدم: إجراء البلاغ والمتابعة أولًا، والخدمات المساندة بعدها."""
-    rows = [
-        [_cb("📝 تقديم بلاغ جديد", f"{USR_PREFIX}report")],
-        [_cb("📊 متابعة بلاغاتي", f"{USR_PREFIX}status")],
-        [
-            _cb("ℹ️ دليل الاستخدام", f"{USR_PREFIX}about"),
-            _cb("📞 التواصل مع الإدارة", f"{USR_PREFIX}contact"),
-        ],
-        [_cb("🔒 سياسة الخصوصية", f"{USR_PREFIX}privacy")],
+# ------------------------------------------------------------------
+# تخطيط قائمة المستخدم الرئيسية — قابل للتعديل من لوحة الإدارة
+# ------------------------------------------------------------------
+# يُحفظ التخطيط في جدول الحالة داخل القاعدة تحت هذا المفتاح (JSON)،
+# ويُقرأ عند إقلاع البوت وعند كل حفظ من اللوحة، فيتبدل البوت فورًا
+# دون إعادة نشر. القيم المسموحة للإجراءات هي نفسها أزرار usr: الحالية.
+USER_MENU_STATE_KEY = "user_menu_layout"
+
+USER_MENU_ACTIONS: dict[str, str] = {
+    "report": "📝 تقديم بلاغ جديد",
+    "status": "📊 متابعة بلاغاتي",
+    "about": "ℹ️ دليل الاستخدام",
+    "contact": "📞 التواصل مع الإدارة",
+    "privacy": "🔒 سياسة الخصوصية",
+    "verify": "🪪 التسجيل كمراسل موثوق",
+    "verify-status": "🔎 حالة توثيق الحساب",
+    "menu": "🏠 القائمة الرئيسية",
+    "home": "🏠 العودة للقائمة",
+    "cancel": "❌ إلغاء",
+}
+
+# الإجراءات التي تحتاج تفعيل تشفير التوثيق قبل عرضها
+_VERIFICATION_MENU_ACTIONS = {"verify", "verify-status"}
+
+MAX_USER_MENU_ROWS = 8
+MAX_USER_MENU_ROW_BUTTONS = 3
+MAX_USER_MENU_BUTTONS = 16
+MAX_USER_MENU_LABEL = 40
+
+# آخر تخطيط مُحمَّل — None يعني استخدام الافتراضي المضمّن في الكود.
+_user_menu_layout: Optional[list[list[dict[str, str]]]] = None
+
+
+def default_user_menu_layout() -> list[list[dict[str, str]]]:
+    """التخطيط الافتراضي لقائمة المستخدم (نفس ترتيب الأزرار الحالي)."""
+    rows: list[list[dict[str, str]]] = [
+        [{"label": USER_MENU_ACTIONS["report"], "action": "report"}],
     ]
     if verified_reporters.is_configured():
-        rows.insert(
-            1,
-            [_cb("🪪 التسجيل كمراسل موثوق", f"{USR_PREFIX}verify")],
-        )
-        rows.insert(
-            2,
-            [_cb("🔎 حالة توثيق الحساب", f"{USR_PREFIX}verify-status")],
-        )
+        rows.append([{"label": USER_MENU_ACTIONS["verify"], "action": "verify"}])
+        rows.append([
+            {
+                "label": USER_MENU_ACTIONS["verify-status"],
+                "action": "verify-status",
+            }
+        ])
+    rows.extend([
+        [{"label": USER_MENU_ACTIONS["status"], "action": "status"}],
+        [
+            {"label": USER_MENU_ACTIONS["about"], "action": "about"},
+            {"label": USER_MENU_ACTIONS["contact"], "action": "contact"},
+        ],
+        [{"label": USER_MENU_ACTIONS["privacy"], "action": "privacy"}],
+    ])
+    return rows
+
+
+def normalize_user_menu_layout(
+    raw: Any,
+) -> Optional[list[list[dict[str, str]]]]:
+    """يتحقق من تخطيط قائمة المستخدم ويعيده نظيفًا، أو None إن كان غير صالح.
+
+    يقبل قائمة جاهزة أو نص JSON مخزّنًا في القاعدة. أي زر نصه فارغ أو
+    إجراؤه غير معروف يُسقط التخطيط كاملًا (لا نصف تطبيق).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            raw = json.loads(text)
+        except ValueError:
+            return None
+    if not isinstance(raw, list) or not raw:
+        return None
+    if len(raw) > MAX_USER_MENU_ROWS:
+        return None
+    rows: list[list[dict[str, str]]] = []
+    seen_actions: set[str] = set()
+    total = 0
+    for row in raw:
+        if not isinstance(row, list) or not row:
+            return None
+        if len(row) > MAX_USER_MENU_ROW_BUTTONS:
+            return None
+        clean_row: list[dict[str, str]] = []
+        for item in row:
+            if not isinstance(item, dict):
+                return None
+            label = item.get("label")
+            action = item.get("action")
+            if not isinstance(label, str) or not isinstance(action, str):
+                return None
+            label = label.strip()
+            action = action.strip()
+            if not label or len(label) > MAX_USER_MENU_LABEL:
+                return None
+            if action not in USER_MENU_ACTIONS:
+                return None
+            if action in seen_actions:
+                return None
+            seen_actions.add(action)
+            clean_row.append({"label": label, "action": action})
+            total += 1
+        rows.append(clean_row)
+    if not 1 <= total <= MAX_USER_MENU_BUTTONS:
+        return None
+    return rows
+
+
+def set_user_menu_layout(raw: Any) -> Optional[list[list[dict[str, str]]]]:
+    """يثبّت التخطيط في الذاكرة. None أو تخطيط تالف = العودة للافتراضي."""
+    global _user_menu_layout
+    _user_menu_layout = normalize_user_menu_layout(raw)
+    return _user_menu_layout
+
+
+def current_user_menu_layout() -> list[list[dict[str, str]]]:
+    """التخطيط الفعلي المعروض للمستخدم الآن."""
+    if _user_menu_layout is not None:
+        return [list(row) for row in _user_menu_layout]
+    return default_user_menu_layout()
+
+
+def main_menu_kb() -> InlineKeyboardMarkup:
+    """قائمة المستخدم: إجراء البلاغ والمتابعة أولًا، والخدمات المساندة بعدها.
+
+    تُبنى من التخطيط المحفوظ في اللوحة إن وُجد، وإلا من الافتراضي.
+    أزرار التوثيق تُخفى تلقائيًا إذا كان التشفير غير مهيأ.
+    """
+    verification_ready = verified_reporters.is_configured()
+    rows: list[list[InlineKeyboardButton]] = []
+    for row in current_user_menu_layout():
+        buttons = [
+            _cb(item["label"], f"{USR_PREFIX}{item['action']}")
+            for item in row
+            if verification_ready or item["action"] not in _VERIFICATION_MENU_ACTIONS
+        ]
+        if buttons:
+            rows.append(buttons)
+    if not rows:
+        rows = [[_cb("📝 تقديم بلاغ جديد", f"{USR_PREFIX}report")]]
     return InlineKeyboardMarkup(rows)
 
 

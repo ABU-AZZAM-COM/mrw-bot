@@ -23,7 +23,7 @@ class BotManagementPage extends StatelessWidget {
               Tab(icon: Icon(Icons.category_outlined), text: 'التصنيفات'),
               Tab(
                 icon: Icon(Icons.account_tree_outlined),
-                text: 'خريطة الأزرار',
+                text: 'أزرار البوت',
               ),
             ],
           ),
@@ -33,7 +33,7 @@ class BotManagementPage extends StatelessWidget {
             children: [
               BotProfilePage(api: api),
               TypesPage(api: api),
-              const BotButtonMapPage(),
+              BotButtonMapPage(api: api),
             ],
           ),
         ),

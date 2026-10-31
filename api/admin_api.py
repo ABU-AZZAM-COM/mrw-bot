@@ -3960,6 +3960,107 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                        " / ".join(clean))
         return JSONResponse({"ok": True, "items": clean})
 
+    # ------------------------------------------------------------------
+    # أزرار قائمة المستخدم — تعديل حي يطبَّق على البوت فورًا
+    # ------------------------------------------------------------------
+    def _bot_menu_actions() -> list[dict[str, str]]:
+        from bot import keyboards  # noqa: PLC0415
+
+        return [
+            {"id": action, "label": label}
+            for action, label in keyboards.USER_MENU_ACTIONS.items()
+        ]
+
+    def _bot_menu_limits() -> dict[str, int]:
+        from bot import keyboards  # noqa: PLC0415
+
+        return {
+            "max_rows": keyboards.MAX_USER_MENU_ROWS,
+            "max_row_buttons": keyboards.MAX_USER_MENU_ROW_BUTTONS,
+            "max_buttons": keyboards.MAX_USER_MENU_BUTTONS,
+            "max_label": keyboards.MAX_USER_MENU_LABEL,
+        }
+
+    @app.get("/api/admin/bot-buttons")
+    async def bot_buttons_get(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        from bot import keyboards  # noqa: PLC0415
+
+        db = db_of()
+        raw = await db.get_state(keyboards.USER_MENU_STATE_KEY)
+        layout = keyboards.normalize_user_menu_layout(raw)
+        return JSONResponse({
+            "ok": True,
+            "items": layout or keyboards.default_user_menu_layout(),
+            "defaults": keyboards.default_user_menu_layout(),
+            "customized": layout is not None,
+            "actions": _bot_menu_actions(),
+            "limits": _bot_menu_limits(),
+        })
+
+    @app.put("/api/admin/bot-buttons")
+    async def bot_buttons_put(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        from bot import keyboards  # noqa: PLC0415
+
+        body = await _json(request)
+        layout = keyboards.normalize_user_menu_layout(body.get("items"))
+        if layout is None:
+            return bad("bad_bot_menu_layout")
+        db = db_of()
+        await db.set_state(
+            keyboards.USER_MENU_STATE_KEY,
+            json.dumps(layout, ensure_ascii=False),
+        )
+        keyboards.set_user_menu_layout(layout)
+        await db.audit(
+            _admin_actor(request),
+            "bot_menu_changed",
+            "أزرار قائمة المستخدم",
+            f"{len(layout)} صفوف — {sum(len(row) for row in layout)} أزرار",
+        )
+        return JSONResponse({
+            "ok": True,
+            "items": layout,
+            "actions": _bot_menu_actions(),
+            "limits": _bot_menu_limits(),
+            "customized": True,
+        })
+
+    @app.delete("/api/admin/bot-buttons")
+    async def bot_buttons_reset(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        refuse = _owner_only(request)
+        if refuse:
+            return refuse
+        from bot import keyboards  # noqa: PLC0415
+
+        db = db_of()
+        await db.set_state(keyboards.USER_MENU_STATE_KEY, None)
+        keyboards.set_user_menu_layout(None)
+        await db.audit(
+            _admin_actor(request),
+            "bot_menu_reset",
+            "أزرار قائمة المستخدم",
+            "العودة إلى التخطيط الافتراضي",
+        )
+        return JSONResponse({
+            "ok": True,
+            "items": keyboards.default_user_menu_layout(),
+            "actions": _bot_menu_actions(),
+            "limits": _bot_menu_limits(),
+            "customized": False,
+        })
+
     @app.get("/api/admin/settings")
     async def runtime_settings_get(request: Request) -> JSONResponse:
         refuse = _auth(request)

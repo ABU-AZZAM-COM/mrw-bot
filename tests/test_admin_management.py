@@ -27,6 +27,7 @@ class FakeDB:
         self.fail_audit = False
         self.verification_item = None
         self.verification_events = []
+        self.state = {}
 
     def admin_auth_snapshot(self):
         return self.accounts, self.bootstrap_disabled
@@ -80,6 +81,15 @@ class FakeDB:
     async def verification_supplement_history(self, _request_id):
         return []
 
+    async def get_state(self, key):
+        return self.state.get(key)
+
+    async def set_state(self, key, value):
+        if value is None:
+            self.state.pop(key, None)
+        else:
+            self.state[key] = value
+
 
 class AdminManagementTests(unittest.TestCase):
     def setUp(self):
@@ -109,6 +119,44 @@ class AdminManagementTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["token"], "bootstrap-owner-token")
+
+    def test_bot_menu_layout_saves_live_and_resets(self):
+        headers = {"Authorization": "Bearer bootstrap-owner-token"}
+        loaded = self.client.get("/api/admin/bot-buttons", headers=headers)
+        self.assertEqual(loaded.status_code, 200)
+        self.assertFalse(loaded.json()["customized"])
+        self.assertIn("report", [item["id"] for item in loaded.json()["actions"]])
+
+        layout = [
+            [
+                {"label": "بلاغ جديد", "action": "report"},
+                {"label": "بلاغاتي", "action": "status"},
+            ],
+            [{"label": "الخصوصية", "action": "privacy"}],
+        ]
+        saved = self.client.put(
+            "/api/admin/bot-buttons", headers=headers, json={"items": layout}
+        )
+        self.assertEqual(saved.status_code, 200)
+        self.assertTrue(saved.json()["customized"])
+        self.assertEqual(saved.json()["items"], layout)
+        self.assertEqual(
+            self.db.audit_entries[-1][1], "bot_menu_changed"
+        )
+
+        invalid = self.client.put(
+            "/api/admin/bot-buttons",
+            headers=headers,
+            json={"items": [[{"label": " ", "action": "report"}]]},
+        )
+        self.assertEqual(invalid.status_code, 400)
+
+        reset = self.client.delete("/api/admin/bot-buttons", headers=headers)
+        self.assertEqual(reset.status_code, 200)
+        self.assertFalse(reset.json()["customized"])
+        self.assertEqual(
+            self.db.audit_entries[-1][1], "bot_menu_reset"
+        )
 
     def test_verification_notification_retry_requires_recorded_delivery_failure(self):
         db = self.db
