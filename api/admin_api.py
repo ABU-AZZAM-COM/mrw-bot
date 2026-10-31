@@ -1667,6 +1667,51 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                            f"المستخدم {r.get('user_id')}")
         return OK if ok else bad("not_found", 404)
 
+    # ================================================================
+    # endpoints إدارة النصوص
+    # ================================================================
+    @app.get("/admin_api/texts")
+    async def get_texts(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse: return refuse
+        from database import Database
+        db = Database()
+        texts = await db.get_all_bot_texts()
+        if not texts:
+            texts = [
+                {"key":"welcome_message","label":"رسالة الترحيب","content":"","category":"user_facing","updated_at":""},
+                {"key":"verify_consent","label":"نص الموافقة للتوثيق","content":"","category":"user_facing","updated_at":""},
+                {"key":"help_text","label":"دليل الاستخدام","content":"","category":"user_facing","updated_at":""},
+                {"key":"privacy_policy","label":"سياسة الخصوصية","content":"","category":"user_facing","updated_at":""},
+                {"key":"verify_button","label":"زر التوثيق","content":"✅ توثيق","category":"button_label","updated_at":""},
+                {"key":"menu_button","label":"زر القائمة","content":"📋 القائمة","category":"button_label","updated_at":""},
+            ]
+        return JSONResponse({"ok": True, "texts": texts})
+
+    @app.post("/admin_api/texts/update")
+    async def update_text(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse: return refuse
+        body = await _json(request)
+        key = str(body.get("key") or "").strip()
+        content = str(body.get("content") or "")
+        label = str(body.get("label") or "").strip()
+        category = str(body.get("category") or "user_facing").strip()
+        if not key: return bad("missing_key")
+        from database import Database
+        db = Database()
+        ok = await db.update_bot_text(key, content, category)
+        if not ok:
+            import sqlite3
+            conn = sqlite3.connect(db.db_path)
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR IGNORE INTO bot_texts (key,label,content,category,updated_at) VALUES (?,?,?,?,?)",
+                (key, label, content, category, __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()))
+            conn.commit(); conn.close(); ok = True
+        if ok:
+            await db.audit(_admin_actor(request), "bot_text_updated", key, f"category={category}")
+        return JSONResponse({"ok": ok, "key": key})
+
     # ------------------------------------------------------------
     # 3) المستخدمون: قائمة + بطاقة + حجب/رفع حجب
     # ------------------------------------------------------------

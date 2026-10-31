@@ -207,7 +207,7 @@ async def _verification_consent(db: Database) -> tuple[str, str]:
         profile = {}
     custom = profile.get("verification_consent_text") if isinstance(profile, dict) else None
     supplemental = custom.strip() if isinstance(custom, str) else ""
-    text = texts.VERIFICATION_CONSENT_DEFAULT
+    text = await texts.get_text(texts.VERIFICATION_CONSENT_DB_KEY, texts.VERIFICATION_CONSENT_DEFAULT)
     if supplemental:
         text += "\n\nإيضاحات إضافية من الإدارة:\n" + supplemental
     privacy_url = await _privacy_policy_url(db) or ""

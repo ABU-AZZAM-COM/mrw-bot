@@ -8,6 +8,7 @@ import 'bot_profile_page.dart';
 import 'bot_reply_page.dart';
 import 'bot_settings_page.dart';
 import 'types_page.dart';
+import 'bot_text_management_page.dart';
 
 class BotManagementPage extends StatelessWidget {
   const BotManagementPage({super.key, required this.api});
@@ -16,7 +17,7 @@ class BotManagementPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => DefaultTabController(
-    length: 7,
+    length: 8,
     child: Column(
       children: [
         Material(
@@ -32,6 +33,7 @@ class BotManagementPage extends StatelessWidget {
               Tab(icon: Icon(Icons.terminal_rounded), text: 'الأوامر'),
               Tab(icon: Icon(Icons.more_horiz_rounded), text: 'زر القائمة'),
               Tab(icon: Icon(Icons.tune_rounded), text: 'الإعدادات'),
+              Tab(icon: Icon(Icons.article_rounded), text: 'النصوص'),
             ],
           ),
         ),
@@ -45,6 +47,7 @@ class BotManagementPage extends StatelessWidget {
               BotCommandsPage(api: api),
               BotMenuButtonPage(api: api),
               BotSettingsPage(api: api),
+              BotTextManagementPage(api: api),
             ],
           ),
         ),
