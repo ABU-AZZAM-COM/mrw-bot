@@ -1,6 +1,8 @@
+import asyncio
 import copy
 import os
 import sys
+import threading
 import types
 import unittest
 from unittest.mock import patch
@@ -11,7 +13,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BOT_TOKEN", "123:TEST_TOKEN")
 
 from api.admin_api import register  # noqa: E402
-from bot import control, keyboards  # noqa: E402
+from bot import control, keyboards, texts  # noqa: E402
 
 
 class FakeDB:
@@ -23,6 +25,7 @@ class FakeDB:
         self.stats = {
             "report": {"action": "report", "presses": 3, "updated_at": "2026-10-31"},
         }
+        self.bot_texts = {}
 
     def admin_auth_snapshot(self):
         return self.accounts, self.bootstrap_disabled
@@ -62,6 +65,17 @@ class FakeDB:
 
     async def reset_button_stats(self):
         self.stats.clear()
+
+    async def update_bot_text(self, key, content, category="user_facing"):
+        self.bot_texts[key] = {
+            "key": key,
+            "content": content,
+            "category": category,
+        }
+        return True
+
+    async def get_all_bot_texts(self):
+        return list(self.bot_texts.values())
 
 
 class ControlNormalizationTests(unittest.TestCase):
@@ -179,6 +193,7 @@ class BotControlEndpointsTests(unittest.TestCase):
         register(self.app)
         bot_main = types.ModuleType("app.main")
         bot_main.app = types.SimpleNamespace(bot_data={"db": self.db})
+        self.bot_app = bot_main.app
         self.modules_patch = patch.dict(sys.modules, {"app.main": bot_main})
         self.modules_patch.start()
         self.env_patch = patch.dict(
@@ -235,6 +250,106 @@ class BotControlEndpointsTests(unittest.TestCase):
         )
         self.assertEqual(reset.status_code, 200)
         self.assertFalse(reset.json()["customized"])
+
+    def test_text_update_applies_to_live_catalog_and_rejects_unknown_key(self):
+        original = texts.ASK_DESC
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+        loop.call_soon(ready.set)
+        bot_thread = threading.Thread(
+            target=lambda: (asyncio.set_event_loop(loop), loop.run_forever()),
+            daemon=True,
+        )
+        bot_thread.start()
+        self.assertTrue(ready.wait(timeout=2))
+        self.bot_app.bot = object()
+        self.bot_app.bot_data["loop"] = loop
+        apply_threads = []
+        original_apply = texts.apply_database_text
+
+        def capture_apply_thread(key, content):
+            apply_threads.append(threading.get_ident())
+            return original_apply(key, content)
+
+        try:
+            with patch.object(texts, "apply_database_text", capture_apply_thread):
+                response = self.client.post(
+                    "/admin_api/texts/update",
+                    headers=self.headers,
+                    json={
+                        "key": "bot.ASK_DESC",
+                        "content": "نص تحديث مباشر {maxlen}",
+                        "label": "وصف البلاغ",
+                        "category": "user_facing",
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.json()["applied"])
+                self.assertEqual(texts.ASK_DESC, "نص تحديث مباشر {maxlen}")
+
+                reset = self.client.post(
+                    "/admin_api/texts/update",
+                    headers=self.headers,
+                    json={
+                        "key": "bot.ASK_DESC",
+                        "content": "",
+                        "label": "وصف البلاغ",
+                    },
+                )
+                self.assertEqual(reset.status_code, 200)
+                self.assertTrue(reset.json()["reset_to_default"])
+                self.assertEqual(texts.ASK_DESC, original)
+
+            rejected = self.client.post(
+                "/admin_api/texts/update",
+                headers=self.headers,
+                json={
+                    "key": "bot.NOT_A_TEXT",
+                    "content": "يجب ألا يُحفظ",
+                },
+            )
+            self.assertEqual(rejected.status_code, 404)
+            self.assertNotIn("bot.NOT_A_TEXT", self.db.bot_texts)
+            self.assertEqual(apply_threads, [bot_thread.ident, bot_thread.ident])
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            bot_thread.join(timeout=2)
+            loop.close()
+            self.bot_app.bot_data.pop("loop", None)
+            del self.bot_app.bot
+            texts.ASK_DESC = original
+            texts._TEXT_RUNTIME.pop("bot.ASK_DESC", None)
+
+    def test_text_catalog_returns_editable_defaults_when_database_is_empty(self):
+        response = self.client.get("/admin_api/texts", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        catalog = response.json()["texts"]
+        keys = [item["key"] for item in catalog]
+        self.assertGreater(len(keys), 100)
+        self.assertEqual(keys, sorted(keys))
+        self.assertIn("bot.INLINE_MESSAGES.followup_length", keys)
+        self.assertFalse(any(key.startswith("bot.STATUS_EMOJI.") for key in keys))
+
+    def test_text_catalog_uses_runtime_fallbacks_and_omits_obsolete_keys(self):
+        self.db.bot_texts["bot.ASK_DESC"] = {
+            "key": "bot.ASK_DESC",
+            "label": "وصف البلاغ",
+            "content": "",
+            "category": "user_facing",
+        }
+        self.db.bot_texts["bot.STATUS_EMOJI.legacy"] = {
+            "key": "bot.STATUS_EMOJI.legacy",
+            "label": "رمز قديم",
+            "content": "غير مستخدم",
+            "category": "user_facing",
+        }
+        response = self.client.get("/admin_api/texts", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        catalog = response.json()["texts"]
+        self.assertGreater(len(catalog), 100)
+        ask_desc = next(item for item in catalog if item["key"] == "bot.ASK_DESC")
+        self.assertTrue(ask_desc["content"])
+        self.assertFalse(any(item["key"] == "bot.STATUS_EMOJI.legacy" for item in catalog))
 
     def test_commands_save_and_scope_delete_tracking(self):
         loaded = self.client.get("/api/admin/bot-commands", headers=self.headers)

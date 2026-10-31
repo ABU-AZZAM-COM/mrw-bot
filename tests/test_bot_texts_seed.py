@@ -53,6 +53,10 @@ class BotTextSeedTests(unittest.TestCase):
                     for item in rows
                     if item["key"] == "verify_consent"
                 )
+                status_badge_key = next(
+                    key for key in keys if key.startswith("bot.STATUS_BADGE.")
+                )
+                status_name = status_badge_key.rsplit(".", 1)[-1]
 
                 db.update_bot_text_sync(
                     "bot.ASK_DESC", "وصف مخصص بحد {maxlen}", "user_facing"
@@ -73,6 +77,11 @@ class BotTextSeedTests(unittest.TestCase):
                 db.update_bot_text_sync(
                     "bot.INLINE_MESSAGES.description_too_short",
                     "وصف قصير {unknown}",
+                    "user_facing",
+                )
+                db.update_bot_text_sync(
+                    status_badge_key,
+                    "شارة مخصصة",
                     "user_facing",
                 )
                 db.update_bot_text_sync(
@@ -99,6 +108,8 @@ class BotTextSeedTests(unittest.TestCase):
                     ),
                     "وصف قصير {unknown}",
                 )
+                self.assertEqual(texts.badge(status_name), "شارة مخصصة")
+                self.assertFalse(texts.is_catalog_key("bot.NOT_A_TEXT"))
                 self.assertEqual(
                     keyboards.REPORT_CATEGORIES["conduct"], "🚨 تصنيف مخصص"
                 )
@@ -111,6 +122,10 @@ class BotTextSeedTests(unittest.TestCase):
                 self.assertEqual(
                     texts.INLINE_MESSAGES["followup_length"],
                     original_followup,
+                )
+                self.assertTrue(texts.apply_database_text("bot.ASK_DESC", ""))
+                self.assertEqual(
+                    texts.ASK_DESC, original_text_globals["ASK_DESC"]
                 )
                 self.assertEqual(
                     asyncio.run(

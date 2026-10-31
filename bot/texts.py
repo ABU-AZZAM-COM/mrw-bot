@@ -438,7 +438,7 @@ _TEXT_ALIASES = {
     "about_system": ("ABOUT_SYSTEM",),
     "status_update": ("STATUS_UPDATE_NOTIF",),
 }
-_TEXT_EXCLUDED = {"VERIFICATION_CONSENT_DB_KEY"}
+_TEXT_EXCLUDED = {"VERIFICATION_CONSENT_DB_KEY", "STATUS_EMOJI"}
 _TEXT_FALLBACKS: dict[str, tuple[str, str]] = {}
 _TEXT_RUNTIME: dict[str, str] = {}
 
@@ -643,11 +643,15 @@ def _refresh_external_keyboard_text(
             keyboards.set_user_menu_layout(current)
 
 
+def _ensure_text_fallbacks() -> None:
+    if not _TEXT_FALLBACKS:
+        _TEXT_FALLBACKS.update(_catalog_defaults())
+
+
 async def load_database_texts(db, *, seed_defaults: bool = True) -> int:
+    defaults = _catalog_defaults()
     if seed_defaults:
-        defaults = _catalog_defaults()
-        if not _TEXT_FALLBACKS:
-            _TEXT_FALLBACKS.update(defaults)
+        _ensure_text_fallbacks()
         await db.ensure_bot_text_defaults([
             (key, label, content, "user_facing")
             for key, (label, content) in defaults.items()
@@ -656,6 +660,8 @@ async def load_database_texts(db, *, seed_defaults: bool = True) -> int:
     loaded = 0
     for row in rows:
         key = str(row.get("key") or "")
+        if key not in defaults:
+            continue
         content = str(row.get("content") or "")
         if not content:
             fallback = _TEXT_FALLBACKS.get(key)
@@ -666,12 +672,42 @@ async def load_database_texts(db, *, seed_defaults: bool = True) -> int:
     return loaded
 
 
+def is_catalog_key(key: str) -> bool:
+    _ensure_text_fallbacks()
+    return key in _TEXT_FALLBACKS
+
+
+def default_catalog_text(key: str) -> str | None:
+    _ensure_text_fallbacks()
+    fallback = _TEXT_FALLBACKS.get(key)
+    return fallback[1] if fallback is not None else None
+
+
+def catalog_defaults() -> list[dict[str, str]]:
+    _ensure_text_fallbacks()
+    return [
+        {
+            "key": key,
+            "label": label,
+            "content": content,
+            "category": "user_facing",
+            "updated_at": "",
+        }
+        for key, (label, content) in _TEXT_FALLBACKS.items()
+    ]
+
+
 def apply_database_text(key: str, content: str) -> bool:
-    if not content:
+    if not is_catalog_key(key):
         return False
-    if not _apply_catalog_value(key, content):
+    effective_content = content
+    if not effective_content:
+        effective_content = default_catalog_text(key) or ""
+        if not effective_content:
+            return False
+    if not _apply_catalog_value(key, effective_content):
         return False
-    _TEXT_RUNTIME[key] = content
+    _TEXT_RUNTIME[key] = effective_content
     return True
 
 

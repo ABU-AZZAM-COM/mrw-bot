@@ -497,6 +497,10 @@ async def _bot_ready() -> bool:
     return _bot_runtime()[0] is not None
 
 
+async def _apply_bot_text_update(key: str, content: str) -> bool:
+    return texts.apply_database_text(key, content)
+
+
 async def _photo_bytes(bot_file_id: str):
     """يجلب بايتات صورة من تلغرام على حلقة البوت (None عند فشل/غياب)."""
     async def _getter():
@@ -1674,17 +1678,22 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         refuse = _auth(request)
         if refuse: return refuse
         db = db_of()
-        texts = await db.get_all_bot_texts()
-        if not texts:
-            texts = [
-                {"key":"welcome_message","label":"رسالة الترحيب","content":"","category":"user_facing","updated_at":""},
-                {"key":"verify_consent","label":"نص الموافقة للتوثيق","content":"","category":"user_facing","updated_at":""},
-                {"key":"help_text","label":"دليل الاستخدام","content":"","category":"user_facing","updated_at":""},
-                {"key":"privacy_policy","label":"سياسة الخصوصية","content":"","category":"user_facing","updated_at":""},
-                {"key":"verify_button","label":"زر التوثيق","content":"✅ توثيق","category":"button_label","updated_at":""},
-                {"key":"menu_button","label":"زر القائمة","content":"📋 القائمة","category":"button_label","updated_at":""},
-            ]
-        return JSONResponse({"ok": True, "texts": texts})
+        saved = {}
+        for item in await db.get_all_bot_texts():
+            key = str(item.get("key") or "")
+            if not texts.is_catalog_key(key):
+                continue
+            saved[key] = item
+        catalog = []
+        for default in texts.catalog_defaults():
+            item = saved.get(default["key"], {})
+            catalog.append({
+                **default,
+                **item,
+                "content": item.get("content") or default["content"],
+            })
+        catalog.sort(key=lambda item: str(item.get("key") or ""))
+        return JSONResponse({"ok": True, "texts": catalog})
 
     @app.post("/admin_api/texts/update")
     async def update_text(request: Request) -> JSONResponse:
@@ -1696,6 +1705,14 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         label = str(body.get("label") or "").strip()
         category = str(body.get("category") or "user_facing").strip()
         if not key: return bad("missing_key")
+        if not texts.is_catalog_key(key):
+            return bad("unknown_text_key", 404)
+        reset_to_default = not content
+        if reset_to_default:
+            default_content = texts.default_catalog_text(key)
+            if default_content is None:
+                return bad("unknown_text_key", 404)
+            content = default_content
         db = db_of()
         ok = await db.update_bot_text(key, content, category)
         if not ok:
@@ -1706,9 +1723,21 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 (key, label, content, category, __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()))
             conn.commit(); conn.close(); ok = True
         if ok:
-            texts.apply_database_text(key, content)
+            if _bot_runtime()[0] is not None:
+                applied = await _on_bot_loop_value(
+                    lambda: _apply_bot_text_update(key, content)
+                )
+            else:
+                applied = texts.apply_database_text(key, content)
             await db.audit(_admin_actor(request), "bot_text_updated", key, f"category={category}")
-        return JSONResponse({"ok": ok, "key": key})
+        else:
+            applied = False
+        return JSONResponse({
+            "ok": ok,
+            "key": key,
+            "applied": bool(applied),
+            "reset_to_default": reset_to_default,
+        })
 
     # ------------------------------------------------------------
     # 3) المستخدمون: قائمة + بطاقة + حجب/رفع حجب
