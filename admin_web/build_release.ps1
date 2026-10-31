@@ -53,6 +53,7 @@ if ($LASTEXITCODE -ne 0) { throw 'flutter pub get فشل' }
 $buildArgs = @(
     'build', 'web', '--release',
     '--base-href=/admin/',
+    '--pwa-strategy=none',
     "--dart-define=APP_VERSION=$version"
 )
 if ($apiBase) { $buildArgs += "--dart-define=ADMIN_API_BASE_URL=$apiBase" }

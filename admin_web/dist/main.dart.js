@@ -33716,7 +33716,7 @@ return s},
 b1W(a,b,c){var s=null
 return c.a(A.bdG(a,b,s,s,s,s))},
 b7q(a){var s=null,r=A.k(a).ax,q=r.rx
-A.bmE(B.Tj,"\xa9 2026 \u2014 \u062c\u0645\u064a\u0639 \u0627\u0644\u062d\u0642\u0648\u0642 \u0645\u062d\u0641\u0648\u0638\u0629\nABU-AZZAM-COM / Azzam","\u0645\u0646\u0638\u0648\u0645\u0629 \u0627\u0633\u062a\u0642\u0628\u0627\u0644 \u0627\u0644\u0628\u0644\u0627\u063a\u0627\u062a \u0627\u0644\u0639\u0633\u0643\u0631\u064a\u0629","2.7.20261031",A.b([B.Z,A.fx("https://github.com/ABU-AZZAM-COM/mrw-bot",A.bX(s,s,q==null?r.k3:q,s,s,s,s,s,s,s,s,12,s,s,s,s,s,!0,s,s,s,s,s,s,s,s),s)],t.p),a)},
+A.bmE(B.Tj,"\xa9 2026 \u2014 \u062c\u0645\u064a\u0639 \u0627\u0644\u062d\u0642\u0648\u0642 \u0645\u062d\u0641\u0648\u0638\u0629\nABU-AZZAM-COM / Azzam","\u0645\u0646\u0638\u0648\u0645\u0629 \u0627\u0633\u062a\u0642\u0628\u0627\u0644 \u0627\u0644\u0628\u0644\u0627\u063a\u0627\u062a \u0627\u0644\u0639\u0633\u0643\u0631\u064a\u0629","2.7.20261031.1",A.b([B.Z,A.fx("https://github.com/ABU-AZZAM-COM/mrw-bot",A.bX(s,s,q==null?r.k3:q,s,s,s,s,s,s,s,s,12,s,s,s,s,s,!0,s,s,s,s,s,s,s,s),s)],t.p),a)},
 blV(a,b,c,d){var s,r,q,p,o,n=A.t(d,c.i("U<0>"))
 for(s=c.i("J<0>"),r=0;r<1;++r){q=a[r]
 p=b.$1(q)
@@ -51856,7 +51856,7 @@ l.push(A.w("\u064a\u064f\u062d\u0641\u0638 \u0641\u064a \u0647\u0630\u0627 \u062
 o=A.d8(A.hU(new A.cA(B.Iw,A.eg(new A.ad(B.PY,A.ai(l,B.S,B.f,B.a4,0,B.k),r),r,r,r,r,r),r),r,B.v,B.td,r,r,B.af),r,r)
 n=A.k(a).ax
 m=n.rx
-return A.H0(r,r,A.fy(B.bk,A.b([q,p,o,A.uG(8,A.w("\xa9 2026 \u2014 \u062c\u0645\u064a\u0639 \u0627\u0644\u062d\u0642\u0648\u0642 \u0645\u062d\u0641\u0648\u0638\u0629 \xb7 ABU-AZZAM-COM / Azzam \xb7 v2.7.20261031",r,r,r,r,A.bX(r,r,m==null?n.k3:m,r,r,r,r,r,r,r,r,11,r,r,r,r,r,!0,r,r,r,r,r,r,r,r),B.b0,r,r),r,r,0,0,r,r)],k),B.p,B.b9,r),r,r)}}
+return A.H0(r,r,A.fy(B.bk,A.b([q,p,o,A.uG(8,A.w("\xa9 2026 \u2014 \u062c\u0645\u064a\u0639 \u0627\u0644\u062d\u0642\u0648\u0642 \u0645\u062d\u0641\u0648\u0638\u0629 \xb7 ABU-AZZAM-COM / Azzam \xb7 v2.7.20261031.1",r,r,r,r,A.bX(r,r,m==null?n.k3:m,r,r,r,r,r,r,r,r,11,r,r,r,r,r,!0,r,r,r,r,r,r,r,r),B.b0,r,r),r,r,0,0,r,r)],k),B.p,B.b9,r),r,r)}}
 A.aGu.prototype={
 $0(){return this.a.w="\u0623\u062f\u062e\u0644 \u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u0623\u0648 \u062a\u0648\u0643\u0646 \u0627\u0644\u0625\u062f\u0627\u0631\u0629"},
 $S:0}
@@ -60217,14 +60217,14 @@ i=A.n5(i,m,A.ci(B.ua,s==null?j.c:s,m,m),26)
 s=l.ok
 r=s.r
 r=A.w("\u0645\u0627 \u0627\u0644\u062c\u062f\u064a\u062f \u0641\u064a \u0644\u0648\u062d\u0629 \u0627\u0644\u0625\u062f\u0627\u0631\u0629\u061f",m,m,m,m,r==null?m:r.pf(B.dq),m,m,m)
-q=k==null?"\u0627\u0644\u0625\u0635\u062f\u0627\u0631 \u0627\u0644\u0645\u062b\u0628\u062a v2.7.20261031 \xb7 \u0633\u062c\u0644 \u0627\u0644\u062a\u062d\u0633\u064a\u0646\u0627\u062a \u0648\u0627\u0644\u0645\u064a\u0632\u0627\u062a \u062d\u0633\u0628 \u0627\u0644\u0625\u0635\u062f\u0627\u0631.":"\u0627\u0644\u0625\u0635\u062f\u0627\u0631 \u0627\u0644\u0645\u062b\u0628\u062a v2.7.20261031 \xb7 "+k.c
+q=k==null?"\u0627\u0644\u0625\u0635\u062f\u0627\u0631 \u0627\u0644\u0645\u062b\u0628\u062a v2.7.20261031.1 \xb7 \u0633\u062c\u0644 \u0627\u0644\u062a\u062d\u0633\u064a\u0646\u0627\u062a \u0648\u0627\u0644\u0645\u064a\u0632\u0627\u062a \u062d\u0633\u0628 \u0627\u0644\u0625\u0635\u062f\u0627\u0631.":"\u0627\u0644\u0625\u0635\u062f\u0627\u0631 \u0627\u0644\u0645\u062b\u0628\u062a v2.7.20261031.1 \xb7 "+k.c
 p=s.z
 if(p==null)p=m
 else{o=j.rx
 p=p.aW(o==null?j.k3:o)}o=t.p
 p=A.b([A.eg(new A.ad(B.a0,A.aQ(A.b([i,B.fX,A.aW(A.ai(A.b([r,B.cO,A.w(q,m,m,m,m,p,m,m,m)],o),B.P,B.f,B.i,0,B.k),1),B.bp,B.Te],o),B.l,B.f,B.i,0,m),m),m,m,m,m,m),B.aw],o)
 for(n=0;n<4;++n){i=B.vk[n]
-r=i.a==="2.7.20261031"
+r=i.a==="2.7.20261031.1"
 p.push(new A.a4u(i,r,n===0||r,m))}p.push(B.Z)
 i=s.Q
 if(i==null)j=m
@@ -60232,7 +60232,7 @@ else{s=j.rx
 j=i.aW(s==null?j.k3:s)}p.push(A.w("\u064a\u064f\u0636\u0627\u0641 \u0645\u0644\u062e\u0635 \u0644\u0643\u0644 \u0625\u0635\u062f\u0627\u0631 \u062c\u062f\u064a\u062f \u0625\u0644\u0649 \u0647\u0630\u0627 \u0627\u0644\u0633\u062c\u0644.",m,m,m,m,j,B.b0,m,m))
 return A.fN(A.b([A.d8(new A.cA(B.Iv,A.ai(p,B.S,B.f,B.i,0,B.k),m),m,m)],o),m,B.c_,m,!1)}}
 A.aw8.prototype={
-$1(a){return a.a==="2.7.20261031"},
+$1(a){return a.a==="2.7.20261031.1"},
 $S:370}
 A.a4u.prototype={
 D(a){var s,r,q,p,o,n,m,l,k,j=null,i=this.d,h=A.k(a).ax

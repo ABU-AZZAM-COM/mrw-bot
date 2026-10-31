@@ -41,6 +41,33 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
+  <!--
+    إزالة أي نسخة قديمة محفوظة في Service Worker (كانت تسبب بقاء لوحة قديمة
+    بعد كل تحديث). بعد إزالتها لا يُسجَّل عامل خدمة جديد (البناء بلا PWA).
+  -->
+  <script>
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+      var guardKey = 'admin_sw_cleanup_done';
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        if (!regs.length) return;
+        Promise.all(regs.map(function (reg) { return reg.unregister(); }))
+          .then(function () {
+            var clearing = (window.caches && caches.keys)
+              ? caches.keys().then(function (keys) {
+                  return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+                })
+              : Promise.resolve();
+            return clearing.then(function () {
+              if (sessionStorage.getItem(guardKey)) return;
+              sessionStorage.setItem(guardKey, '1');
+              location.reload();
+            });
+          });
+      });
+    })();
+  </script>
+
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
