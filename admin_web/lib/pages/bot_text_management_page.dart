@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../api.dart';
-import '../widgets.dart';
 
 class BotTextManagementPage extends StatefulWidget {
   const BotTextManagementPage({super.key, required this.api});
@@ -49,18 +48,24 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
       });
       if (res['ok'] == true) {
         await _load();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم حفظ التعديل')),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('تم حفظ التعديل')),
+          );
+        }
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('فشل الحفظ: ${res['error']}')),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('فشل الحفظ: ${res['error']}')),
+          );
+        }
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تعذر حفظ التعديل')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تعذر حفظ التعديل')),
+        );
+      }
     } finally {
       setState(() => _saving = false);
     }
@@ -80,12 +85,40 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
                     itemCount: _texts.length,
                     itemBuilder: (context, i) {
                       final item = _texts[i];
-                      final controller = TextEditingController(text: item['content']?.toString() ?? '');
+                      final ctrl = TextEditingController(text: item['content']?.toString() ?? '');
                       return Card(
                         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        child: ListTile(
-                          title: Text(item['label']?.toString() ?? item['key']?.toString() ?? ''),
-                          subtitle: Text(item['category']?.toString() ?? 'user_facing'),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                item['label']?.toString() ?? item['key']?.toString() ?? '',
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                              Text(
+                                '${item['key']}  |  ${item['category']}',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: ctrl,
+                                maxLines: 8,
+                                decoration: const InputDecoration(
+                                  border: OutlineInputBorder(),
+                                  hintText: 'نص قابل للتعديل من اللوحة...',
+                                  labelText: 'المحتوى',
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              ElevatedButton.icon(
+                                onPressed: _saving ? null : () => _save(item, ctrl.text),
+                                icon: const Icon(Icons.save),
+                                label: const Text('حفظ التعديل'),
+                              ),
+                            ],
+                          ),
                         ),
                       );
                     },
