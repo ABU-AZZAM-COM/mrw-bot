@@ -957,7 +957,11 @@ assert (
 # القائمة الرئيسية: إجراءات الخدمة وسياسة الخصوصية + زر الرجوع يعيد إظهارها
 mm = keyboards.main_menu_kb()
 actions = [b.callback_data for row in mm.inline_keyboard for b in row]
-assert actions == ["usr:report", "usr:status", "usr:about", "usr:contact", "usr:privacy"], actions
+expected_actions = ["usr:report"]
+if keyboards.verified_reporters.is_configured():
+    expected_actions.extend(["usr:verify", "usr:verify-status"])
+expected_actions.extend(["usr:status", "usr:about", "usr:contact", "usr:privacy"])
+assert actions == expected_actions, actions
 back = keyboards.back_to_menu_kb()
 assert back.inline_keyboard[0][0].callback_data == "usr:menu"
 print("texts OK")
