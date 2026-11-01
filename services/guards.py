@@ -410,10 +410,15 @@ def is_private_chat(chat_type: Optional[str]) -> bool:
     return str(chat_type) == "private"
 
 
+_PUBLIC_COMMANDS = frozenset(
+    {"start", "report", "cancel", "app", "help", "status", "reply"}
+)
+
+
 def is_public_command_allowed(user_id: int | None, command: str) -> bool:
-    """Only /start is public; every other command is restricted to admins."""
+    """Allow end-user commands publicly while keeping control commands admin-only."""
     normalized = command.strip().lstrip("/").split("@", 1)[0].casefold()
-    return normalized == "start" or (
+    return normalized in _PUBLIC_COMMANDS or (
         user_id is not None and user_id in config.ADMIN_IDS
     )
 

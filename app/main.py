@@ -61,7 +61,7 @@ app = None
 async def command_access_control(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Allow only /start to non-admins and stop every other command early."""
+    """Allow end-user commands publicly and stop control commands for non-admins."""
     message = update.effective_message
     user = update.effective_user
     command_text = (message.text or message.caption or "") if message else ""

@@ -3,26 +3,43 @@ import hashlib
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 os.environ.setdefault("BOT_TOKEN", "123:TEST_TOKEN")
 
 from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ConversationHandler
 
-from bot import handlers, keyboards
+from bot import admin, handlers, keyboards
 from services import (
+    guards,
     identity_image_checks,
     sightengine_moderation,
     verified_reporters,
 )
 
 
+class CommandAccessTests(unittest.TestCase):
+    def test_end_user_commands_are_available_and_admin_commands_stay_restricted(self):
+        public_commands = ("start", "report", "cancel", "app", "help", "status", "reply")
+        for command in public_commands:
+            with self.subTest(command=command):
+                self.assertTrue(
+                    guards.is_public_command_allowed(987654, f"/{command}@mrw_bot")
+                )
+        self.assertFalse(guards.is_public_command_allowed(987654, "/admin"))
+        self.assertFalse(guards.is_public_command_allowed(987654, "/panic"))
+        with patch.object(guards.config, "ADMIN_IDS", {987654}):
+            self.assertTrue(guards.is_public_command_allowed(987654, "/admin"))
+
+
 class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_verification_phone_back_returns_to_main_menu(self):
         message = SimpleNamespace(
+            chat=SimpleNamespace(type="private"),
             chat_id=42,
             message_id=8,
+            from_user=SimpleNamespace(id=123),
             reply_text=AsyncMock(
                 return_value=SimpleNamespace(chat_id=42, message_id=9)
             ),
@@ -33,7 +50,7 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
                 "verification_consent_at": "consented",
                 handlers.ACTIVE_PROMPT_KEY: {
                     "chat_id": 42,
-                    "message_id": 8,
+                    "message_id": 7,
                     "keyboard_kind": "reply",
                 },
             },
@@ -42,6 +59,7 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
                 send_message=AsyncMock(),
                 edit_message_reply_markup=AsyncMock(),
             ),
+            bot_data={"db": object()},
         )
         update = SimpleNamespace(
             effective_user=SimpleNamespace(id=123),
@@ -50,14 +68,21 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
         )
         menu = InlineKeyboardMarkup([[keyboards._cb("البلاغات", "usr:report")]])
 
-        with patch.object(handlers, "main_menu_kb", return_value=menu):
+        with (
+            patch.object(handlers, "main_menu_kb", return_value=menu),
+            patch.object(
+                handlers,
+                "_main_menu_content",
+                new=AsyncMock(return_value=("نص القائمة الرئيسية", None)),
+            ),
+        ):
             state = await handlers.verification_phone_back(update, context)
 
         self.assertEqual(state, ConversationHandler.END)
         self.assertNotIn("verification_flow", context.user_data)
         self.assertEqual(
             message.reply_text.await_args.args[0],
-            "تم الرجوع إلى القائمة الرئيسية.",
+            "نص القائمة الرئيسية",
         )
         self.assertIsInstance(
             message.reply_text.await_args.kwargs["reply_markup"],
@@ -66,6 +91,123 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
         context.bot.edit_message_reply_markup.assert_awaited_once_with(
             chat_id=42, message_id=9, reply_markup=menu
         )
+        self.assertCountEqual(
+            context.bot.delete_message.await_args_list,
+            [
+                call(chat_id=42, message_id=7),
+                call(chat_id=42, message_id=8),
+            ],
+        )
+
+    async def test_invalid_user_callback_is_answered_without_crashing(self):
+        query = SimpleNamespace(
+            data="usr:",
+            from_user=SimpleNamespace(id=123),
+            answer=AsyncMock(),
+        )
+        context = SimpleNamespace(
+            bot_data={"db": object()},
+            user_data={},
+        )
+        update = SimpleNamespace(callback_query=query)
+
+        state = await handlers.on_user_callback(update, context)
+
+        self.assertEqual(state, ConversationHandler.END)
+        query.answer.assert_awaited_once_with(
+            handlers.texts.UNKNOWN_BUTTON,
+            show_alert=True,
+        )
+
+    async def test_invalid_category_callback_is_answered_once_and_shows_recovery(self):
+        query = SimpleNamespace(
+            data="usr:category:stale",
+            from_user=SimpleNamespace(id=123),
+            message=SimpleNamespace(chat_id=42, message_id=8),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        context = SimpleNamespace(
+            bot_data={"db": SimpleNamespace(record_button_press=AsyncMock())},
+            user_data={},
+        )
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=123),
+        )
+
+        state = await handlers.on_user_callback(update, context)
+
+        self.assertEqual(state, ConversationHandler.END)
+        query.answer.assert_awaited_once_with()
+        query.edit_message_text.assert_awaited_once_with(
+            handlers.texts.INLINE_MESSAGES["unknown_category"],
+            reply_markup=handlers.back_to_menu_kb(),
+        )
+
+    async def test_invalid_admin_list_callback_is_answered_only_once(self):
+        query = SimpleNamespace(
+            data="adm:list",
+            message=SimpleNamespace(photo=None),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        context = SimpleNamespace(
+            bot_data={"db": object()},
+            chat_data={},
+        )
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=123),
+        )
+
+        with patch.object(admin, "_is_admin", return_value=True):
+            await admin.on_callback(update, context)
+
+        query.answer.assert_awaited_once_with()
+        query.edit_message_text.assert_awaited_once()
+
+    async def test_reply_keyboard_transition_falls_back_to_new_menu_message(self):
+        context = SimpleNamespace(
+            user_data={
+                handlers.ACTIVE_PROMPT_KEY: {
+                    "chat_id": 42,
+                    "message_id": 7,
+                    "keyboard_kind": "reply",
+                }
+            },
+            bot=SimpleNamespace(
+                delete_message=AsyncMock(),
+                send_message=AsyncMock(
+                    return_value=SimpleNamespace(chat_id=42, message_id=9)
+                ),
+                edit_message_reply_markup=AsyncMock(
+                    side_effect=handlers.TelegramError("cannot edit")
+                ),
+            ),
+        )
+        message = SimpleNamespace(
+            chat_id=42,
+            reply_text=AsyncMock(
+                return_value=SimpleNamespace(chat_id=42, message_id=8)
+            ),
+        )
+        update = SimpleNamespace(callback_query=None, effective_message=message)
+        markup = InlineKeyboardMarkup([[keyboards._cb("Home", "usr:menu")]])
+
+        await handlers._send_clean_prompt(
+            update, context, "Main menu", reply_markup=markup
+        )
+
+        self.assertEqual(
+            context.bot.send_message.await_args.kwargs["text"],
+            "Main menu",
+        )
+        self.assertEqual(
+            context.user_data[handlers.ACTIVE_PROMPT_KEY]["message_id"],
+            9,
+        )
+        context.bot.delete_message.assert_any_await(chat_id=42, message_id=8)
 
     async def test_back_button_restores_previous_step_without_losing_draft(self):
         message = SimpleNamespace(chat_id=42, message_id=8)

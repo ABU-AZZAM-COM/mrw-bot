@@ -246,6 +246,7 @@ async def main() -> None:
     print("\n--- صلاحيات الأوامر ---")
     check("السماح بأمر /start للمستخدم العادي", guards.is_public_command_allowed(987654, "/start"))
     check("السماح بصيغة /start@bot", guards.is_public_command_allowed(987654, "/start@blgh_bot"))
+    check("السماح بأمر /report للمستخدم العادي", guards.is_public_command_allowed(987654, "/report"))
     check("منع الأوامر الأخرى عن المستخدم العادي", not guards.is_public_command_allowed(987654, "/admin"))
     check("منع الأمر العشوائي عن المستخدم العادي", not guards.is_public_command_allowed(987654, "/arbitrary"))
     check("السماح للمشرف بالأوامر", guards.is_public_command_allowed(config.ADMIN_IDS[0], "/arbitrary"))

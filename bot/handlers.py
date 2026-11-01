@@ -187,6 +187,16 @@ async def _welcome_content(db: Database) -> tuple[str, ParseMode | None]:
     return texts.WELCOME, ParseMode.HTML
 
 
+async def _main_menu_content(db: Database) -> tuple[str, ParseMode | None]:
+    welcome, parse_mode = await _welcome_content(db)
+    if await guards.is_emergency(db):
+        if parse_mode == ParseMode.HTML:
+            welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
+        else:
+            welcome = texts.INLINE_MESSAGES["reporting_paused_plain"] + welcome
+    return welcome, parse_mode
+
+
 async def _privacy_policy_url(db: Database) -> str | None:
     raw = await db.get_state("bot_profile")
     try:
@@ -232,6 +242,30 @@ def _remember_user_prompt(
             "message_id": message_id,
             "keyboard_kind": keyboard_kind,
         }
+
+
+async def _delete_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if (
+        message is None
+        or user is None
+        or message.from_user is None
+        or message.from_user.id != user.id
+        or message.message_id is None
+    ):
+        return
+    try:
+        await context.bot.delete_message(
+            chat_id=message.chat_id,
+            message_id=message.message_id,
+        )
+    except TelegramError:
+        logger.info(
+            "تعذر حذف رسالة المستخدم المؤقتة %s",
+            message.message_id,
+            exc_info=True,
+        )
 
 
 async def _clear_user_prompt(context: ContextTypes.DEFAULT_TYPE) -> str | None:
@@ -315,11 +349,35 @@ async def _send_clean_prompt(
             reply_markup=send_markup,
         )
     if remove_reply_keyboard and isinstance(reply_markup, InlineKeyboardMarkup):
-        await context.bot.edit_message_reply_markup(
-            chat_id=message.chat_id,
-            message_id=message.message_id,
-            reply_markup=reply_markup,
-        )
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=message.chat_id,
+                message_id=message.message_id,
+                reply_markup=reply_markup,
+            )
+        except TelegramError:
+            logger.warning(
+                "تعذر إضافة أزرار القائمة بعد إزالة لوحة الرد؛ سيُرسل بديل",
+                exc_info=True,
+            )
+            replacement = await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+            )
+            try:
+                await context.bot.delete_message(
+                    chat_id=message.chat_id,
+                    message_id=message.message_id,
+                )
+            except TelegramError:
+                logger.info(
+                    "تعذر حذف رسالة الانتقال بعد إرسال القائمة البديلة %s",
+                    message.message_id,
+                    exc_info=True,
+                )
+            message = replacement
     kind = (
         "reply"
         if isinstance(reply_markup, ReplyKeyboardMarkup)
@@ -419,12 +477,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if active_prompt:
         context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
     _pending_app_users.discard(user.id)
-    welcome, parse_mode = await _welcome_content(db)
-    if await guards.is_emergency(db):
-        if parse_mode == ParseMode.HTML:
-            welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
-        else:
-            welcome = texts.INLINE_MESSAGES["reporting_paused_plain"] + welcome
+    welcome, parse_mode = await _main_menu_content(db)
     command = (update.effective_message.text or "").split(maxsplit=1)
     command = command[0].split("@", 1)[0].lower() if command else ""
     welcome_photo = context.bot_data.get("welcome_photo")
@@ -442,6 +495,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=parse_mode,
         reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
+    await _delete_user_message(update, context)
     return ConversationHandler.END
 
 
@@ -2607,6 +2661,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
         reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
+    await _delete_user_message(update, context)
     return ConversationHandler.END
 
 
@@ -2619,14 +2674,15 @@ async def verification_phone_back(
         context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
     if update.effective_user:
         _pending_app_users.discard(update.effective_user.id)
+    welcome, parse_mode = await _main_menu_content(_db(context))
     await _send_clean_prompt(
         update,
         context,
-        texts.INLINE_MESSAGES["verification_phone_back"],
-        reply_markup=main_menu_kb(
-            update.effective_user.id if update.effective_user else None
-        ),
+        welcome,
+        parse_mode=parse_mode,
+        reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
     )
+    await _delete_user_message(update, context)
     return ConversationHandler.END
 
 
@@ -2652,6 +2708,10 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     db = _db(context)
     data = query.data or ""
+    parts = data.split(":")
+    if len(parts) < 2 or not parts[1]:
+        await query.answer(texts.UNKNOWN_BUTTON, show_alert=True)
+        return ConversationHandler.END
     if data not in {
         f"{USR_PREFIX}verify-status",
         f"{USR_PREFIX}verify-supplement",
@@ -2681,11 +2741,8 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except (BadRequest, Forbidden) as exc:
         logger.debug("استدعاء عتيق أو مجاب مسبقًا (تم تجاهل الإجابة): %s", exc)
 
-    if not data.startswith(USR_PREFIX):
-        return
     if data != f"{USR_PREFIX}home":
         _remember_user_prompt(context, query.message)
-    parts = data.split(":")
     if len(parts) > 1:
         try:
             await db.record_button_press(parts[1][:64])
@@ -2696,12 +2753,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "menu":
         context.user_data.clear()
         _pending_app_users.discard(query.from_user.id)
-        welcome, parse_mode = await _welcome_content(db)
-        if await guards.is_emergency(db):
-            if parse_mode == ParseMode.HTML:
-                welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
-            else:
-                welcome = texts.INLINE_MESSAGES["reporting_paused_plain"] + welcome
+        welcome, parse_mode = await _main_menu_content(db)
         await query.edit_message_text(
             welcome,
             parse_mode=parse_mode,
@@ -2714,12 +2766,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "home":
         context.user_data.clear()
         _pending_app_users.discard(query.from_user.id)
-        welcome, parse_mode = await _welcome_content(db)
-        if await guards.is_emergency(db):
-            if parse_mode == ParseMode.HTML:
-                welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
-            else:
-                welcome = texts.INLINE_MESSAGES["reporting_paused_plain"] + welcome
+        welcome, parse_mode = await _main_menu_content(db)
         prompt = await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=welcome,
@@ -2761,7 +2808,12 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # أُزيل زر فتح التطبيق من الأزرار المضمنة (قرار الواجهة الاحترافية)؛
     # التطبيق يظل متاحًا عبر أمر /app فقط إن وُجد رابطه.
     if parts[1] == "app":
-        await query.answer(texts.APP_NOT_READY, show_alert=False)
+        await query.edit_message_text(
+            texts.APP_NOT_READY,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_to_menu_kb(),
+        )
+        _remember_user_prompt(context, query.message)
         return
 
     # --- بلاغاتي: بطاقات كل بلاغات المتبلّغ (بدل آخر بلاغ فقط) ---
@@ -2791,7 +2843,10 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         r = await db.get_by_id(rid)
         # حماية: لا يفتح المتبلّغ بطاقة بلاغٍ ليس له
         if not r or int(r.get("user_id") or 0) != query.from_user.id:
-            await query.answer(texts.REPORT_NOT_FOUND, show_alert=True)
+            await query.edit_message_text(
+                texts.REPORT_NOT_FOUND, reply_markup=back_to_menu_kb()
+            )
+            _remember_user_prompt(context, query.message)
             return ConversationHandler.END
         await query.edit_message_text(
             texts.MY_REPORT_OPEN.format(
@@ -2830,9 +2885,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 <= datetime.now(timezone.utc).isoformat(timespec="seconds")
             )
         ):
-            await query.answer(
-                texts.INLINE_MESSAGES["followup_unavailable"], show_alert=True
+            await query.edit_message_text(
+                texts.INLINE_MESSAGES["followup_unavailable"],
+                reply_markup=back_to_menu_kb(),
             )
+            _remember_user_prompt(context, query.message)
             return ConversationHandler.END
         context.user_data["followup_report_id"] = rid
         context.user_data["report_state"] = ASK_FOLLOWUP
@@ -2853,9 +2910,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             or int(report.get("user_id") or 0) != query.from_user.id
             or report.get("status") != STATUS_REJECTED
         ):
-            await query.answer(
-                texts.INLINE_MESSAGES["appeal_unavailable"], show_alert=True
+            await query.edit_message_text(
+                texts.INLINE_MESSAGES["appeal_unavailable"],
+                reply_markup=back_to_menu_kb(),
             )
+            _remember_user_prompt(context, query.message)
             return ConversationHandler.END
         context.user_data.clear()
         context.user_data["report_appeal_id"] = rid
@@ -2989,19 +3048,21 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if parts[1] == "verify":
         if query.message.chat.type != "private":
-            await query.answer(
+            await query.edit_message_text(
                 texts.INLINE_MESSAGES["verification_private_only"],
-                show_alert=True,
+                reply_markup=back_to_menu_kb(),
             )
+            _remember_user_prompt(context, query.message)
             return context.user_data.get("report_state")
         if any(
             key in context.user_data
             for key in ("report_category", "app_draft", "followup_report_id")
         ):
-            await query.answer(
+            await query.edit_message_text(
                 texts.INLINE_MESSAGES["verification_report_in_progress"],
-                show_alert=True,
+                reply_markup=back_to_menu_kb(),
             )
+            _remember_user_prompt(context, query.message)
             return context.user_data.get("report_state")
         privacy_url = await _privacy_policy_url(db)
         disclosure, consent_version = await _verification_consent(db)
@@ -3016,25 +3077,28 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if parts[1] == "verify-consent":
         if query.message.chat.type != "private":
-            await query.answer(
+            await query.edit_message_text(
                 texts.INLINE_MESSAGES["verification_private_only"],
-                show_alert=True,
+                reply_markup=back_to_menu_kb(),
             )
+            _remember_user_prompt(context, query.message)
             return context.user_data.get("report_state")
         if any(
             key in context.user_data
             for key in ("report_category", "app_draft", "followup_report_id")
         ):
-            await query.answer(
+            await query.edit_message_text(
                 texts.INLINE_MESSAGES["verification_report_in_progress"],
-                show_alert=True,
+                reply_markup=back_to_menu_kb(),
             )
+            _remember_user_prompt(context, query.message)
             return context.user_data.get("report_state")
         if not verified_reporters.is_configured():
-            await query.answer(
+            await query.edit_message_text(
                 texts.INLINE_MESSAGES["verification_not_configured"],
-                show_alert=True,
+                reply_markup=back_to_menu_kb(),
             )
+            _remember_user_prompt(context, query.message)
             return ConversationHandler.END
         disclosure, consent_version = await _verification_consent(db)
         if len(parts) != 3 or parts[2] != consent_version:
@@ -3053,10 +3117,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 query.from_user.id, consented_at, consent_version
             )
             if not updated:
-                await query.answer(
+                await query.edit_message_text(
                     texts.INLINE_MESSAGES["verification_consent_update_failed"],
-                    show_alert=True,
+                    reply_markup=back_to_menu_kb(),
                 )
+                _remember_user_prompt(context, query.message)
                 return ConversationHandler.END
             await db.audit(
                 query.from_user.id,
@@ -3130,10 +3195,12 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "category" and len(parts) == 3:
         category = parts[2]
         if category not in REPORT_CATEGORIES:
-            await query.answer(
-                texts.INLINE_MESSAGES["unknown_category"], show_alert=True
+            await query.edit_message_text(
+                texts.INLINE_MESSAGES["unknown_category"],
+                reply_markup=back_to_menu_kb(),
             )
-            return ASK_CATEGORY
+            _remember_user_prompt(context, query.message)
+            return ConversationHandler.END
         context.user_data.clear()
         context.user_data.update(
             report_category=category,
@@ -3153,10 +3220,12 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "platform" and len(parts) == 3:
         platform_key = parts[2]
         if platform_key not in SOCIAL_PLATFORM_LABELS:
-            await query.answer(
-                texts.INLINE_MESSAGES["unknown_platform"], show_alert=True
+            await query.edit_message_text(
+                texts.INLINE_MESSAGES["unknown_platform"],
+                reply_markup=back_to_menu_kb(),
             )
-            return ASK_PLATFORM
+            _remember_user_prompt(context, query.message)
+            return ConversationHandler.END
         context.user_data["platform"] = SOCIAL_PLATFORM_LABELS[platform_key]
         context.user_data["platform_key"] = platform_key
         return await _show_report_step(update, context, ASK_DESC)
@@ -3189,6 +3258,13 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # --- اختيار نوع المخالفة ---
     if parts[1] == "type" and len(parts) > 2:
         vtype = ":".join(parts[2:])
+        if vtype not in config.VIOLATION_TYPES:
+            await query.edit_message_text(
+                texts.INLINE_MESSAGES["unknown_category"],
+                reply_markup=back_to_menu_kb(),
+            )
+            _remember_user_prompt(context, query.message)
+            return ConversationHandler.END
         context.user_data["violation_type"] = vtype
         return await _show_report_step(update, context, ASK_DESC)
 
@@ -3212,11 +3288,11 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return ConversationHandler.END
 
     logger.warning("استدعاء مستخدم غير معروف: %s", data)
-    # نبّه المستخدم بهدوء (قد تكون الأزرار من قائمة قديمة)
-    try:
-        await query.answer(texts.UNKNOWN_BUTTON, show_alert=True)
-    except Exception:  # noqa: BLE001 — إجابة ثانية لنفس الاستدعاء متوقعة
-        pass
+    await query.edit_message_text(
+        texts.UNKNOWN_BUTTON,
+        reply_markup=back_to_menu_kb(),
+    )
+    _remember_user_prompt(context, query.message)
 
 
 async def confirm_save_from_draft(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database) -> None:
@@ -3228,9 +3304,11 @@ async def confirm_save_from_draft(update: Update, context: ContextTypes.DEFAULT_
     _pending_app_users.discard(user.id)
 
     if not draft:
-        await query.answer(
-            texts.INLINE_MESSAGES["invalid_draft"], show_alert=True
+        await query.edit_message_text(
+            texts.INLINE_MESSAGES["invalid_draft"],
+            reply_markup=back_to_menu_kb(),
         )
+        _remember_user_prompt(context, query.message)
         return
 
     # نطلب الصورة لأن التطبيق لا يستطيع رفع الصور مباشرة عبر web_app_data
@@ -3334,8 +3412,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.effective_message.reply_text(
             texts.GENERAL_ERROR, parse_mode=ParseMode.HTML
         )
-    except Exception:  # noqa: BLE001 — فشل الرد لا يهدم من يصلح نفسه
-        pass
+    except Exception:  # noqa: BLE001 — سجّل فشل الإشعار دون استثناء ثانٍ
+        logger.warning(
+            "تعذر إرسال رسالة الخطأ للمستخدم %s",
+            update.effective_user.id if update.effective_user else "?",
+            exc_info=True,
+        )
 
 
 # ==================================================================

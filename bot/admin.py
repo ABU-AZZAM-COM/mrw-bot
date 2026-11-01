@@ -389,7 +389,7 @@ async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
 async def _request_rejection_reason(query, context, db, rid: int) -> bool:
     report = await db.get_by_id(rid)
     if not report:
-        await query.answer(texts.REPORT_NOT_FOUND, show_alert=True)
+        await _edit_report_message(query, texts.REPORT_NOT_FOUND, None)
         return False
     context.chat_data["adm_reject_rid"] = rid
     context.chat_data["adm_reject_at"] = time.time()
@@ -578,6 +578,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     elif op == "list":
+        if len(parts) < 3 or parts[2] not in {"all", *STATUS_CODES}:
+            await _edit_report_message(query, texts.RULE_NOT_KNOWN, None)
+            return
         code = parts[2]
         page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
         text, markup = await _render_list(db, code, page)
@@ -595,7 +598,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     elif op == "s":
         if len(parts) < 4 or not parts[2].isdigit() or parts[3] not in STATUS_CODES:
-            await query.answer(texts.RULE_NOT_KNOWN, show_alert=True)
+            await _edit_report_message(query, texts.RULE_NOT_KNOWN, None)
             return
         rid, code = int(parts[2]), parts[3]
         new_status = STATUS_CODES[code]
@@ -604,7 +607,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         ok = await db.update_status(rid, new_status, update.effective_user.id)
         if not ok:
-            await query.answer(texts.REPORT_NOT_FOUND, show_alert=True)
+            await _edit_report_message(query, texts.REPORT_NOT_FOUND, None)
             return
         await db.audit(
             update.effective_user.id,
@@ -615,9 +618,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.info("المشرف %s غيّر حالة البلاغ %s إلى %s",
                     update.effective_user.id, rid, new_status)
         await _notify_reporter(context, rid, new_status)
-        await query.answer(
-            texts.INLINE_MESSAGES["admin_status_updated"], show_alert=False
-        )
         await _refresh_view(update, context, db, rid)
 
     elif op == "stats":
