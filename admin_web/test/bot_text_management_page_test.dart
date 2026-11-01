@@ -86,6 +86,27 @@ class _TextApi implements AdminApi {
 }
 
 void main() {
+  testWidgets('يعرض المحرر بسلاسة على شاشة هاتف', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(home: BotTextManagementPage(api: _TextApi())),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('معاينة المحادثة'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text('إرسال بلاغ جديد').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('المصدر النشط: تخطيط القائمة النشط'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('يعرض أزرار التدفقات ورسائلها ويتيح البحث والحفظ', (
     tester,
   ) async {
@@ -94,11 +115,18 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('أزرار ورسائل البوت'), findsOneWidget);
+    expect(
+      find.text(
+        'معاينة مجمّعة حسب المرحلة؛ قد تختلف الرسائل الفعلية بحسب إجابات المستخدم.',
+      ),
+      findsOneWidget,
+    );
     expect(find.text('إرسال بلاغ جديد'), findsWidgets);
     await tester.tap(find.text('إرسال بلاغ جديد').first);
     await tester.pumpAndSettle();
-    expect(find.text('النصوص المرتبطة بالزر المحدد'), findsOneWidget);
+    expect(find.text('رسائل مرتبطة بهذا الاختيار'), findsOneWidget);
     expect(find.text('طلب اختيار القسم'), findsOneWidget);
+    expect(find.text('المصدر النشط: تخطيط القائمة النشط'), findsOneWidget);
 
     final followupChip = find.textContaining('المتابعة والتواصل');
     await tester.ensureVisible(followupChip);
@@ -108,8 +136,11 @@ void main() {
 
     await tester.tap(find.text('رسالة طول المعلومات الإضافية'));
     await tester.pumpAndSettle();
-    expect(find.text('حفظ وتطبيق مباشرة'), findsOneWidget);
+    expect(find.text('المصدر النشط: نصوص البوت المحمّلة'), findsOneWidget);
     await tester.enterText(find.byType(TextField).last, 'نص محدث');
+    await tester.pumpAndSettle();
+    expect(find.text('حفظ وتطبيق مباشرة'), findsOneWidget);
+    await tester.ensureVisible(find.text('حفظ وتطبيق مباشرة'));
     await tester.tap(find.text('حفظ وتطبيق مباشرة'));
     await tester.pumpAndSettle();
     expect(api.texts[2]['content'], 'نص محدث');

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 
+enum _ContentFilter { all, buttons, messages }
+
 class BotTextManagementPage extends StatefulWidget {
   const BotTextManagementPage({super.key, required this.api});
 
@@ -20,6 +22,8 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
   bool _loading = true;
   bool _saving = false;
   String? _error;
+  _ContentFilter _contentFilter = _ContentFilter.all;
+  String _mobilePanel = 'preview';
 
   Map<String, dynamic>? get _selected {
     for (final item in _texts) {
@@ -156,6 +160,16 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
     'other': 'بقية رسائل البوت',
   };
 
+  static const _flowIcons = {
+    'main': Icons.home_outlined,
+    'report_categories': Icons.category_outlined,
+    'report_steps': Icons.edit_note_outlined,
+    'followup': Icons.mark_chat_read_outlined,
+    'verification': Icons.verified_user_outlined,
+    'admin': Icons.admin_panel_settings_outlined,
+    'other': Icons.more_horiz_rounded,
+  };
+
   static const _flowDescriptions = {
     'main': 'الأزرار الفعلية للقائمة ورسائل البداية والخدمات التي تفتحها.',
     'report_categories': 'أزرار الأقسام والمنصات مع النص الذي يظهر في كل خطوة.',
@@ -229,6 +243,28 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
       item['kind'] == 'button' ||
       (item['key']?.toString().startsWith('bot.KEYBOARD_LABELS.') ?? false);
 
+  bool _isDirty(Map<String, dynamic> item) =>
+      _contentController.text != (item['content']?.toString() ?? '');
+
+  String _previewContent(Map<String, dynamic> item) =>
+      item['key'] == _selectedKey
+      ? _contentController.text
+      : item['content']?.toString() ?? '';
+
+  String _sourceFor(Map<String, dynamic> item) {
+    final key = item['key']?.toString() ?? '';
+    if (key == 'welcome_message') {
+      return 'مصدر الترحيب الفعلي';
+    }
+    if (key.startsWith('bot.keyboards.USER_MENU_ACTIONS.')) {
+      return 'تخطيط القائمة النشط';
+    }
+    if (key.startsWith('bot.control.')) {
+      return 'لوحة الرد النشطة';
+    }
+    return 'نصوص البوت المحمّلة';
+  }
+
   String _displayName(Map<String, dynamic> item) {
     final key = item['key']?.toString() ?? '';
     final label = item['label']?.toString() ?? '';
@@ -287,6 +323,16 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
     }).toList();
   }
 
+  List<Map<String, dynamic>> _visibleItemsFor(String flowId) {
+    final items = _itemsFor(flowId);
+    return switch (_contentFilter) {
+      _ContentFilter.all => items,
+      _ContentFilter.buttons => items.where(_isButton).toList(),
+      _ContentFilter.messages =>
+        items.where((item) => !_isButton(item)).toList(),
+    };
+  }
+
   List<Map<String, dynamic>> _relatedTexts(Map<String, dynamic> button) {
     final key = button['key']?.toString() ?? '';
     final action = key.startsWith('bot.keyboards.USER_MENU_ACTIONS.')
@@ -323,74 +369,247 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
         .toList();
   }
 
-  Future<void> _select(Map<String, dynamic> item) async {
-    if (item['key'] == _selectedKey) return;
+  Future<bool> _confirmDiscard() async {
     final current = _selected;
-    if (current != null &&
-        _contentController.text != (current['content']?.toString() ?? '')) {
-      final discard = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('تعديل غير محفوظ'),
-          content: const Text('هل تريد تجاهل التعديل والانتقال إلى عنصر آخر؟'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('البقاء هنا'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('تجاهل التعديل'),
-            ),
-          ],
-        ),
-      );
-      if (!mounted || discard != true) return;
-    }
+    if (current == null || !_isDirty(current)) return true;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('تعديل غير محفوظ'),
+        content: const Text('هل تريد تجاهل التعديل والانتقال إلى عنصر آخر؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('البقاء هنا'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('تجاهل التعديل'),
+          ),
+        ],
+      ),
+    );
+    return mounted && discard == true;
+  }
+
+  Future<void> _select(Map<String, dynamic> item) async {
+    if (item['key'] == _selectedKey || !await _confirmDiscard()) return;
     setState(() {
       _selectedKey = item['key']?.toString();
       _contentController.text = item['content']?.toString() ?? '';
+      _mobilePanel = 'editor';
     });
   }
 
-  Widget _flowPicker() => SingleChildScrollView(
-    scrollDirection: Axis.horizontal,
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-    child: Row(
+  Future<void> _selectFlow(String flowId) async {
+    if (flowId == _flowId || !await _confirmDiscard()) return;
+    setState(() {
+      _flowId = flowId;
+      _selectedKey = null;
+      _contentController.clear();
+      _mobilePanel = 'preview';
+    });
+  }
+
+  Widget _flowRail() => SizedBox(
+    width: 220,
+    child: ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
       children: [
+        Padding(
+          padding: const EdgeInsetsDirectional.only(start: 10, bottom: 8),
+          child: Text(
+            'مراحل البوت',
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
         for (final id in _flowOrder)
           Padding(
-            padding: const EdgeInsetsDirectional.only(end: 8),
-            child: ChoiceChip(
-              label: Text('${_flowTitles[id]} (${_itemsFor(id).length})'),
+            padding: const EdgeInsets.only(bottom: 4),
+            child: ListTile(
               selected: id == _flowId,
-              onSelected: (_) => setState(() => _flowId = id),
+              selectedTileColor: Theme.of(
+                context,
+              ).colorScheme.secondaryContainer.withValues(alpha: .42),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              leading: Icon(_flowIcons[id] ?? Icons.route_outlined),
+              title: Text(
+                _flowTitles[id] ?? id,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                _flowDescriptions[id] ?? '',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: Text(
+                '${_visibleItemsFor(id).length}',
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+              onTap: () => _selectFlow(id),
             ),
           ),
       ],
     ),
   );
 
-  Widget _preview(Map<String, dynamic> item, {bool compact = false}) {
-    final isButton = _isButton(item);
-    final content = item['content']?.toString() ?? '';
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () => _select(item),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
+  Widget _mobileFlowPicker() => DropdownButtonFormField<String>(
+    key: ValueKey(_flowId),
+    initialValue: _flowId,
+    isExpanded: true,
+    decoration: const InputDecoration(
+      labelText: 'مرحلة البوت',
+      prefixIcon: Icon(Icons.alt_route_rounded),
+      border: OutlineInputBorder(),
+    ),
+    items: [
+      for (final id in _flowOrder)
+        DropdownMenuItem(
+          value: id,
+          child: Text('${_flowTitles[id]} (${_visibleItemsFor(id).length})'),
+        ),
+    ],
+    onChanged: (id) {
+      if (id != null) _selectFlow(id);
+    },
+  );
+
+  Widget _flowChips() => SingleChildScrollView(
+    scrollDirection: Axis.horizontal,
+    child: Row(
+      children: [
+        for (final id in _flowOrder)
+          Padding(
+            padding: const EdgeInsetsDirectional.only(end: 8),
+            child: ChoiceChip(
+              label: Text(
+                '${_flowTitles[id]} (${_visibleItemsFor(id).length})',
+              ),
+              selected: id == _flowId,
+              onSelected: (_) => _selectFlow(id),
+            ),
+          ),
+      ],
+    ),
+  );
+
+  Widget _filterPicker() => SegmentedButton<_ContentFilter>(
+    showSelectedIcon: false,
+    segments: const [
+      ButtonSegment(
+        value: _ContentFilter.all,
+        label: Text('الكل'),
+        icon: Icon(Icons.view_agenda_outlined),
+      ),
+      ButtonSegment(
+        value: _ContentFilter.buttons,
+        label: Text('الأزرار'),
+        icon: Icon(Icons.smart_button_outlined),
+      ),
+      ButtonSegment(
+        value: _ContentFilter.messages,
+        label: Text('الرسائل'),
+        icon: Icon(Icons.chat_bubble_outline),
+      ),
+    ],
+    selected: {_contentFilter},
+    onSelectionChanged: (value) => setState(() => _contentFilter = value.first),
+  );
+
+  Widget _chatBubble(Map<String, dynamic> item) {
+    final selected = item['key'] == _selectedKey;
+    final colors = Theme.of(context).colorScheme;
+    return Align(
+      alignment: AlignmentDirectional.centerStart,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: Material(
+          color: selected
+              ? colors.secondaryContainer
+              : colors.surfaceContainerHigh,
+          borderRadius: const BorderRadiusDirectional.only(
+            topStart: Radius.circular(5),
+            topEnd: Radius.circular(17),
+            bottomStart: Radius.circular(17),
+            bottomEnd: Radius.circular(17),
+          ),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(17),
+            onTap: () => _select(item),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _displayName(item),
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: colors.primary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(_previewContent(item)),
+                  if (selected)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        _isDirty(item) ? 'تعديلات غير محفوظة' : 'محدد للتحرير',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _keyboardButton(Map<String, dynamic> item) {
+    final selected = item['key'] == _selectedKey;
+    return Padding(
+      padding: const EdgeInsetsDirectional.only(end: 8, bottom: 8),
+      child: OutlinedButton(
+        style: OutlinedButton.styleFrom(
+          backgroundColor: selected
+              ? Theme.of(context).colorScheme.secondaryContainer
+              : Theme.of(context).colorScheme.surface,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        ),
+        onPressed: () => _select(item),
+        child: Text(_previewContent(item), textAlign: TextAlign.center),
+      ),
+    );
+  }
+
+  Widget _chatPreview() {
+    final items = _visibleItemsFor(_flowId);
+    final buttons = items.where(_isButton).toList();
+    final messages = items.where((item) => !_isButton(item)).toList();
+    final selected = _selected;
+    final related = selected != null && _isButton(selected)
+        ? _relatedTexts(selected)
+        : const <Map<String, dynamic>>[];
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(
-                isButton
-                    ? Icons.smart_button_outlined
-                    : Icons.chat_bubble_outline,
-                color: item['key'] == _selectedKey
-                    ? Theme.of(context).colorScheme.primary
-                    : null,
+              CircleAvatar(
+                radius: 19,
+                backgroundColor: colors.primaryContainer,
+                child: Icon(Icons.smart_toy_outlined, color: colors.primary),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -398,84 +617,92 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      _displayName(item),
+                      _flowTitles[_flowId] ?? 'معاينة البوت',
                       style: Theme.of(context).textTheme.titleSmall,
                     ),
-                    const SizedBox(height: 8),
-                    if (isButton)
-                      Align(
-                        alignment: AlignmentDirectional.centerStart,
-                        child: ActionChip(
-                          label: Text(content),
-                          onPressed: () => _select(item),
-                        ),
-                      )
-                    else
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          content,
-                          maxLines: compact ? 2 : 4,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                    Text(
+                      '${items.length} عنصر · معاينة قابلة للتحرير',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
                       ),
+                    ),
                   ],
                 ),
               ),
-              if (item['key'] == _selectedKey)
-                const Icon(Icons.edit_outlined, size: 18),
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _flowList() {
-    final items = _itemsFor(_flowId);
-    final buttons = items.where(_isButton).toList();
-    final messages = items.where((item) => !_isButton(item)).toList();
-    final selected = _selected;
-    final related = selected != null && _isButton(selected)
-        ? _relatedTexts(selected)
-        : const <Map<String, dynamic>>[];
-    if (items.isEmpty) {
-      return const Center(child: Text('لا توجد عناصر في هذا التدفق'));
-    }
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 12),
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: Text(
-            _flowDescriptions[_flowId] ?? '',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
+        const Divider(height: 1),
+        Expanded(
+          child: items.isEmpty
+              ? Center(
+                  child: Text(
+                    'لا توجد عناصر تطابق هذا الاختيار',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                )
+              : Container(
+                  color: colors.surfaceContainerLowest,
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(11),
+                        decoration: BoxDecoration(
+                          color: colors.tertiaryContainer.withValues(
+                            alpha: .38,
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              size: 18,
+                              color: colors.onTertiaryContainer,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'معاينة مجمّعة حسب المرحلة؛ قد تختلف الرسائل الفعلية بحسب إجابات المستخدم.',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (messages.isNotEmpty) ...[
+                        const _SectionHeading(title: 'رسائل البوت في المرحلة'),
+                        for (final item in messages)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: _chatBubble(item),
+                          ),
+                      ],
+                      if (buttons.isNotEmpty) ...[
+                        const _SectionHeading(title: 'الأزرار المتاحة'),
+                        Wrap(children: buttons.map(_keyboardButton).toList()),
+                      ],
+                      if (related.isNotEmpty) ...[
+                        const _SectionHeading(
+                          title: 'رسائل مرتبطة بهذا الاختيار',
+                        ),
+                        for (final item in related)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: _chatBubble(item),
+                          ),
+                      ],
+                    ],
+                  ),
+                ),
         ),
-        if (buttons.isNotEmpty) ...[
-          const _SectionHeading(title: 'الأزرار كما تظهر في البوت'),
-          ...buttons.map((item) => _preview(item, compact: true)),
-        ],
-        if (related.isNotEmpty) ...[
-          const _SectionHeading(title: 'النصوص المرتبطة بالزر المحدد'),
-          ...related.map((item) => _preview(item, compact: true)),
-        ],
-        if (messages.isNotEmpty) ...[
-          const _SectionHeading(title: 'رسائل هذا التدفق'),
-          ...messages.map((item) => _preview(item)),
-        ],
       ],
     );
   }
 
-  Widget _editor() {
+  Widget _editor({bool compact = false}) {
     final item = _selected;
     if (item == null) {
       return const Center(
@@ -490,7 +717,7 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
       );
     }
     final isButton = _isButton(item);
-    return Card(
+    final editor = Card(
       margin: const EdgeInsets.all(12),
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -514,12 +741,37 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
               ],
             ),
             const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.source_outlined, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'المصدر النشط: ${_sourceFor(item)}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                  if (_isDirty(item))
+                    const Tooltip(
+                      message: 'تعديلات غير محفوظة',
+                      child: Icon(Icons.edit_outlined, size: 17),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
             if (isButton)
               Align(
                 alignment: AlignmentDirectional.centerStart,
                 child: ActionChip(
                   label: Text(_contentController.text),
-                  onPressed: () {},
+                  onPressed: null,
                 ),
               )
             else
@@ -535,24 +787,44 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
                 ),
               ),
             const SizedBox(height: 12),
-            Expanded(
-              child: TextField(
-                controller: _contentController,
-                onChanged: (_) => setState(() {}),
-                expands: true,
-                minLines: null,
-                maxLines: null,
-                textAlignVertical: TextAlignVertical.top,
-                decoration: InputDecoration(
-                  border: const OutlineInputBorder(),
-                  labelText: isButton ? 'نص الزر' : 'محتوى الرسالة',
-                  hintText: isButton
-                      ? 'اكتب التسمية التي ستظهر على الزر'
-                      : 'اكتب الرسالة التي سيرسلها البوت',
-                  alignLabelWithHint: true,
+            if (compact)
+              SizedBox(
+                height: 180,
+                child: TextField(
+                  controller: _contentController,
+                  onChanged: (_) => setState(() {}),
+                  minLines: 4,
+                  maxLines: null,
+                  textAlignVertical: TextAlignVertical.top,
+                  decoration: InputDecoration(
+                    border: const OutlineInputBorder(),
+                    labelText: isButton ? 'نص الزر' : 'محتوى الرسالة',
+                    hintText: isButton
+                        ? 'اكتب التسمية التي ستظهر على الزر'
+                        : 'اكتب الرسالة التي سيرسلها البوت',
+                    alignLabelWithHint: true,
+                  ),
+                ),
+              )
+            else
+              Expanded(
+                child: TextField(
+                  controller: _contentController,
+                  onChanged: (_) => setState(() {}),
+                  expands: true,
+                  minLines: null,
+                  maxLines: null,
+                  textAlignVertical: TextAlignVertical.top,
+                  decoration: InputDecoration(
+                    border: const OutlineInputBorder(),
+                    labelText: isButton ? 'نص الزر' : 'محتوى الرسالة',
+                    hintText: isButton
+                        ? 'اكتب التسمية التي ستظهر على الزر'
+                        : 'اكتب الرسالة التي سيرسلها البوت',
+                    alignLabelWithHint: true,
+                  ),
                 ),
               ),
-            ),
             const SizedBox(height: 12),
             Text(
               'سيظهر التغيير في الرسائل والأزرار الجديدة التي ينشئها البوت. '
@@ -561,7 +833,7 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
             ),
             const SizedBox(height: 10),
             FilledButton.icon(
-              onPressed: _saving ? null : _save,
+              onPressed: _saving || !_isDirty(item) ? null : _save,
               icon: _saving
                   ? const SizedBox(
                       width: 18,
@@ -570,13 +842,18 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
                     )
                   : const Icon(Icons.save_outlined),
               label: Text(
-                _saving ? 'جارٍ الحفظ والتطبيق...' : 'حفظ وتطبيق مباشرة',
+                _saving
+                    ? 'جارٍ الحفظ والتطبيق...'
+                    : _isDirty(item)
+                    ? 'حفظ وتطبيق مباشرة'
+                    : 'لا توجد تغييرات للحفظ',
               ),
             ),
           ],
         ),
       ),
     );
+    return compact ? SingleChildScrollView(child: editor) : editor;
   }
 
   @override
@@ -611,22 +888,75 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
             )
           : Column(
               children: [
-                _flowPicker(),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  child: TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      prefixIcon: const Icon(Icons.search),
-                      hintText: 'ابحث باسم الزر أو الرسالة أو محتواها...',
-                      suffixIcon: query.isEmpty
-                          ? null
-                          : IconButton(
-                              onPressed: _searchController.clear,
-                              icon: const Icon(Icons.close),
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final isCompact = constraints.maxWidth < 760;
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (isCompact)
+                            _mobileFlowPicker()
+                          else if (constraints.maxWidth < 1120)
+                            _flowChips(),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: _searchController,
+                                  decoration: InputDecoration(
+                                    prefixIcon: const Icon(Icons.search),
+                                    hintText:
+                                        'ابحث باسم الزر أو الرسالة أو محتواها...',
+                                    suffixIcon: query.isEmpty
+                                        ? null
+                                        : IconButton(
+                                            onPressed: _searchController.clear,
+                                            icon: const Icon(Icons.close),
+                                          ),
+                                    border: const OutlineInputBorder(),
+                                    isDense: true,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              if (!isCompact)
+                                ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 430,
+                                  ),
+                                  child: _filterPicker(),
+                                ),
+                            ],
+                          ),
+                          if (isCompact) ...[
+                            const SizedBox(height: 8),
+                            _filterPicker(),
+                            const SizedBox(height: 8),
+                            SegmentedButton<String>(
+                              showSelectedIcon: false,
+                              segments: const [
+                                ButtonSegment(
+                                  value: 'preview',
+                                  label: Text('معاينة المحادثة'),
+                                  icon: Icon(Icons.forum_outlined),
+                                ),
+                                ButtonSegment(
+                                  value: 'editor',
+                                  label: Text('محرر العنصر'),
+                                  icon: Icon(Icons.edit_outlined),
+                                ),
+                              ],
+                              selected: {_mobilePanel},
+                              onSelectionChanged: (value) =>
+                                  setState(() => _mobilePanel = value.first),
                             ),
-                      border: const OutlineInputBorder(),
-                    ),
+                          ],
+                        ],
+                      );
+                    },
                   ),
                 ),
                 if (_error != null)
@@ -642,20 +972,33 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
                 Expanded(
                   child: LayoutBuilder(
                     builder: (context, constraints) {
+                      final isCompact =
+                          constraints.maxWidth < 760 ||
+                          constraints.maxHeight < 560;
                       if (constraints.maxWidth < 760) {
-                        return Column(
+                        return _mobilePanel == 'preview'
+                            ? _chatPreview()
+                            : _editor(compact: isCompact);
+                      }
+                      if (constraints.maxWidth < 1120) {
+                        return Row(
                           children: [
-                            Expanded(flex: 5, child: _flowList()),
-                            const Divider(height: 1),
-                            Expanded(flex: 4, child: _editor()),
+                            Expanded(flex: 5, child: _chatPreview()),
+                            const VerticalDivider(width: 1),
+                            Expanded(
+                              flex: 4,
+                              child: _editor(compact: isCompact),
+                            ),
                           ],
                         );
                       }
                       return Row(
                         children: [
-                          SizedBox(width: 460, child: _flowList()),
+                          _flowRail(),
                           const VerticalDivider(width: 1),
-                          Expanded(child: _editor()),
+                          SizedBox(width: 410, child: _chatPreview()),
+                          const VerticalDivider(width: 1),
+                          Expanded(child: _editor(compact: isCompact)),
                         ],
                       );
                     },
