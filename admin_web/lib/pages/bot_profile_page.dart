@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../bot_profile_validation.dart';
 import '../widgets.dart';
 
 class BotProfilePage extends StatefulWidget {
@@ -341,17 +342,15 @@ class _BotProfilePageState extends State<BotProfilePage> {
     final welcome = _welcome.text.trim();
     final privacyPolicyUrl = _privacyPolicyUrl.text.trim();
     final verificationConsent = _verificationConsent.text.trim();
-    if (name.isEmpty || name.length > 64) {
-      toast(context, 'اسم البوت مطلوب وبحد أقصى 64 حرفاً', error: true);
-      return;
-    }
-    if (shortDescription.length > 120 ||
-        description.length > 512 ||
-        welcome.isEmpty ||
-        welcome.length > 3500 ||
-        verificationConsent.isEmpty ||
-        verificationConsent.length > 2500) {
-      toast(context, 'تحقق من أطوال النبذة والوصف ورسالة البداية', error: true);
+    final validationError = botProfileValidationError(
+      name: name,
+      shortDescription: shortDescription,
+      description: description,
+      welcomeText: welcome,
+      verificationConsentText: verificationConsent,
+    );
+    if (validationError != null) {
+      toast(context, validationError, error: true);
       return;
     }
     if (privacyPolicyUrl.isNotEmpty) {

@@ -2610,6 +2610,26 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def verification_phone_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
+    context.user_data.clear()
+    if active_prompt:
+        context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
+    if update.effective_user:
+        _pending_app_users.discard(update.effective_user.id)
+    await _send_clean_prompt(
+        update,
+        context,
+        texts.INLINE_MESSAGES["verification_phone_back"],
+        reply_markup=main_menu_kb(
+            update.effective_user.id if update.effective_user else None
+        ),
+    )
+    return ConversationHandler.END
+
+
 # ==================================================================
 # معالج استدعاءات الأزرار المضمنة للمستخدم (usr:*)
 # ==================================================================
@@ -3396,7 +3416,12 @@ def build_conversation() -> ConversationHandler:
                 MessageHandler(~filters.TEXT & ~filters.COMMAND, unmatched),
             ],
             ASK_VERIFICATION_PHONE: [
-                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
+                MessageHandler(
+                    _SemanticTextFilter("back"), verification_phone_back
+                ),
+                MessageHandler(
+                    _SemanticTextFilter("cancel"), verification_phone_back
+                ),
                 MessageHandler(
                     (filters.CONTACT | filters.TEXT) & ~filters.COMMAND,
                     receive_verification_phone,

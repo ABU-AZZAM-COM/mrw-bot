@@ -100,6 +100,20 @@ class ControlNormalizationTests(unittest.TestCase):
             self.assertEqual(value["rows"], defaults[key]["rows"])
             self.assertEqual(value["placeholder"], defaults[key]["placeholder"])
 
+    def test_verification_contact_keyboard_uses_back_including_saved_legacy_layout(self):
+        layout = copy.deepcopy(control.default_reply_keyboards())
+        layout["verification_contact"]["rows"][-1][0] = {
+            "text": control.CANCEL_LABEL,
+            "type": "cancel",
+        }
+
+        normalized = control.normalize_reply_keyboards(layout)
+
+        self.assertEqual(
+            normalized["verification_contact"]["rows"][-1][0],
+            {"text": control.BACK_LABEL, "type": "back"},
+        )
+
     def test_reply_keyboard_rejects_unknown_type_and_long_text(self):
         layout = control.default_reply_keyboards()
         bad = copy.deepcopy(layout)

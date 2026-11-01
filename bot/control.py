@@ -164,7 +164,7 @@ def default_reply_keyboards() -> dict[str, dict[str, Any]]:
         "verification_contact": {
             "rows": [
                 row(btn(SHARE_CONTACT_LABEL, "contact")),
-                row(btn(CANCEL_LABEL, "cancel")),
+                row(btn(BACK_LABEL, "back")),
             ],
             "placeholder": VERIFICATION_CONTACT_PLACEHOLDER,
             "persistent": False,
@@ -245,6 +245,17 @@ def normalize_reply_keyboards(raw: Any) -> Optional[dict[str, dict[str, Any]]]:
             ]
             if len(clean_row) != len(row_raw):
                 return None
+            if keyboard_id == "verification_contact":
+                clean_row = [
+                    {
+                        **button,
+                        "text": BACK_LABEL,
+                        "type": "back",
+                    }
+                    if button["type"] == "cancel"
+                    else button
+                    for button in clean_row
+                ]
             rows.append(clean_row)
         placeholder = entry.get("placeholder", defaults[keyboard_id].get("placeholder", ""))
         if not isinstance(placeholder, str) or len(placeholder) > 120:

@@ -19,6 +19,54 @@ from services import (
 
 
 class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verification_phone_back_returns_to_main_menu(self):
+        message = SimpleNamespace(
+            chat_id=42,
+            message_id=8,
+            reply_text=AsyncMock(
+                return_value=SimpleNamespace(chat_id=42, message_id=9)
+            ),
+        )
+        context = SimpleNamespace(
+            user_data={
+                "verification_flow": True,
+                "verification_consent_at": "consented",
+                handlers.ACTIVE_PROMPT_KEY: {
+                    "chat_id": 42,
+                    "message_id": 8,
+                    "keyboard_kind": "reply",
+                },
+            },
+            bot=SimpleNamespace(
+                delete_message=AsyncMock(),
+                send_message=AsyncMock(),
+                edit_message_reply_markup=AsyncMock(),
+            ),
+        )
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=123),
+            effective_message=message,
+            callback_query=None,
+        )
+        menu = InlineKeyboardMarkup([[keyboards._cb("البلاغات", "usr:report")]])
+
+        with patch.object(handlers, "main_menu_kb", return_value=menu):
+            state = await handlers.verification_phone_back(update, context)
+
+        self.assertEqual(state, ConversationHandler.END)
+        self.assertNotIn("verification_flow", context.user_data)
+        self.assertEqual(
+            message.reply_text.await_args.args[0],
+            "تم الرجوع إلى القائمة الرئيسية.",
+        )
+        self.assertIsInstance(
+            message.reply_text.await_args.kwargs["reply_markup"],
+            ReplyKeyboardRemove,
+        )
+        context.bot.edit_message_reply_markup.assert_awaited_once_with(
+            chat_id=42, message_id=9, reply_markup=menu
+        )
+
     async def test_back_button_restores_previous_step_without_losing_draft(self):
         message = SimpleNamespace(chat_id=42, message_id=8)
         query = SimpleNamespace(

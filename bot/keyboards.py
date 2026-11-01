@@ -414,7 +414,7 @@ def verification_contact_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(text=texts.SHARE_CONTACT, request_contact=True)],
-            [KeyboardButton(text=CANCEL_TEXT)],
+            [KeyboardButton(text=control.BACK_LABEL)],
         ],
         resize_keyboard=True,
         one_time_keyboard=True,
