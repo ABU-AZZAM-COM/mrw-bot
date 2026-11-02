@@ -20,6 +20,7 @@ load_dotenv(BASE_DIR / ".env")
 # توكن البوت (يُحصل عليه من @BotFather)
 # ------------------------------------------------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_USERNAME = os.getenv("BOT_USERNAME", "@blgh_bot").strip().lstrip("@")
 
 if not BOT_TOKEN or BOT_TOKEN.startswith("ضع_هنا"):
     print("=" * 62)

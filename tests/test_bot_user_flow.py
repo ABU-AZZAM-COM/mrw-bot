@@ -10,7 +10,7 @@ os.environ.setdefault("BOT_TOKEN", "123:TEST_TOKEN")
 from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ConversationHandler
 
-from bot import admin, handlers, keyboards
+from bot import admin, control, handlers, keyboards
 from services import (
     guards,
     identity_image_checks,
@@ -32,8 +32,91 @@ class CommandAccessTests(unittest.TestCase):
         with patch.object(guards.config, "ADMIN_IDS", {987654}):
             self.assertTrue(guards.is_public_command_allowed(987654, "/admin"))
 
+    def test_default_command_menu_lists_every_public_user_command(self):
+        configured = {
+            item["command"]
+            for item in control.default_commands_config()["scopes"][0]["commands"]
+        }
+
+        self.assertEqual(
+            configured,
+            {"start", "cancel", "reply", "status", "report", "app", "help"},
+        )
+
 
 class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_report_command_starts_report_instead_of_showing_home_menu(self):
+        db = SimpleNamespace(
+            record_user=AsyncMock(),
+            log_event=AsyncMock(),
+        )
+        message = SimpleNamespace(
+            text="/report",
+            chat_id=42,
+            message_id=8,
+            from_user=SimpleNamespace(id=123),
+        )
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(
+                id=123,
+                username="reporter",
+                full_name="Reporter",
+            ),
+            effective_chat=SimpleNamespace(type="private"),
+            effective_message=message,
+        )
+        context = SimpleNamespace(
+            user_data={},
+            bot_data={"db": db},
+            bot=SimpleNamespace(delete_message=AsyncMock()),
+        )
+
+        with (
+            patch.object(handlers, "_discard_verification_capture", new=AsyncMock()),
+            patch.object(guards, "is_emergency", new=AsyncMock(return_value=False)),
+            patch.object(
+                guards,
+                "check_rate_limits",
+                new=AsyncMock(return_value=SimpleNamespace(blocked=False)),
+            ),
+            patch.object(
+                guards,
+                "check_daily_limit",
+                new=AsyncMock(return_value=SimpleNamespace(blocked=False)),
+            ),
+            patch.object(
+                handlers,
+                "_show_report_step",
+                new=AsyncMock(return_value=handlers.ASK_CATEGORY),
+            ) as show_step,
+            patch.object(handlers, "_main_menu_content", new=AsyncMock()) as home_menu,
+        ):
+            state = await handlers.cmd_start(update, context)
+
+        self.assertEqual(state, handlers.ASK_CATEGORY)
+        show_step.assert_awaited_once_with(update, context, handlers.ASK_CATEGORY)
+        home_menu.assert_not_awaited()
+        db.log_event.assert_awaited_once_with(123, "report")
+        context.bot.delete_message.assert_awaited_once_with(
+            chat_id=42,
+            message_id=8,
+        )
+
+    async def test_status_command_refuses_group_chat_without_loading_reports(self):
+        message = SimpleNamespace(reply_text=AsyncMock())
+        db = SimpleNamespace(list_user_reports=AsyncMock())
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=123),
+            effective_chat=SimpleNamespace(type="group"),
+            effective_message=message,
+        )
+        context = SimpleNamespace(bot_data={"db": db})
+
+        await handlers.cmd_status(update, context)
+
+        message.reply_text.assert_awaited_once()
+        db.list_user_reports.assert_not_awaited()
+
     async def test_verification_phone_back_returns_to_main_menu(self):
         message = SimpleNamespace(
             chat=SimpleNamespace(type="private"),

@@ -446,22 +446,26 @@ def mini_app_url() -> str:
 # ----------------------------------------------------------------------
 # الأوامر (Commands + Scopes + Languages)
 # ----------------------------------------------------------------------
-ADMIN_COMMANDS: list[dict[str, str]] = [
+PUBLIC_COMMANDS: list[dict[str, str]] = [
     {"command": "start", "description": "فتح الواجهة الرئيسية"},
     {"command": "cancel", "description": "إلغاء العملية الحالية"},
     {"command": "reply", "description": "إرسال معلومات إضافية عن بلاغ"},
     {"command": "status", "description": "عرض بلاغاتي"},
+    {"command": "report", "description": "بدء بلاغ من المحادثة"},
+    {"command": "app", "description": "فتح تطبيق البلاغ"},
+    {"command": "help", "description": "عرض التعليمات"},
+]
+
+ADMIN_COMMANDS: list[dict[str, str]] = [
+    *PUBLIC_COMMANDS,
     {"command": "chatid", "description": "معرّف هذه المحادثة (للإعداد)"},
     {"command": "admin", "description": "لوحة إدارة البلاغات"},
     {"command": "reports", "description": "عرض لوحة البلاغات"},
-    {"command": "report", "description": "بدء بلاغ من المحادثة"},
     {"command": "stats", "description": "إحصائيات المستخدمين والبلاغات"},
     {"command": "backup", "description": "رفع نسخة احتياطية فورية"},
     {"command": "panic", "description": "إيقاف استقبال البلاغات طارئًا"},
     {"command": "resume", "description": "استئناف استقبال البلاغات"},
     {"command": "audit", "description": "عرض سجل التدقيق"},
-    {"command": "app", "description": "فتح تطبيق البلاغ"},
-    {"command": "help", "description": "عرض التعليمات"},
 ]
 
 
@@ -471,7 +475,7 @@ def default_commands_config() -> dict[str, Any]:
             "scope": "default",
             "chat_id": None,
             "language": "",
-            "commands": [{"command": "start", "description": "فتح الواجهة الرئيسية"}],
+            "commands": [dict(item) for item in PUBLIC_COMMANDS],
         }
     ]
     for admin_id in sorted(getattr(config, "ADMIN_IDS", []) or []):

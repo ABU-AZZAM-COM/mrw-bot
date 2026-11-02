@@ -448,6 +448,51 @@ async def _show_report_step(
     return step
 
 
+async def _start_report_flow(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database
+) -> int:
+    if await guards.is_emergency(db):
+        await _send_clean_prompt(
+            update,
+            context,
+            texts.REPORTING_PAUSED,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_to_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    user = update.effective_user
+    if user is None:
+        return ConversationHandler.END
+    verdict = await guards.check_rate_limits(db, user.id)
+    if verdict.blocked:
+        await _send_clean_prompt(
+            update,
+            context,
+            verdict.message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_to_menu_kb(),
+        )
+        return ConversationHandler.END
+    daily = await guards.check_daily_limit(db, user.id)
+    if daily.blocked:
+        await _send_clean_prompt(
+            update,
+            context,
+            daily.message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_to_menu_kb(),
+        )
+        return ConversationHandler.END
+
+    await db.log_event(user.id, "report")
+    active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
+    context.user_data.clear()
+    if active_prompt:
+        context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
+    return await _show_report_step(update, context, ASK_CATEGORY)
+
+
 # ==================================================================
 # نقطة الدخول: /start أو /report
 # ==================================================================
@@ -467,9 +512,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
+    command = (update.effective_message.text or "").split(maxsplit=1)
+    command = command[0].split("@", 1)[0].lower() if command else ""
     await db.record_user(user.id, user.username, user.full_name)
 
-    await db.log_event(user.id, "start")
+    if command == "/start":
+        await db.log_event(user.id, "start")
 
     await _discard_verification_capture(context, user.id)
     active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
@@ -477,9 +525,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if active_prompt:
         context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
     _pending_app_users.discard(user.id)
+    if command == "/report":
+        state = await _start_report_flow(update, context, db)
+        await _delete_user_message(update, context)
+        return state
+
     welcome, parse_mode = await _main_menu_content(db)
-    command = (update.effective_message.text or "").split(maxsplit=1)
-    command = command[0].split("@", 1)[0].lower() if command else ""
     welcome_photo = context.bot_data.get("welcome_photo")
     if command == "/start" and isinstance(welcome_photo, dict) and isinstance(
         welcome_photo.get("data"), bytes
@@ -1593,6 +1644,13 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================================================================
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """بطاقات «بلاغاتي» بأمر كتابي — لمن يخطر له ذلك دون فتح القائمة."""
+    chat = update.effective_chat
+    if chat is None or not guards.is_private_chat(chat.type):
+        await update.effective_message.reply_text(
+            texts.PRIVATE_ONLY.format(bot=config.BOT_USERNAME),
+            parse_mode=ParseMode.HTML,
+        )
+        return
     uid = update.effective_user.id
     reports, total = await _db(context).list_user_reports(uid, limit=MY_REPORTS_MAX + 1)
     if not reports:
@@ -2644,6 +2702,13 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # إلغاء العملية (أمر أو زر)
 # ==================================================================
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat is None or not guards.is_private_chat(chat.type):
+        await update.effective_message.reply_text(
+            texts.PRIVATE_ONLY.format(bot=config.BOT_USERNAME),
+            parse_mode=ParseMode.HTML,
+        )
+        return ConversationHandler.END
     await _discard_verification_capture(
         context,
         update.effective_user.id if update.effective_user else None,
@@ -2778,31 +2843,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # --- بلاغ جديد ---
     if parts[1] == "report":
-        if await guards.is_emergency(db):
-            await query.edit_message_text(
-                texts.REPORTING_PAUSED,
-                parse_mode=ParseMode.HTML,
-                reply_markup=back_to_menu_kb(),
-            )
-            return ConversationHandler.END
-        verdict = await guards.check_rate_limits(db, query.from_user.id)
-        if verdict.blocked:
-            await query.edit_message_text(
-                verdict.message, parse_mode=ParseMode.HTML,
-                reply_markup=back_to_menu_kb(),
-            )
-            return
-        daily = await guards.check_daily_limit(db, query.from_user.id)
-        if daily.blocked:
-            await query.edit_message_text(
-                daily.message, parse_mode=ParseMode.HTML,
-                reply_markup=back_to_menu_kb(),
-            )
-            return
-
-        await db.log_event(query.from_user.id, "report")
-        context.user_data.clear()
-        return await _show_report_step(update, context, ASK_CATEGORY)
+        return await _start_report_flow(update, context, db)
 
     # --- فتح التطبيق ---
     # أُزيل زر فتح التطبيق من الأزرار المضمنة (قرار الواجهة الاحترافية)؛

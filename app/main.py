@@ -486,6 +486,7 @@ def main() -> None:
 
     # 1-ج) أمر /app لفتح التطبيق
     app.add_handler(CommandHandler("app", handlers.cmd_app))
+    app.add_handler(CommandHandler("cancel", handlers.cmd_cancel))
 
     # 2) لوحة المشرف
     app.add_handler(CommandHandler(["admin", "reports"], admin.cmd_admin))
