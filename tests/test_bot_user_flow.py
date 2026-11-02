@@ -167,6 +167,105 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
         query.answer.assert_awaited_once_with()
         query.edit_message_text.assert_awaited_once()
 
+    async def test_invalid_admin_status_callback_is_answered_once(self):
+        query = SimpleNamespace(
+            data="adm:s:12:unknown",
+            message=SimpleNamespace(photo=None),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        context = SimpleNamespace(
+            bot_data={"db": object()},
+            chat_data={},
+        )
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=123),
+        )
+
+        with patch.object(admin, "_is_admin", return_value=True):
+            await admin.on_callback(update, context)
+
+        query.answer.assert_awaited_once_with()
+        query.edit_message_text.assert_awaited_once_with(
+            admin.texts.RULE_NOT_KNOWN,
+            parse_mode=admin.ParseMode.HTML,
+            reply_markup=None,
+        )
+
+    async def test_admin_back_edits_existing_text_message_instead_of_stacking(self):
+        query = SimpleNamespace(
+            data="adm:back",
+            message=SimpleNamespace(photo=None),
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(),
+        )
+        context = SimpleNamespace(
+            bot_data={"db": object()},
+            chat_data={"adm_list": ("new", 1)},
+        )
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=123),
+        )
+        markup = InlineKeyboardMarkup([[keyboards._cb("Back", "adm:menu")]])
+
+        with (
+            patch.object(admin, "_is_admin", return_value=True),
+            patch.object(
+                admin,
+                "_render_list",
+                new=AsyncMock(return_value=("صفحة البلاغات", markup)),
+            ),
+        ):
+            await admin.on_callback(update, context)
+
+        query.edit_message_text.assert_awaited_once_with(
+            "صفحة البلاغات",
+            parse_mode=admin.ParseMode.HTML,
+            reply_markup=markup,
+        )
+        self.assertEqual(context.chat_data["adm_list"], ("new", 1))
+
+    async def test_admin_back_from_photo_replaces_it_with_report_list(self):
+        source_message = SimpleNamespace(
+            photo=[object()],
+            delete=AsyncMock(),
+        )
+        query = SimpleNamespace(
+            data="adm:back",
+            message=source_message,
+            answer=AsyncMock(),
+        )
+        context = SimpleNamespace(
+            bot_data={"db": object()},
+            chat_data={"adm_list": ("all", 0)},
+        )
+        chat = SimpleNamespace(send_message=AsyncMock())
+        update = SimpleNamespace(
+            callback_query=query,
+            effective_user=SimpleNamespace(id=123),
+            effective_chat=chat,
+        )
+        markup = InlineKeyboardMarkup([[keyboards._cb("Back", "adm:menu")]])
+
+        with (
+            patch.object(admin, "_is_admin", return_value=True),
+            patch.object(
+                admin,
+                "_render_list",
+                new=AsyncMock(return_value=("قائمة البلاغات", markup)),
+            ),
+        ):
+            await admin.on_callback(update, context)
+
+        chat.send_message.assert_awaited_once_with(
+            "قائمة البلاغات",
+            parse_mode=admin.ParseMode.HTML,
+            reply_markup=markup,
+        )
+        source_message.delete.assert_awaited_once_with()
+
     async def test_reply_keyboard_transition_falls_back_to_new_menu_message(self):
         context = SimpleNamespace(
             user_data={

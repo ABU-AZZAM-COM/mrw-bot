@@ -20,6 +20,7 @@ from pathlib import Path
 
 from telegram import InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
     ApplicationHandlerStop,
     ContextTypes,
@@ -252,11 +253,20 @@ async def _render_list(db: Database, code: str, page: int):
     return text, InlineKeyboardMarkup(markup_rows)
 
 
-async def _send_list(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database,
-                     code: str, page: int) -> None:
-    text, markup = await _render_list(db, code, page)
-    context.chat_data["adm_list"] = (code, page)
-    await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+async def _delete_callback_message(query) -> None:
+    if query is None:
+        return
+    message = query.message
+    if message is None:
+        return
+    try:
+        await message.delete()
+    except TelegramError:
+        logger.info(
+            "تعذر حذف رسالة لوحة المشرف %s",
+            message.message_id,
+            exc_info=True,
+        )
 
 
 # ==================================================================
@@ -296,9 +306,9 @@ async def _show_report(update: Update, context: ContextTypes.DEFAULT_TYPE, db: D
                        rid: int) -> None:
     r = await db.get_by_id(rid)
     if not r:
-        await update.effective_chat.send_message(
-            texts.REPORT_NOT_FOUND, parse_mode=ParseMode.HTML
-        )
+        query = update.callback_query
+        if query is not None:
+            await _edit_report_message(query, texts.REPORT_NOT_FOUND, None)
         return
 
     caption = _report_caption(r)
@@ -320,6 +330,11 @@ async def _show_report(update: Update, context: ContextTypes.DEFAULT_TYPE, db: D
                 photo=file_id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=markup
             )
         except Exception:
+            logger.warning(
+                "تعذر إرسال صورة البلاغ %s من Telegram file_id؛ ستُعرض التفاصيل نصيًا",
+                rid,
+                exc_info=True,
+            )
             context.chat_data["adm_view_text_only"] = True
             await update.effective_chat.send_message(
                 caption, parse_mode=ParseMode.HTML, reply_markup=markup
@@ -329,6 +344,7 @@ async def _show_report(update: Update, context: ContextTypes.DEFAULT_TYPE, db: D
         await update.effective_chat.send_message(
             caption, parse_mode=ParseMode.HTML, reply_markup=markup
         )
+    await _delete_callback_message(update.callback_query)
 
 
 # ==================================================================
@@ -513,7 +529,11 @@ async def _refresh_view(update: Update, context: ContextTypes.DEFAULT_TYPE, db: 
             )
     except Exception:
         # تعديل الرسالة القديمة قد يفشل (جمود رسالة/حدود تلغرام) — لا يؤثر على الحفظ
-        logger.debug("تعذر تحديث شاشة عرض البلاغ %s", rid)
+        logger.warning(
+            "تم تحديث البلاغ %s لكن تعذر تحديث شاشة العرض",
+            rid,
+            exc_info=True,
+        )
 
 
 # ==================================================================
@@ -589,10 +609,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     elif op == "back":
         code, page = context.chat_data.get("adm_list", ("all", 0))
-        await _send_list(update, context, db, code, page)
+        text, markup = await _render_list(db, code, page)
+        context.chat_data["adm_list"] = (code, page)
+        if query.message is not None and getattr(query.message, "photo", None):
+            await update.effective_chat.send_message(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+            )
+            await _delete_callback_message(query)
+        else:
+            await _edit_report_message(query, text, markup)
 
     elif op == "v":
         if len(parts) < 3 or not parts[2].isdigit():
+            await _edit_report_message(query, texts.RULE_NOT_KNOWN, None)
             return
         await _show_report(update, context, db, int(parts[2]))
 
@@ -630,12 +661,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     elif op == "rj":
         if len(parts) < 3 or not parts[2].isdigit():
+            await _edit_report_message(query, texts.RULE_NOT_KNOWN, None)
             return
         await _request_rejection_reason(query, context, db, int(parts[2]))
 
     elif op == "rc":
         # تراجع عن طلب سبب الرفض
         if len(parts) < 3 or not parts[2].isdigit():
+            await _edit_report_message(query, texts.RULE_NOT_KNOWN, None)
             return
         rid = int(parts[2])
         if context.chat_data.get("adm_reject_rid") == rid:
@@ -655,8 +688,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     elif op == "exp":
         if len(parts) < 3:
+            await _edit_report_message(query, texts.RULE_NOT_KNOWN, None)
+            return
+        if parts[2] not in {"xlsx", "txt"}:
+            await _edit_report_message(query, texts.RULE_NOT_KNOWN, None)
             return
         await _export(update, context, db, parts[2])
 
     else:
         logger.warning("زر لوحة غير معروف: %s", data)
+        await _edit_report_message(query, texts.RULE_NOT_KNOWN, None)
