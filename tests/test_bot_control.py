@@ -189,6 +189,34 @@ class ControlNormalizationTests(unittest.TestCase):
         bad_rights["default_admin_rights"]["can_pin_messages"] = "yes"
         self.assertIsNone(control.normalize_settings(bad_rights))
 
+    def test_empty_saved_app_url_uses_secure_render_origin(self):
+        cfg = control.default_settings()
+        cfg["mini_app_url"] = ""
+        with patch.object(
+            control.config,
+            "MINI_APP_URL",
+            "https://mrw-bot.onrender.com",
+        ):
+            control.set_settings(cfg)
+            self.assertEqual(
+                control.mini_app_url(),
+                "https://mrw-bot.onrender.com",
+            )
+            contact_markup = keyboards.contact_app_kb()
+            self.assertEqual(
+                contact_markup.inline_keyboard[0][0].web_app.url,
+                "https://mrw-bot.onrender.com?view=contact",
+            )
+            self.assertIsNotNone(keyboards.app_kb())
+
+    def test_empty_app_url_ignores_insecure_fallback(self):
+        cfg = control.default_settings()
+        cfg["mini_app_url"] = ""
+        with patch.object(control.config, "MINI_APP_URL", "http://insecure.test"):
+            control.set_settings(cfg)
+            self.assertEqual(control.mini_app_url(), "")
+            self.assertIsNone(keyboards.contact_app_kb())
+
     def test_default_admin_rights_include_current_telegram_story_permissions(self):
         bot = types.SimpleNamespace(set_my_default_administrator_rights=AsyncMock())
         cfg = control.default_settings()

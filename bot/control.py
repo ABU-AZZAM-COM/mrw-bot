@@ -440,7 +440,11 @@ def current_settings() -> dict[str, Any]:
 
 
 def mini_app_url() -> str:
-    return str(current_settings().get("mini_app_url") or "").strip()
+    url = str(current_settings().get("mini_app_url") or "").strip()
+    if url:
+        return url
+    fallback = str(config.MINI_APP_URL or "").strip()
+    return fallback if fallback.lower().startswith("https://") else ""
 
 
 # ----------------------------------------------------------------------

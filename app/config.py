@@ -172,7 +172,10 @@ MAX_BOT_MESSAGES_PER_MINUTE: int = int(os.getenv("MAX_BOT_MESSAGES_PER_MINUTE", 
 # ------------------------------------------------------------------
 # تطبيق البلاغ داخل تلغرام
 # ------------------------------------------------------------------
-MINI_APP_URL: str = os.getenv("MINI_APP_URL", "").strip()
+MINI_APP_URL: str = (
+    os.getenv("MINI_APP_URL", "").strip()
+    or os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+)
 
 # أنواع المخالفات المعتمدة (تظهر في التطبيق وفي التقارير)
 VIOLATION_TYPES: tuple[str, ...] = (
