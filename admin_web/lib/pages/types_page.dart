@@ -184,42 +184,48 @@ class _TypesPageState extends State<TypesPage> {
               ),
             ],
           ),
-              for (final item in _items)
+        ),
+        for (final item in _items)
           Padding(
             padding: const EdgeInsetsDirectional.only(
               start: 28,
               bottom: 8,
             ),
-            child: Wrap(
-              spacing: 6,
-              runSpacing: 4,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final category in _categories.entries)
-                  FilterChip(
-                    label: Text(category.value),
-                    selected:
-                        _groups[category.key]?.contains(item) ?? false,
-                    onSelected: _busy
-                        ? null
-                        : (selected) {
-                            setState(() {
-                              final values = _groups.putIfAbsent(
-                                category.key,
-                                () => <String>{},
-                              );
-                              if (selected) {
-                                values.add(item);
-                              } else {
-                                values.remove(item);
-                              }
-                              _dirty = true;
-                            });
-                          },
-                  ),
+                Text(item, style: Theme.of(context).textTheme.titleSmall),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    for (final category in _categories.entries)
+                      FilterChip(
+                        label: Text(category.value),
+                        selected:
+                            _groups[category.key]?.contains(item) ?? false,
+                        onSelected: _busy
+                            ? null
+                            : (selected) {
+                                setState(() {
+                                  final values = _groups.putIfAbsent(
+                                    category.key,
+                                    () => <String>{},
+                                  );
+                                  if (selected) {
+                                    values.add(item);
+                                  } else {
+                                    values.remove(item);
+                                  }
+                                  _dirty = true;
+                                });
+                              },
+                      ),
+                  ],
+                ),
               ],
             ),
           ),
-        ),
         const SizedBox(height: 10),
         SectionCard(
           'أنواع البلاغات (${_items.length}) — السقف 3 إلى 12',
