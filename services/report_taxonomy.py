@@ -5,9 +5,75 @@ REPORT_CATEGORIES = {
     "field": "📍 بلاغ ميداني عاجل / أخرى",
 }
 
+LEGACY_VIOLATION_TYPES = (
+    "تجاوز السرعة",
+    "مخالفة إشارة",
+    "إعاقة الطريق",
+    "مخالفة زي",
+    "مواد ممنوعة",
+    "سلاح أو عنيف",
+    "تصوير في مكان ممنوع",
+    "أخرى",
+)
+
+DEFAULT_VTYPE_CATEGORIES = {
+    "conduct": (
+        "إساءة معاملة",
+        "تجاوز صلاحيات",
+        "تهديد أو اعتداء",
+        "ابتزاز أو طلب رشوة",
+        "مواد ممنوعة",
+        "سلاح أو عنيف",
+    ),
+    "administrative": (
+        "مخالفة قرار أو تعليمات",
+        "فساد أو استغلال موارد",
+        "تزوير أو تلاعب",
+        "إهمال أو تقصير",
+        "تجاوز السرعة",
+        "مخالفة إشارة",
+        "مخالفة زي",
+    ),
+    "social": (
+        "حساب أو انتحال صفة",
+        "نشر صور أو وثائق",
+        "بث مباشر",
+        "نشر معلومات أو محتوى محظور",
+        "تصوير في مكان ممنوع",
+    ),
+    "field": (
+        "تحركات أو تجمعات",
+        "نشاط ميداني مشبوه",
+        "حادثة عاجلة",
+        "موقع أو إحداثيات",
+        "إعاقة الطريق",
+        "أخرى",
+    ),
+}
+
+DEFAULT_VIOLATION_TYPES = tuple(
+    dict.fromkeys(
+        (*LEGACY_VIOLATION_TYPES, *(
+            item
+            for category in REPORT_CATEGORIES
+            for item in DEFAULT_VTYPE_CATEGORIES[category]
+        ))
+    )
+)
+
 
 def default_vtype_groups(items: list[str]) -> dict[str, list[str]]:
-    return {category: list(items) for category in REPORT_CATEGORIES}
+    groups = {
+        category: [
+            item
+            for item in items
+            if item in DEFAULT_VTYPE_CATEGORIES[category]
+        ]
+        for category in REPORT_CATEGORIES
+    }
+    assigned = {item for values in groups.values() for item in values}
+    groups["field"].extend(item for item in items if item not in assigned)
+    return groups
 
 
 def normalize_vtype_groups(

@@ -192,14 +192,39 @@ async def _welcome_content(db: Database) -> tuple[str, ParseMode | None]:
     return texts.WELCOME, ParseMode.HTML
 
 
-async def _main_menu_content(db: Database) -> tuple[str, ParseMode | None]:
+async def _main_menu_content(
+    db: Database, user_id: int | None = None
+) -> tuple[str, ParseMode | None]:
     welcome, parse_mode = await _welcome_content(db)
     if await guards.is_emergency(db):
         if parse_mode == ParseMode.HTML:
             welcome = texts.REPORTING_PAUSED + "\n\n" + welcome
         else:
             welcome = texts.INLINE_MESSAGES["reporting_paused_plain"] + welcome
-    return welcome, parse_mode
+    return await _with_verified_reporter_badge(welcome, db, user_id), parse_mode
+
+
+VERIFIED_REPORTER_BADGE = "✅ حساب موثّق كمراسل"
+
+
+async def _is_verified_reporter(db, user_id: int | None) -> bool:
+    status_getter = getattr(db, "verification_status", None)
+    if not user_id or status_getter is None:
+        return False
+    status = await status_getter(user_id)
+    return bool(status and status.get("status") == "verified")
+
+
+async def _with_verified_reporter_badge(
+    text: str, db, user_id: int | None
+) -> str:
+    if (
+        user_id
+        and not text.startswith(VERIFIED_REPORTER_BADGE)
+        and await _is_verified_reporter(db, user_id)
+    ):
+        return f"{VERIFIED_REPORTER_BADGE}\n\n{text}"
+    return text
 
 
 async def _privacy_policy_url(db: Database) -> str | None:
@@ -329,6 +354,14 @@ async def _send_clean_prompt(
 ):
     """Replace the previous temporary bot prompt instead of stacking prompts."""
     query = getattr(update, "callback_query", None)
+    user = getattr(update, "effective_user", None)
+    if user is None and query is not None:
+        user = query.from_user
+    db = getattr(context, "bot_data", {}).get("db")
+    if db is not None:
+        text = await _with_verified_reporter_badge(
+            text, db, getattr(user, "id", None)
+        )
     if query and not isinstance(reply_markup, ReplyKeyboardMarkup):
         try:
             message = await query.edit_message_text(
@@ -558,7 +591,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _delete_user_message(update, context)
         return state
 
-    welcome, parse_mode = await _main_menu_content(db)
+    welcome, parse_mode = await _main_menu_content(db, user.id)
     welcome_photo = context.bot_data.get("welcome_photo")
     if command == "/start" and isinstance(welcome_photo, dict) and isinstance(
         welcome_photo.get("data"), bytes
@@ -2643,13 +2676,14 @@ async def verification_phone_back(
         context.user_data[ACTIVE_PROMPT_KEY] = active_prompt
     if update.effective_user:
         _pending_app_users.discard(update.effective_user.id)
-    welcome, parse_mode = await _main_menu_content(_db(context))
+    user_id = update.effective_user.id if update.effective_user else None
+    welcome, parse_mode = await _main_menu_content(_db(context), user_id)
     await _send_clean_prompt(
         update,
         context,
         welcome,
         parse_mode=parse_mode,
-        reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
+        reply_markup=main_menu_kb(user_id),
     )
     await _delete_user_message(update, context)
     return ConversationHandler.END
@@ -2658,7 +2692,9 @@ async def verification_phone_back(
 # ==================================================================
 # معالج استدعاءات الأزرار المضمنة للمستخدم (usr:*)
 # ==================================================================
-def _my_reports_text(reports: list, total: int, page: int = 0) -> str:
+def _my_reports_text(
+    reports: list, total: int, page: int = 0, *, verified: bool = False
+) -> str:
     """نص شاشة «بلاغاتي»: بطاقة مختصرة لكل بلاغ (رقمها وحالتها وزمنها)."""
     shown = reports[:MY_REPORTS_MAX]
     lines = [
@@ -2670,9 +2706,10 @@ def _my_reports_text(reports: list, total: int, page: int = 0) -> str:
     has_next = (page + 1) * MY_REPORTS_MAX < total
     more = texts.MY_REPORTS_MORE if has_next else ""
     page_label = f"\nالصفحة {page + 1} من {page_count}\n"
-    return texts.MY_REPORTS_HEADER.format(
+    content = texts.MY_REPORTS_HEADER.format(
         count=total, lines="".join(lines) + page_label + more
     )
+    return f"{VERIFIED_REPORTER_BADGE}\n\n{content}" if verified else content
 
 
 async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
@@ -2725,7 +2762,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "menu":
         context.user_data.clear()
         _pending_app_users.discard(query.from_user.id)
-        welcome, parse_mode = await _main_menu_content(db)
+        welcome, parse_mode = await _main_menu_content(db, query.from_user.id)
         await query.edit_message_text(
             welcome,
             parse_mode=parse_mode,
@@ -2738,7 +2775,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "home":
         context.user_data.clear()
         _pending_app_users.discard(query.from_user.id)
-        welcome, parse_mode = await _main_menu_content(db)
+        welcome, parse_mode = await _main_menu_content(db, query.from_user.id)
         prompt = await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=welcome,
@@ -2753,7 +2790,9 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _clear_welcome_photo(context)
         prompt = await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text=texts.MAIN_MENU_PROMPT,
+            text=await _with_verified_reporter_badge(
+                texts.MAIN_MENU_PROMPT, db, query.from_user.id
+            ),
             reply_markup=main_menu_kb(query.from_user.id),
         )
         _remember_user_prompt(context, prompt)
@@ -2799,12 +2838,16 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
         if not reports:
             await query.edit_message_text(
-                texts.NO_REPORTS_YET, parse_mode=ParseMode.HTML,
+                await _with_verified_reporter_badge(
+                    texts.NO_REPORTS_YET, db, query.from_user.id
+                ),
+                parse_mode=ParseMode.HTML,
                 reply_markup=back_to_menu_kb(),
             )
             return ConversationHandler.END
+        is_verified = await _is_verified_reporter(db, query.from_user.id)
         await query.edit_message_text(
-            _my_reports_text(reports, total, page),
+            _my_reports_text(reports, total, page, verified=is_verified),
             parse_mode=ParseMode.HTML,
             reply_markup=my_reports_kb(
                 reports,
@@ -2833,22 +2876,25 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if r.get("latitude") is not None and r.get("longitude") is not None:
             location_parts.append(f"{r['latitude']}, {r['longitude']}")
         location = utils.esc(" · ".join(location_parts) or "-")
+        report_text = texts.MY_REPORT_OPEN.format(
+            seq=r["seq"],
+            time=utils.fmt_local(r["created_at"]),
+            status=texts.badge(r["status"]),
+            status_detail=texts.status_explanation(r["status"]),
+            category=utils.esc(r.get("category") or "-"),
+            type=utils.esc(r.get("violation_type") or "-"),
+            platform=utils.esc(r.get("platform") or "-"),
+            location=location,
+            desc=utils.esc(r.get("description") or "-"),
+            link=(
+                f'<a href="{utils.esc(str(r["post_link"]))}">فتح الرابط الأصلي</a>'
+                if str(r.get("post_link") or "").startswith(("http://", "https://"))
+                else "-"
+            ),
+        )
         await query.edit_message_text(
-            texts.MY_REPORT_OPEN.format(
-                seq=r["seq"],
-                time=utils.fmt_local(r["created_at"]),
-                status=texts.badge(r["status"]),
-                status_detail=texts.status_explanation(r["status"]),
-                category=utils.esc(r.get("category") or "-"),
-                type=utils.esc(r.get("violation_type") or "-"),
-                platform=utils.esc(r.get("platform") or "-"),
-                location=location,
-                desc=utils.esc(r.get("description") or "-"),
-                link=(
-                    f'<a href="{utils.esc(str(r["post_link"]))}">فتح الرابط الأصلي</a>'
-                    if str(r.get("post_link") or "").startswith(("http://", "https://"))
-                    else "-"
-                ),
+            await _with_verified_reporter_badge(
+                report_text, db, query.from_user.id
             ),
             parse_mode=ParseMode.HTML,
             reply_markup=report_open_kb(

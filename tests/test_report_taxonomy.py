@@ -27,6 +27,27 @@ class ReportTaxonomyTests(unittest.IsolatedAsyncioTestCase):
         groups = await self.db.effective_vtype_groups()
         self.assertEqual(groups, default_vtype_groups(items))
         self.assertEqual(set(groups), set(REPORT_CATEGORIES))
+        self.assertEqual(len(items), 24)
+        self.assertTrue(all(groups.values()))
+        self.assertTrue(all(values != items for values in groups.values()))
+
+    async def test_legacy_defaults_migrate_to_category_specific_defaults(self):
+        from services.report_taxonomy import LEGACY_VIOLATION_TYPES
+
+        await self.db.set_vtypes_override(list(LEGACY_VIOLATION_TYPES))
+        await self.db.set_vtype_groups(
+            {
+                category: list(LEGACY_VIOLATION_TYPES)
+                for category in REPORT_CATEGORIES
+            }
+        )
+
+        items = await self.db.effective_vtypes()
+        groups = await self.db.effective_vtype_groups()
+
+        self.assertEqual(len(items), 24)
+        self.assertEqual(groups, default_vtype_groups(items))
+        self.assertNotEqual(groups["conduct"], groups["social"])
 
     async def test_group_assignments_are_persisted(self):
         items = await self.db.effective_vtypes()

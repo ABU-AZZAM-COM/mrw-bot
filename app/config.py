@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from services.report_taxonomy import DEFAULT_VIOLATION_TYPES
 
 # Project root is the parent of the app package.
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -178,16 +179,7 @@ MINI_APP_URL: str = (
 )
 
 # أنواع المخالفات المعتمدة (تظهر في التطبيق وفي التقارير)
-VIOLATION_TYPES: tuple[str, ...] = (
-    "تجاوز السرعة",
-    "مخالفة إشارة",
-    "إعاقة الطريق",
-    "مخالفة زي",
-    "مواد ممنوعة",
-    "سلاح أو عنيف",
-    "تصوير في مكان ممنوع",
-    "أخرى",
-)
+VIOLATION_TYPES: tuple[str, ...] = DEFAULT_VIOLATION_TYPES
 
 # هل يُنشر البلاغ في القناة الرسمية تلقائيًا بعد الحفظ؟
 # 0 = لا (يلزم موافقة المشرف) — وهو الخيار الآمن ضد البلاغات الكيدية.

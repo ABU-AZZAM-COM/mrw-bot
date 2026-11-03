@@ -45,6 +45,41 @@ class CommandAccessTests(unittest.TestCase):
 
 
 class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verified_reporter_badge_is_added_to_user_prompts(self):
+        verified_db = SimpleNamespace(
+            verification_status=AsyncMock(return_value={"status": "verified"})
+        )
+        context = SimpleNamespace(
+            user_data={},
+            bot_data={"db": verified_db},
+            bot=SimpleNamespace(
+                delete_message=AsyncMock(),
+                send_message=AsyncMock(
+                    return_value=SimpleNamespace(chat_id=42, message_id=9)
+                ),
+                edit_message_reply_markup=AsyncMock(),
+            ),
+        )
+        message = SimpleNamespace(
+            chat_id=42,
+            reply_text=AsyncMock(
+                return_value=SimpleNamespace(chat_id=42, message_id=8)
+            ),
+        )
+        update = SimpleNamespace(
+            callback_query=None,
+            effective_user=SimpleNamespace(id=123),
+            effective_message=message,
+        )
+
+        await handlers._send_clean_prompt(update, context, "اختر خدمة")
+
+        self.assertEqual(
+            message.reply_text.await_args.args[0],
+            f"{handlers.VERIFIED_REPORTER_BADGE}\n\nاختر خدمة",
+        )
+        verified_db.verification_status.assert_awaited_once_with(123)
+
     async def test_report_command_starts_report_instead_of_showing_home_menu(self):
         db = SimpleNamespace(
             record_user=AsyncMock(),

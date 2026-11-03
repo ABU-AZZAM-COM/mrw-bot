@@ -80,9 +80,6 @@ class _TypesPageState extends State<TypesPage> {
     }
     setState(() {
       _items.add(t);
-      for (final category in _categories.keys) {
-        _groups.putIfAbsent(category, () => <String>{}).add(t);
-      }
       _dirty = true;
     });
   }
@@ -111,8 +108,8 @@ class _TypesPageState extends State<TypesPage> {
     final items = [
       for (final t in _items) t.trim(),
     ].where((t) => t.isNotEmpty).toList();
-    if (items.length < 3 || items.length > 12) {
-      toast(context, 'القائمة من 3 إلى 12 تصنيفاً', error: true);
+    if (items.length < 3 || items.length > 24) {
+      toast(context, 'القائمة من 3 إلى 24 نوعًا', error: true);
       return;
     }
     if (_categories.keys.any((key) => _groups[key]?.isEmpty ?? true)) {
@@ -178,7 +175,7 @@ class _TypesPageState extends State<TypesPage> {
               SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'اختر الأقسام التي يظهر داخلها كل نوع. حفظ التعديلات يحدّث التصنيفات في البوت وMini App؛ البلاغات القديمة لا تتأثر.',
+                  'تظهر للمبلّغ أقسام البوت نفسها، ولا يظهر كل نوع إلا داخل الأقسام المحددة له. عند إضافة نوع جديد اربطه بقسم واحد على الأقل قبل الحفظ؛ البلاغات القديمة لا تتأثر.',
                   style: TextStyle(color: Color(0xFFFFD166)),
                 ),
               ),
@@ -228,7 +225,7 @@ class _TypesPageState extends State<TypesPage> {
           ),
         const SizedBox(height: 10),
         SectionCard(
-          'أنواع البلاغات (${_items.length}) — السقف 3 إلى 12',
+          'أنواع البلاغات (${_items.length}) — السقف 3 إلى 24',
           icon: Icons.category,
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
@@ -289,7 +286,7 @@ class _TypesPageState extends State<TypesPage> {
                   ],
                 ),
               if (_items.isEmpty)
-                const Text('لا أنواع — أضف 3 على الأقل قبل الحفظ'),
+                const Text('لا توجد أنواع — أضف 3 على الأقل قبل الحفظ'),
             ],
           ),
         ),

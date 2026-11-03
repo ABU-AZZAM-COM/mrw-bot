@@ -65,6 +65,20 @@ class ReportTaxonomyApiTests(unittest.TestCase):
             groups,
         )
 
+    def test_default_api_options_are_specific_to_each_bot_category(self):
+        response = self.client.get("/api/admin/vtypes", headers=self.headers)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        groups = payload["groups"]
+        self.assertEqual(len(payload["items"]), 24)
+        self.assertTrue(all(groups.values()))
+        self.assertTrue(all(values != payload["items"] for values in groups.values()))
+        self.assertIn("تحركات أو تجمعات", groups["field"])
+        self.assertIn("حساب أو انتحال صفة", groups["social"])
+        self.assertIn("فساد أو استغلال موارد", groups["administrative"])
+        self.assertIn("إساءة معاملة", groups["conduct"])
+
     def test_unassigned_type_is_rejected(self):
         loaded = self.client.get("/api/admin/vtypes", headers=self.headers)
         self.assertEqual(loaded.status_code, 200)

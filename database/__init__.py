@@ -4262,12 +4262,19 @@ class Database:
     # --------------------------------------------------------------
     async def effective_vtypes(self) -> list[str]:
         """أنواع المخالفات الفعلية: التعديل المحفوظ أو الإعداد الافتراضي إن لم يوجد."""
+        from services.report_taxonomy import (
+            DEFAULT_VIOLATION_TYPES,
+            LEGACY_VIOLATION_TYPES,
+        )
+
         raw = await self.get_state("violation_types_override")
         try:
             parsed = json.loads(raw) if raw else []
         except Exception:  # noqa: BLE001 — قيمة تالفة تعامل كغير موجودة
             parsed = []
         clean = [str(t).strip() for t in parsed if str(t).strip()]
+        if clean == list(LEGACY_VIOLATION_TYPES):
+            return list(DEFAULT_VIOLATION_TYPES)
         if clean:
             return clean
         from app import config  # noqa: PLC0415 — داخل الدالة لتفادي الدوران
@@ -4296,6 +4303,14 @@ class Database:
         assigned = {
             item for values in groups.values() for item in values
         } if groups is not None else set()
+        if groups is not None:
+            from services.report_taxonomy import LEGACY_VIOLATION_TYPES
+
+            if all(
+                groups[category] == list(LEGACY_VIOLATION_TYPES)
+                for category in groups
+            ):
+                return default_vtype_groups(items)
         if (
             groups is None
             or any(not values for values in groups.values())

@@ -4279,7 +4279,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             if t and t not in seen:
                 seen.add(t)
                 clean.append(t)
-        if not 3 <= len(clean) <= 12:
+        if not 3 <= len(clean) <= 24:
             return bad("bad_list")
         db = db_of()
         previous_items = await db.effective_vtypes()
