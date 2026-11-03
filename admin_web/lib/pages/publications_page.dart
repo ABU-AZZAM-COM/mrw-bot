@@ -21,6 +21,7 @@ class PublicationsPage extends StatefulWidget {
 class _PublicationsPageState extends State<PublicationsPage> {
   final TextEditingController _caption = TextEditingController();
   String _mediaType = 'photo';
+  String _category = 'public';
   Uint8List? _mediaBytes;
   String? _filename;
   String? _previewFileId;
@@ -68,9 +69,8 @@ class _PublicationsPageState extends State<PublicationsPage> {
 
   Future<void> _pickFile() async {
     final accept = switch (_mediaType) {
-      'photo' => 'image/jpeg,image/png',
-      'video' => 'video/mp4',
-      _ => '*/*',
+      'photo' => 'image/jpeg,image/png,image/gif,image/webp',
+      _ => 'application/pdf,.docx,.xlsx,.pptx',
     };
     final picker = html.FileUploadInputElement()
       ..accept = accept
@@ -81,16 +81,12 @@ class _PublicationsPageState extends State<PublicationsPage> {
     if (files == null) return;
     if (files.isEmpty) return;
     final file = files.first;
-    final maxBytes = _mediaType == 'photo'
-        ? 10 * 1024 * 1024
-        : 20 * 1024 * 1024;
+    const maxBytes = 20 * 1024 * 1024;
     if (file.size > maxBytes) {
       if (mounted) {
         toast(
           context,
-          _mediaType == 'photo'
-              ? 'حجم الصورة يتجاوز 10 ميغابايت'
-              : 'حجم الملف يتجاوز 20 ميغابايت',
+          'حجم المرفق يتجاوز 20 ميغابايت',
           error: true,
         );
       }
@@ -166,7 +162,11 @@ class _PublicationsPageState extends State<PublicationsPage> {
     try {
       final result = await widget.api.upload(
         '/api/admin/publications/preview',
-        fields: {'caption': caption, 'media_type': _hasMedia ? _mediaType : ''},
+        fields: {
+          'caption': caption,
+          'media_type': _hasMedia ? _mediaType : '',
+          'category': _category,
+        },
         filename: _filename,
         bytes: _mediaBytes,
       );
@@ -195,7 +195,8 @@ class _PublicationsPageState extends State<PublicationsPage> {
     final confirmed = await confirmDialog(
       context,
       'تأكيد نشر المحتوى',
-      'سيصل المحتوى إلى $_recipients مستخدم. لا يمكن التراجع عن الرسائل التي وصلت بالفعل.',
+      'سيصل المنشور إلى $_recipients مستخدم مشترك في الإشعارات. '
+          'لا يمكن التراجع عن الرسائل التي وصلت بالفعل.',
       okLabel: 'نشر الآن',
       danger: true,
     );
@@ -206,6 +207,7 @@ class _PublicationsPageState extends State<PublicationsPage> {
         'caption': _caption.text.trim(),
         'media_type': _hasMedia ? _mediaType : '',
         'file_id': _previewFileId ?? '',
+        'category': _category,
       });
       if (!mounted) return;
       if (result['job_id'] is! int) {
@@ -273,36 +275,57 @@ class _PublicationsPageState extends State<PublicationsPage> {
           onPressed: _loading ? null : _loadSummary,
           icon: const Icon(Icons.refresh),
         ),
-        child: PublicationComposer(
-          captionController: _caption,
-          mediaType: _mediaType,
-          mediaBytes: _mediaBytes,
-          filename: _filename,
-          recipients: _recipients,
-          loadingRecipients: _loading,
-          countCapped: _countCapped,
-          busy: _busy,
-          previewSent: _previewSent,
-          jobActive: _jobActive,
-          cancelRequested: _cancelRequested,
-          onCaptionChanged: (_) => setState(() {
-            if (_previewSent) {
-              _previewSent = false;
-              _previewFileId = null;
-            }
-          }),
-          onMediaTypeChanged: (value) => setState(() {
-            _mediaType = value;
-            _mediaBytes = null;
-            _filename = null;
-            _previewFileId = null;
-            _previewSent = false;
-          }),
-          onPickFile: _pickFile,
-          onClearMedia: _clearMedia,
-          onSendPreview: _sendPreview,
-          onPublish: _publish,
-          onCancelJob: _cancelJob,
+        child: Column(
+          children: [
+            DropdownButtonFormField<String>(
+              initialValue: _category,
+              decoration: const InputDecoration(labelText: 'نوع المنشور'),
+              items: const [
+                DropdownMenuItem(value: 'security', child: Text('أمني')),
+                DropdownMenuItem(value: 'public', child: Text('عام')),
+                DropdownMenuItem(value: 'important', child: Text('هام')),
+              ],
+              onChanged: _busy
+                  ? null
+                  : (value) => setState(() {
+                      if (value != null) _category = value;
+                      _previewSent = false;
+                      _previewFileId = null;
+                    }),
+            ),
+            const SizedBox(height: 12),
+            PublicationComposer(
+              captionController: _caption,
+              mediaType: _mediaType,
+              mediaBytes: _mediaBytes,
+              filename: _filename,
+              recipients: _recipients,
+              loadingRecipients: _loading,
+              countCapped: _countCapped,
+              busy: _busy,
+              previewSent: _previewSent,
+              jobActive: _jobActive,
+              cancelRequested: _cancelRequested,
+              onCaptionChanged: (_) => setState(() {
+                if (_previewSent) {
+                  _previewSent = false;
+                  _previewFileId = null;
+                }
+              }),
+              onMediaTypeChanged: (value) => setState(() {
+                _mediaType = value;
+                _mediaBytes = null;
+                _filename = null;
+                _previewFileId = null;
+                _previewSent = false;
+              }),
+              onPickFile: _pickFile,
+              onClearMedia: _clearMedia,
+              onSendPreview: _sendPreview,
+              onPublish: _publish,
+              onCancelJob: _cancelJob,
+            ),
+          ],
         ),
       ),
       if (_job != null) ...[

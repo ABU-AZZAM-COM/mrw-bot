@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -336,7 +337,7 @@ def register_dashboard(app: Any) -> None:
         if refuse:
             return refuse
         try:
-            from app import main as bot_main
+            bot_main = importlib.import_module("app.main")
             db = bot_main.app.bot_data.get("db") if bot_main.app else None
             if db is None:
                 return JSONResponse({"ok": False, "error": "bot_not_ready"}, status_code=503)

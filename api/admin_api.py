@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import ipaddress
 import json
 import logging
@@ -38,7 +39,13 @@ from fastapi import Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse  # noqa: E402
 
 from bot import keyboards, texts  # noqa: E402
-from services import utils, verified_reporters, word_filter  # noqa: E402
+from services import (  # noqa: E402
+    chat_attachments,
+    utils,
+    verified_reporters,
+    word_filter,
+)
+from services.report_taxonomy import REPORT_CATEGORIES
 from database import (
     STATUS_AWAITING_INFO,
     STATUS_CLOSED_NO_RESPONSE,
@@ -52,11 +59,15 @@ from database import (
 logger = logging.getLogger(__name__)
 
 MAX_PAGE_SIZE = 100
+
+
+def _main_module():
+    return importlib.import_module("app.main")
 DEFAULT_PAGE_SIZE = 20
 MAX_TEXT = 2000
 ADMIN_PERMISSIONS = {
     "read", "review", "users", "operate", "export", "delete", "identity",
-    "identity_documents", "identity_delete",
+    "identity_documents", "identity_delete", "contact_users",
 }
 ROLE_PERMISSIONS = {
     "viewer": {"read"},
@@ -288,7 +299,19 @@ def _auth(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
 
     method = getattr(request, "method", "POST").upper()
-    if path.startswith("/api/admin/verified-reporters/") and path.endswith("/delete"):
+    if (
+        path == "/api/admin/contact-settings"
+        or path.startswith("/api/admin/conversations")
+        or (
+            path.startswith("/api/admin/users/")
+            and any(
+                marker in path
+                for marker in ("/messages", "/message", "/media", "/contact")
+            )
+        )
+    ):
+        permission = "contact_users"
+    elif path.startswith("/api/admin/verified-reporters/") and path.endswith("/delete"):
         permission = "identity_delete"
     elif path.startswith("/api/admin/verified-reporters") and (
         "/documents/" in path or path.endswith("/pdf")
@@ -417,7 +440,7 @@ def _sanitize_public_source_url(value: str) -> str | None:
 # ==================================================================
 def _bot_runtime():
     """(bot, loop) إذا كان البوت حيًّا، أو (None, None)."""
-    from app import main as bot_main  # noqa: PLC0415 — ضمن الدالة لتجنب الدوران
+    bot_main = _main_module()
 
     app = getattr(bot_main, "app", None)
     bot = getattr(app, "bot", None)
@@ -541,10 +564,21 @@ def _parse_html():
     return ParseMode.HTML
 
 
-def _publication_delivery_text(caption: str, media_type: str) -> str:
+PUBLICATION_CATEGORY_LABELS = {
+    "security": "أمني",
+    "public": "عام",
+    "important": "هام",
+}
+
+
+def _publication_delivery_text(
+    caption: str, media_type: str, category: str = "public"
+) -> str:
+    category_label = PUBLICATION_CATEGORY_LABELS.get(category, "عام")
     if media_type:
-        return f"📨 منشور من الجهة المختصة\n\n{caption}".strip()
-    return texts.BROADCAST_NOTIF.format(text=utils.esc(caption))
+        return f"📨 منشور {category_label} من الجهة المختصة\n\n{caption}".strip()
+    content = f"منشور {category_label}\n\n{caption}"
+    return texts.BROADCAST_NOTIF.format(text=utils.esc(content))
 
 
 # ==================================================================
@@ -807,8 +841,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         })
 
     def db_of() -> Any:  # noqa: ANN202
-        from app import main as bot_main  # noqa: PLC0415
-
+        bot_main = _main_module()
         return bot_main.app.bot_data["db"]
 
     app.state.admin_db_provider = db_of
@@ -2718,57 +2751,34 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         db = db_of()
         if not await db.user_profile(uid):
             return bad("not_found", 404)
-        if not await db.user_contact_enabled(uid):
-            return bad("direct_contact_disabled", 403)
         await db.open_user_conversation(uid)
-        result = await _send_direct_message_result(uid, text)
-        sent = result.get("sent") is True
-        telegram_id = (
-            int(result["message_id"])
-            if isinstance(result.get("message_id"), int)
-            else None
+        message_id = await db.add_user_message(
+            uid,
+            "out",
+            text,
+            _admin_actor(request),
+            delivery_status="delivered",
         )
-        logged_message = (
-            await db.get_user_message_by_telegram_id(uid, telegram_id)
-            if sent and telegram_id is not None else None
-        )
-        message_id = int(logged_message["id"]) if logged_message else (
-            await db.add_user_message(
+        preferences = await db.user_contact_preferences(uid)
+        alert_sent = False
+        if preferences["telegram_reply_alerts"]:
+            alert_sent = await _send_direct_message(
                 uid,
-                "out",
-                f"📨 رسالة من الجهة المختصة:\n\n{text}" if sent else text,
-                _admin_actor(request),
-                delivery_status="delivered" if sent else "failed",
-                error_code=None if sent else str(
-                    result.get("error_code") or "telegram_send_failed"
-                ),
-                telegram_message_id=telegram_id,
-            )
-        )
-        if not sent:
-            error_code = str(result.get("error_code") or "telegram_send_failed")
-            await db.audit(
-                _admin_actor(request),
-                "user_message_failed",
-                str(uid),
-                f"message_id={message_id}; error={error_code}",
-            )
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "sent": False,
-                    "message_id": message_id,
-                    "error": error_code,
-                },
-                status_code=502,
+                "لديك رد جديد من الإدارة في محادثة التواصل. افتح التطبيق لقراءته.",
             )
         await db.audit(
             _admin_actor(request),
             "user_message",
             str(uid),
-            f"message_id={message_id}; sent",
+            f"message_id={message_id}; telegram_alert="
+            f"{'sent' if alert_sent else 'disabled_or_failed'}",
         )
-        return JSONResponse({"ok": True, "sent": True, "message_id": message_id})
+        return JSONResponse({
+            "ok": True,
+            "sent": True,
+            "message_id": message_id,
+            "telegram_alert_sent": alert_sent,
+        })
 
     @app.post("/api/admin/users/{uid}/media")
     async def message_user_media(uid: int, request: Request) -> JSONResponse:
@@ -2778,112 +2788,72 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         db = db_of()
         if not await db.user_profile(uid):
             return bad("not_found", 404)
-        if not await db.user_contact_enabled(uid):
-            return bad("direct_contact_disabled", 403)
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > chat_attachments.MAX_CHAT_ATTACHMENT_BYTES + 512 * 1024:
+                    return bad("media_too_large", 413)
+            except ValueError:
+                return bad("bad_content_length")
         try:
             form = await request.form()
         except Exception:
             logger.exception("تعذر قراءة وسيط الرسالة المباشرة")
             return bad("multipart_unavailable", 503)
-        media_type = str(form.get("media_type") or "").strip()
         caption = str(form.get("caption") or "").strip()
         upload = form.get("media")
-        if media_type not in {"photo", "video", "audio", "voice", "document"}:
-            return bad("bad_media_type")
         if len(caption) > 1000:
             return bad("caption_too_long")
         if not hasattr(upload, "read"):
             return bad("media_required")
-        filename = os.path.basename(str(getattr(upload, "filename", "") or "attachment"))
-        filename = filename.replace("\x00", "")[:180] or "attachment"
-        limit = 10 * 1024 * 1024 if media_type == "photo" else 20 * 1024 * 1024
-        media_data = await upload.read(limit + 1)
-        if len(media_data) > limit:
-            return bad("media_too_large", 413)
-        if not media_data:
-            return bad("empty_media")
-        if media_type == "photo" and _image_media_type(media_data, filename) not in {
-            "image/jpeg", "image/png",
-        }:
-            return bad("unsupported_photo_format")
-        if media_type == "video" and (
-            len(media_data) < 12 or media_data[4:8] != b"ftyp"
-        ):
-            return bad("invalid_video_format")
-        if media_type == "voice" and not filename.lower().endswith((".ogg", ".oga")):
-            return bad("invalid_voice_format")
-
-        from telegram import InputFile  # noqa: PLC0415
-        from telegram.error import BadRequest, Forbidden, NetworkError  # noqa: PLC0415
-
-        bot, _loop = _bot_runtime()
-        if bot is None:
-            return bad("bot_not_ready", 503)
-        method = {
-            "photo": "send_photo",
-            "video": "send_video",
-            "audio": "send_audio",
-            "voice": "send_voice",
-            "document": "send_document",
-        }[media_type]
-        field = {
-            "photo": "photo",
-            "video": "video",
-            "audio": "audio",
-            "voice": "voice",
-            "document": "document",
-        }[media_type]
-
-        async def _send():
-            telegram_method = getattr(bot, method)
-            return await telegram_method(
-                chat_id=uid,
-                caption=caption or None,
-                **{field: InputFile(media_data, filename=filename)},
-            )
-
+        filename = chat_attachments.sanitize_attachment_filename(
+            getattr(upload, "filename", None)
+        )
         try:
-            message = await _on_bot_loop_value(_send)
-        except Forbidden:
-            return bad("user_blocked_bot", 502)
-        except BadRequest:
-            return bad("recipient_unavailable", 502)
-        except NetworkError:
-            return bad("telegram_network_error", 502)
-        except Exception:
-            logger.exception("تعذر إرسال وسيط إلى المستخدم %s", uid)
-            return bad("telegram_send_failed", 502)
-        if message is None:
-            return bad("bot_not_ready", 503)
-        media_obj = getattr(message, media_type, None)
-        if media_type == "photo":
-            photos = getattr(message, "photo", None) or []
-            media_obj = photos[-1] if photos else None
-        await db.open_user_conversation(uid)
-        telegram_id = getattr(message, "message_id", None)
-        logged_message = (
-            await db.get_user_message_by_telegram_id(uid, int(telegram_id))
-            if isinstance(telegram_id, int) else None
-        )
-        message_id = int(logged_message["id"]) if logged_message else (
-            await db.add_user_message(
-                uid,
-                "out",
-                caption or f"[وسيط: {media_type}]",
-                _admin_actor(request),
-                media_type=media_type,
-                telegram_file_id=getattr(media_obj, "file_id", None),
-                telegram_message_id=telegram_id,
-                filename=filename,
+            media_data = await upload.read(
+                chat_attachments.MAX_CHAT_ATTACHMENT_BYTES + 1
             )
+        finally:
+            await upload.close()
+        if len(media_data) > chat_attachments.MAX_CHAT_ATTACHMENT_BYTES:
+            return bad("media_too_large", 413)
+        detected = chat_attachments.validate_chat_attachment(media_data, filename)
+        if detected is None:
+            return bad("unsupported_attachment", 415)
+        detected_kind, content_type = detected
+        media_type = "photo" if detected_kind == "image" else "document"
+        await db.open_user_conversation(uid)
+        message_id = await db.add_user_message(
+            uid,
+            "out",
+            caption or f"[مرفق: {filename}]",
+            _admin_actor(request),
+            media_type=media_type,
+            filename=filename,
+            attachment_data=media_data,
+            attachment_content_type=content_type,
         )
+        preferences = await db.user_contact_preferences(uid)
+        alert_sent = False
+        if preferences["telegram_reply_alerts"]:
+            alert_sent = await _send_direct_message(
+                uid,
+                "لديك مرفق جديد من الإدارة في محادثة التواصل. افتح التطبيق لعرضه.",
+            )
         await db.audit(
             _admin_actor(request),
             "user_media_message",
             str(uid),
-            f"message_id={message_id}; type={media_type}",
+            f"message_id={message_id}; type={media_type}; "
+            f"size={len(media_data)}; telegram_alert="
+            f"{'sent' if alert_sent else 'disabled_or_failed'}",
         )
-        return JSONResponse({"ok": True, "sent": True, "message_id": message_id})
+        return JSONResponse({
+            "ok": True,
+            "sent": True,
+            "message_id": message_id,
+            "telegram_alert_sent": alert_sent,
+        })
 
     @app.get("/api/admin/conversations")
     async def conversations(request: Request) -> JSONResponse:
@@ -2899,7 +2869,57 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         items = await db_of().list_user_conversations(
             request.query_params.get("q"), limit
         )
-        return JSONResponse({"ok": True, "items": items})
+        global_raw = await db_of().get_state("contact_global_enabled")
+        return JSONResponse({
+            "ok": True,
+            "items": items,
+            "contact_global_enabled": global_raw != "0",
+        })
+
+    @app.get("/api/admin/contact-settings")
+    async def get_contact_settings(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        raw = await db_of().get_state("contact_global_enabled")
+        return JSONResponse({"ok": True, "enabled": raw != "0"})
+
+    @app.put("/api/admin/contact-settings")
+    async def update_contact_settings(request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return bad("bad_contact_setting")
+        db = db_of()
+        await db.set_state("contact_global_enabled", "1" if enabled else "0")
+        await db.audit(
+            _admin_actor(request),
+            "contact_global_enabled",
+            "all_users",
+            "enabled" if enabled else "disabled",
+        )
+        return JSONResponse({"ok": True, "enabled": enabled})
+
+    @app.delete("/api/admin/conversations/{uid}")
+    async def delete_user_conversation(uid: int, request: Request) -> JSONResponse:
+        refuse = _auth(request)
+        if refuse:
+            return refuse
+        body = await _json(request)
+        reason = str(body.get("reason") or "").strip()
+        if not 5 <= len(reason) <= 500:
+            return bad("deletion_reason_required")
+        deleted = await db_of().delete_user_conversation(
+            uid,
+            _admin_actor(request),
+            reason,
+        )
+        if not deleted:
+            return bad("conversation_not_found", 404)
+        return JSONResponse({"ok": True})
 
     @app.get("/api/admin/users/{uid}/messages")
     async def user_messages(uid: int, request: Request) -> JSONResponse:
@@ -2921,13 +2941,20 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             "can_manage_messages": (
                 getattr(request.state, "admin_role", "") == "owner"
             ),
+            "can_delete_conversation": "contact_users" in getattr(
+                request.state, "admin_permissions", []
+            ),
             "items": [
                 {
                     key: value
                     for key, value in item.items()
                     if key != "telegram_file_id"
                 }
-                | {"has_media": bool(item.get("telegram_file_id"))}
+                | {
+                    "has_media": bool(
+                        item.get("telegram_file_id") or item.get("has_attachment")
+                    )
+                }
                 for item in await db.list_user_messages(uid, after_id, limit)
             ],
         })
@@ -2943,6 +2970,23 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if not messages or int(messages[0]["id"]) != message_id:
             return bad("not_found", 404)
         item = messages[0]
+        if item.get("is_deleted"):
+            return bad("media_not_available", 404)
+        attachment = await db_of().get_user_message_attachment(uid, message_id)
+        if attachment is not None:
+            return Response(
+                content=attachment["data"],
+                media_type=attachment["content_type"],
+                headers={
+                    "Cache-Control": "private, no-store",
+                    "Content-Disposition": (
+                        "attachment; filename*=UTF-8''"
+                        + urllib.parse.quote(attachment["filename"])
+                    ),
+                    "X-Content-Type-Options": "nosniff",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
         file_id = str(item.get("telegram_file_id") or "")
         if not file_id:
             return bad("media_not_available", 404)
@@ -2963,13 +3007,12 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("bot_not_ready", 503)
         media_type = str(item.get("media_type") or "")
         filename = str(item.get("filename") or "")
-        guessed = mimetypes.guess_type(filename)[0]
-        content_type = guessed or {
-            "photo": "image/jpeg",
-            "video": "video/mp4",
-            "voice": "audio/ogg",
-            "audio": "audio/mpeg",
-        }.get(media_type, "application/octet-stream")
+        if media_type == "photo":
+            filename = "attachment.jpg"
+        detected = chat_attachments.validate_chat_attachment(bytes(data), filename)
+        if detected is None:
+            return bad("unsupported_attachment", 415)
+        _media_kind, content_type = detected
         return Response(
             content=bytes(data),
             media_type=content_type,
@@ -2979,6 +3022,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                     "attachment; filename*=UTF-8''"
                     + urllib.parse.quote(filename or f"message-{message_id}")
                 ),
+                "X-Content-Type-Options": "nosniff",
             },
         )
 
@@ -3663,7 +3707,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         refuse = _auth(request)
         if refuse:
             return refuse
-        ids, overflow = await db_of().all_user_ids(cap=100_000)
+        ids, overflow = await db_of().publication_subscriber_ids(cap=100_000)
         return JSONResponse({
             "ok": True,
             "recipients": len(ids),
@@ -3684,9 +3728,12 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("multipart_unavailable", 503)
         caption = str(form.get("caption") or "").strip()
         media_type = str(form.get("media_type") or "").strip()
+        category = str(form.get("category") or "public").strip()
         upload = form.get("media")
         if len(caption) > 900:
             return bad("caption_too_long")
+        if category not in PUBLICATION_CATEGORY_LABELS:
+            return bad("bad_publication_category")
         if media_type not in {"", "photo", "video", "document"}:
             return bad("bad_media_type")
         if media_type and not upload:
@@ -3701,7 +3748,10 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             filename = os.path.basename(str(getattr(upload, "filename", "") or "attachment"))
             filename = filename.replace("\x00", "")[:180] or "attachment"
             limit = 10 * 1024 * 1024 if media_type == "photo" else 20 * 1024 * 1024
-            media_data = await upload.read(limit + 1)
+            try:
+                media_data = await upload.read(limit + 1)
+            finally:
+                await upload.close()
             if len(media_data) > limit:
                 return bad("media_too_large", 413)
             if not media_data:
@@ -3731,7 +3781,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 
         async def _send_preview():
             try:
-                text = _publication_delivery_text(caption, media_type)
+                text = _publication_delivery_text(caption, media_type, category)
                 if not media_type:
                     await bot.send_message(
                         chat_id=admin_id,
@@ -3782,6 +3832,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         return JSONResponse({
             "ok": True,
             "preview_sent": True,
+            "category": category,
             "media_type": media_type or None,
             "file_id": result.get("file_id"),
             "filename": filename if media_type else None,
@@ -3796,16 +3847,19 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         caption = str(body.get("caption") or "").strip()
         media_type = str(body.get("media_type") or "").strip()
         file_id = str(body.get("file_id") or "").strip()
+        category = str(body.get("category") or "public").strip()
         if len(caption) > 900:
             return bad("caption_too_long")
         if media_type not in {"", "photo", "video", "document"}:
             return bad("bad_media_type")
+        if category not in PUBLICATION_CATEGORY_LABELS:
+            return bad("bad_publication_category")
         if media_type and not file_id:
             return bad("media_preview_required")
         if not media_type and len(caption) < 3:
             return bad("publication_content_required")
         db = db_of()
-        ids, overflow = await db.all_user_ids(cap=100_000)
+        ids, overflow = await db.publication_subscriber_ids(cap=100_000)
         if overflow:
             return bad("recipient_limit_exceeded", 413)
         if not ids:
@@ -3815,7 +3869,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("bot_not_ready", 503)
         actor_id = _admin_actor(request)
         job_id = await db.create_broadcast_job(
-            caption or f"منشور وسائط: {media_type}",
+            f"[{category}] " + (caption or f"منشور وسائط: {media_type}"),
             actor_id,
             len(ids),
             media_type or "text",
@@ -3824,7 +3878,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("broadcast_in_progress", 409)
 
         async def _send_to_user(user_id: int) -> None:
-            text = _publication_delivery_text(caption, media_type)
+            text = _publication_delivery_text(caption, media_type, category)
             if not media_type:
                 return await bot.send_message(
                     chat_id=user_id,
@@ -3892,7 +3946,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                     actor_id,
                     "publication_sent",
                     str(job_id),
-                    f"type={media_type or 'text'}; sent={sent}; failed={failed}",
+                    f"category={category}; type={media_type or 'text'}; "
+                    f"sent={sent}; failed={failed}",
                 )
             except Exception:
                 logger.exception("Publication job %s failed", job_id)
@@ -4200,7 +4255,13 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if refuse:
             return refuse
         db = db_of()
-        return JSONResponse({"ok": True, "items": await db.effective_vtypes()})
+        items = await db.effective_vtypes()
+        return JSONResponse({
+            "ok": True,
+            "items": items,
+            "categories": REPORT_CATEGORIES,
+            "groups": await db.effective_vtype_groups(),
+        })
 
     @app.put("/api/admin/vtypes")
     async def vtypes_put(request: Request) -> JSONResponse:
@@ -4221,10 +4282,53 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         if not 3 <= len(clean) <= 12:
             return bad("bad_list")
         db = db_of()
+        previous_items = await db.effective_vtypes()
+        raw_groups = body.get("groups")
+        if raw_groups is None:
+            previous_groups = await db.effective_vtype_groups()
+            groups = {
+                category: [
+                    item
+                    for item in clean
+                    if item in previous_groups[category]
+                    or item not in previous_items
+                ]
+                for category in REPORT_CATEGORIES
+            }
+        else:
+            if (
+                not isinstance(raw_groups, dict)
+                or set(raw_groups) != set(REPORT_CATEGORIES)
+            ):
+                return bad("bad_type_groups")
+            groups = {}
+            for category in REPORT_CATEGORIES:
+                values = raw_groups[category]
+                if not isinstance(values, list):
+                    return bad("bad_type_groups")
+                selected, selected_seen = [], set()
+                for value in values:
+                    if not isinstance(value, str) or value not in clean:
+                        return bad("bad_type_groups")
+                    if value not in selected_seen:
+                        selected.append(value)
+                        selected_seen.add(value)
+                groups[category] = selected
+        if any(not groups[category] for category in REPORT_CATEGORIES):
+            return bad("empty_type_group")
+        assigned = {item for values in groups.values() for item in values}
+        if any(item not in assigned for item in clean):
+            return bad("unassigned_types")
         await db.set_vtypes_override(clean)
+        await db.set_vtype_groups(groups)
         await db.audit(_admin_actor(request), "vtypes_changed", "التصنيفات",
                        " / ".join(clean))
-        return JSONResponse({"ok": True, "items": clean})
+        return JSONResponse({
+            "ok": True,
+            "items": clean,
+            "categories": REPORT_CATEGORIES,
+            "groups": groups,
+        })
 
     # ------------------------------------------------------------------
     # أزرار قائمة المستخدم — تعديل حي يطبَّق على البوت فورًا
@@ -5058,8 +5162,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
 
         db = db_of()
         await db.set_welcome_photo(photo_bytes, content_type, filename)
-        from app import main as bot_main  # noqa: PLC0415
-
+        bot_main = _main_module()
         app = getattr(bot_main, "app", None)
         loop = getattr(app, "bot_data", {}).get("loop") if app else None
         if loop is not None and loop.is_running():
@@ -5092,8 +5195,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return refuse
         db = db_of()
         deleted = await db.delete_welcome_photo()
-        from app import main as bot_main  # noqa: PLC0415
-
+        bot_main = _main_module()
         app = getattr(bot_main, "app", None)
         loop = getattr(app, "bot_data", {}).get("loop") if app else None
         if loop is not None and loop.is_running():
@@ -5342,7 +5444,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 )
         import hub_backup  # noqa: PLC0415
 
-        from app import main as bot_main  # noqa: PLC0415
+        bot_main = _main_module()
 
         return JSONResponse({
             "ok": True,

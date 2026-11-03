@@ -31,6 +31,7 @@ class _AdminsPageState extends State<AdminsPage> {
     'identity': 'مراجعة طلبات المراسلين',
     'identity_documents': 'الاطلاع على صور الهوية وتنزيل ملف PDF (حساس)',
     'identity_delete': 'حذف صور ونسخ وثائق الهوية (سبب إلزامي)',
+    'contact_users': 'إدارة محادثات التواصل ومرفقاتها',
   };
   static const _rolePermissions = <String, Set<String>>{
     'viewer': {'read'},
@@ -44,6 +45,7 @@ class _AdminsPageState extends State<AdminsPage> {
       'export',
       'delete',
       'identity',
+      'contact_users',
     },
   };
 

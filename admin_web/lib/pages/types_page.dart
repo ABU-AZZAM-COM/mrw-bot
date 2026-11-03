@@ -15,6 +15,8 @@ class TypesPage extends StatefulWidget {
 
 class _TypesPageState extends State<TypesPage> {
   List<String> _items = [];
+  Map<String, String> _categories = {};
+  Map<String, Set<String>> _groups = {};
   bool _loading = true;
   bool _dirty = false;
   bool _busy = false;
@@ -31,8 +33,21 @@ class _TypesPageState extends State<TypesPage> {
     try {
       final d = await widget.api.get('/api/admin/vtypes');
       if (!mounted) return;
+      final items = List<String>.from(d['items'] ?? <dynamic>[]);
+      final categories = Map<String, String>.from(
+        d['categories'] ?? const <String, String>{},
+      );
+      final rawGroups = d['groups'];
+      final groups = <String, Set<String>>{
+        for (final entry in categories.entries)
+          entry.key: rawGroups is Map && rawGroups[entry.key] is List
+              ? Set<String>.from(rawGroups[entry.key] as List)
+              : items.toSet(),
+      };
       setState(() {
-        _items = List<String>.from(d['items'] ?? <dynamic>[]);
+        _items = items;
+        _categories = categories;
+        _groups = groups;
         _loading = false;
         _dirty = false;
         _err = null;
@@ -65,6 +80,9 @@ class _TypesPageState extends State<TypesPage> {
     }
     setState(() {
       _items.add(t);
+      for (final category in _categories.keys) {
+        _groups.putIfAbsent(category, () => <String>{}).add(t);
+      }
       _dirty = true;
     });
   }
@@ -81,7 +99,10 @@ class _TypesPageState extends State<TypesPage> {
 
   void _delType(int i) {
     setState(() {
-      _items.removeAt(i);
+      final removed = _items.removeAt(i);
+      for (final values in _groups.values) {
+        values.remove(removed);
+      }
       _dirty = true;
     });
   }
@@ -94,6 +115,22 @@ class _TypesPageState extends State<TypesPage> {
       toast(context, 'القائمة من 3 إلى 12 تصنيفاً', error: true);
       return;
     }
+    if (_categories.keys.any((key) => _groups[key]?.isEmpty ?? true)) {
+      toast(context, 'يجب إبقاء نوع واحد على الأقل داخل كل قسم', error: true);
+      return;
+    }
+    if (items.any(
+      (item) => !_groups.values.any((values) => values.contains(item)),
+    )) {
+      toast(context, 'اربط كل نوع بقسم واحد على الأقل', error: true);
+      return;
+    }
+    final groups = <String, List<String>>{
+      for (final category in _categories.keys)
+        category: items
+            .where((item) => _groups[category]?.contains(item) ?? false)
+            .toList(),
+    };
     final ok = await confirmDialog(
       context,
       'حفظ قائمة التصنيفات',
@@ -104,7 +141,10 @@ class _TypesPageState extends State<TypesPage> {
     if (!ok) return;
     setState(() => _busy = true);
     try {
-      final d = await widget.api.put('/api/admin/vtypes', {'items': items});
+      final d = await widget.api.put('/api/admin/vtypes', {
+        'items': items,
+        'groups': groups,
+      });
       if (!mounted) return;
       toast(
         context,
@@ -138,16 +178,51 @@ class _TypesPageState extends State<TypesPage> {
               SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'تنبيه: حفظ القائمة يبدّل أزرار «اختيار نوع المخالفة» في البوت فورًا — البلاغات القديمة لا تتأثر',
+                  'اختر الأقسام التي يظهر داخلها كل نوع. حفظ التعديلات يحدّث التصنيفات في البوت وMini App؛ البلاغات القديمة لا تتأثر.',
                   style: TextStyle(color: Color(0xFFFFD166)),
                 ),
               ),
             ],
           ),
+              for (final item in _items)
+          Padding(
+            padding: const EdgeInsetsDirectional.only(
+              start: 28,
+              bottom: 8,
+            ),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                for (final category in _categories.entries)
+                  FilterChip(
+                    label: Text(category.value),
+                    selected:
+                        _groups[category.key]?.contains(item) ?? false,
+                    onSelected: _busy
+                        ? null
+                        : (selected) {
+                            setState(() {
+                              final values = _groups.putIfAbsent(
+                                category.key,
+                                () => <String>{},
+                              );
+                              if (selected) {
+                                values.add(item);
+                              } else {
+                                values.remove(item);
+                              }
+                              _dirty = true;
+                            });
+                          },
+                  ),
+              ],
+            ),
+          ),
         ),
         const SizedBox(height: 10),
         SectionCard(
-          'قائمة أنواع المخالفات (${_items.length}) — السقف 3 إلى 12',
+          'أنواع البلاغات (${_items.length}) — السقف 3 إلى 12',
           icon: Icons.category,
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
@@ -208,7 +283,7 @@ class _TypesPageState extends State<TypesPage> {
                   ],
                 ),
               if (_items.isEmpty)
-                const Text('لا تصنيفات — أضف 3 على الأقل قبل الحفظ'),
+                const Text('لا أنواع — أضف 3 على الأقل قبل الحفظ'),
             ],
           ),
         ),

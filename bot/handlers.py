@@ -71,6 +71,7 @@ from bot.keyboards import (
     REPORT_CATEGORIES,
     SOCIAL_PLATFORM_LABELS,
     report_category_kb,
+    report_type_kb,
     social_platform_kb,
     optional_step_kb,
     contact_request_kb,
@@ -126,6 +127,7 @@ async def _typing_while_processing(bot, chat_id: int):
     ASK_REPORT_APPEAL,
 ) = range(15)
 ASK_VERIFICATION_SUPPLEMENT = 15
+ASK_TYPE = 16
 SUPPORT_MAX_LENGTH = 1000
 SUPPORT_MAX_WORDS = 100
 SUPPORT_MAX_PER_10_MINUTES = 3
@@ -184,6 +186,9 @@ async def _welcome_content(db: Database) -> tuple[str, ParseMode | None]:
     custom = profile.get("welcome_text") if isinstance(profile, dict) else None
     if isinstance(custom, str) and custom.strip():
         return custom.strip(), None
+    managed = await db.get_bot_text("welcome_message")
+    if managed and managed.strip():
+        return managed.strip(), ParseMode.HTML
     return texts.WELCOME, ParseMode.HTML
 
 
@@ -295,6 +300,23 @@ async def _clear_user_prompt(context: ContextTypes.DEFAULT_TYPE) -> str | None:
                 exc_info=True,
             )
     return prompt.get("keyboard_kind")
+
+
+async def _clear_welcome_photo(context: ContextTypes.DEFAULT_TYPE) -> None:
+    photo = context.user_data.pop("_welcome_photo_prompt", None)
+    if not isinstance(photo, dict):
+        return
+    try:
+        await context.bot.delete_message(
+            chat_id=photo["chat_id"],
+            message_id=photo["message_id"],
+        )
+    except TelegramError:
+        logger.info(
+            "تعذر حذف صورة الترحيب المؤقتة %s",
+            photo.get("message_id"),
+            exc_info=True,
+        )
 
 
 async def _send_clean_prompt(
@@ -415,6 +437,11 @@ async def _show_report_step(
                 "privacy_report_link",
                 url=utils.esc(privacy_url),
             )
+    elif step == ASK_TYPE:
+        category = ud.get("report_category_key")
+        types = (await _db(context).effective_vtype_groups()).get(category, [])
+        text = texts.INLINE_MESSAGES["report_type_prompt"]
+        markup = report_type_kb(types)
     elif step == ASK_PLATFORM:
         text = texts.CATEGORY_INTROS["social"] + "\n\n" + texts.PLATFORM_PROMPT
         markup = social_platform_kb()
@@ -520,6 +547,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.log_event(user.id, "start")
 
     await _discard_verification_capture(context, user.id)
+    await _clear_welcome_photo(context)
     active_prompt = context.user_data.get(ACTIVE_PROMPT_KEY)
     context.user_data.clear()
     if active_prompt:
@@ -536,9 +564,25 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome_photo.get("data"), bytes
     ):
         try:
-            await update.effective_message.reply_photo(photo=welcome_photo["data"])
+            photo_message = await update.effective_message.reply_photo(
+                photo=welcome_photo["data"]
+            )
+            context.user_data["_welcome_photo_prompt"] = {
+                "chat_id": photo_message.chat_id,
+                "message_id": photo_message.message_id,
+            }
         except Exception:
             logger.exception("تعذر إرسال صورة الترحيب للمستخدم %s", user.id)
+    if command == "/start":
+        await _send_clean_prompt(
+            update,
+            context,
+            welcome,
+            parse_mode=parse_mode,
+            reply_markup=keyboards.welcome_continue_kb(),
+        )
+        await _delete_user_message(update, context)
+        return ConversationHandler.END
     await _send_clean_prompt(
         update,
         context,
@@ -1358,8 +1402,33 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return None
 
     violation_type = str(data.get("type") or "").strip()
+    category_key = str(data.get("category") or "").strip()
+    if category_key and category_key not in REPORT_CATEGORIES:
+        await update.effective_message.reply_text(
+            texts.INLINE_MESSAGES["unknown_category"],
+            parse_mode=ParseMode.HTML,
+        )
+        return None
+    if category_key and not violation_type:
+        await update.effective_message.reply_text(
+            texts.INLINE_MESSAGES["violation_type_unavailable"],
+            parse_mode=ParseMode.HTML,
+        )
+        return None
     if violation_type:
-        if len(violation_type) > 60 or violation_type not in await db.effective_vtypes():
+        if len(violation_type) > 60:
+            await update.effective_message.reply_text(
+                texts.INLINE_MESSAGES["violation_type_unavailable"],
+                parse_mode=ParseMode.HTML,
+            )
+            return None
+        if category_key:
+            allowed_types = (
+                await db.effective_vtype_groups()
+            ).get(category_key, [])
+        else:
+            allowed_types = await db.effective_vtypes()
+        if violation_type not in allowed_types:
             await update.effective_message.reply_text(
                 texts.INLINE_MESSAGES["violation_type_unavailable"],
                 parse_mode=ParseMode.HTML,
@@ -1409,6 +1478,7 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data.clear()
     context.user_data["app_draft"] = {
+        "category": REPORT_CATEGORIES.get(category_key),
         "violation_type": violation_type,
         "place": place,
         "description": description,
@@ -1507,6 +1577,7 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
             longitude=draft["lon"],
             source="app",
             platform=draft.get("platform") or "",
+            category=draft.get("category"),
             needs_review=1 if draft["suspect_duplicate"] or screening.review_required else 0,
             admin_note=context.user_data.get("image_moderation_flag") or None,
         )
@@ -1732,184 +1803,17 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def receive_support_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
-    """Persist a reporter's support message and notify configured admins."""
+    """Retire the legacy in-bot support flow without forwarding user content."""
     message = update.effective_message
-    user = update.effective_user
-    if not message or not user or not context.user_data.get("support_pending"):
-        if message:
-            await message.reply_text(texts.WELCOME_HINT, parse_mode=ParseMode.HTML)
-        return ConversationHandler.END
-
-    media_type = None
-    file_id = None
-    filename = None
-    if getattr(message, "photo", None):
-        media_type = "photo"
-        file_id = message.photo[-1].file_id
-    elif getattr(message, "video", None):
-        media_type = "video"
-        file_id = message.video.file_id
-        filename = message.video.file_name
-    elif getattr(message, "voice", None):
-        media_type = "voice"
-        file_id = message.voice.file_id
-        filename = "voice.ogg"
-    elif getattr(message, "audio", None):
-        media_type = "audio"
-        file_id = message.audio.file_id
-        filename = message.audio.file_name
-    elif getattr(message, "document", None):
-        media_type = "document"
-        file_id = message.document.file_id
-        filename = message.document.file_name
-    text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
-    word_count = len(text.split())
-    if word_count > SUPPORT_MAX_WORDS:
-        await _db(context).log_event(user.id, "support_message")
-        await _send_clean_prompt(
-            update,
-            context,
-            texts.INLINE_MESSAGES["support_too_many_words"],
-            parse_mode=ParseMode.HTML,
-            reply_markup=cancel_inline_kb(),
-        )
-        return ASK_SUPPORT
-    if media_type is None and not 2 <= len(text) <= SUPPORT_MAX_LENGTH:
-        await _db(context).log_event(user.id, "support_message")
-        await _send_clean_prompt(
-            update,
-            context,
-            texts.SUPPORT_TOO_LONG
-            if len(text) > SUPPORT_MAX_LENGTH
-            else texts.INLINE_MESSAGES["support_min_length"],
-            parse_mode=ParseMode.HTML,
-            reply_markup=cancel_inline_kb(),
-        )
-        return ASK_SUPPORT
-    db = _db(context)
-    now = datetime.now(timezone.utc)
-    ten_minute_count = await db.count_events(
-        (now - timedelta(minutes=10)).isoformat(timespec="seconds"),
-        user.id,
-        "support_message",
-    )
-    daily_count = await db.count_events(
-        (now - timedelta(days=1)).isoformat(timespec="seconds"),
-        user.id,
-        "support_message",
-    )
-    if (
-        ten_minute_count >= SUPPORT_MAX_PER_10_MINUTES
-        or daily_count >= SUPPORT_MAX_PER_DAY
-    ):
-        await _send_clean_prompt(
-            update,
-            context,
-            texts.INLINE_MESSAGES["support_rate_limited"],
-            parse_mode=ParseMode.HTML,
-            reply_markup=cancel_inline_kb(),
-        )
-        return ASK_SUPPORT
-    raw_wordlist = await db.get_state("support_blocklist")
-    try:
-        saved_wordlist = json.loads(raw_wordlist) if raw_wordlist else {"words": []}
-        words = saved_wordlist.get("words") if isinstance(saved_wordlist, dict) else None
-        if not isinstance(words, list) or any(
-            not isinstance(word, str) for word in words
-        ):
-            raise ValueError("invalid_support_blocklist")
-    except (TypeError, ValueError):
-        logger.exception("تعذّر تحميل قائمة كلمات التواصل")
-        await db.log_event(user.id, "support_message")
-        await _send_clean_prompt(
-            update,
-            context,
-            texts.INLINE_MESSAGES["support_settings_unavailable"],
-            parse_mode=ParseMode.HTML,
-            reply_markup=cancel_inline_kb(),
-        )
-        return ASK_SUPPORT
-    if text and word_filter.contains_blocked_term(text, words):
-        await db.log_event(user.id, "support_message")
-        await _send_clean_prompt(
-            update,
-            context,
-            texts.INLINE_MESSAGES["support_filtered"],
-            parse_mode=ParseMode.HTML,
-            reply_markup=cancel_inline_kb(),
-        )
-        return ASK_SUPPORT
-    if not config.ADMIN_IDS:
+    if message:
         context.user_data.pop("support_pending", None)
-        await _clear_user_prompt(context)
-        prompt = await message.reply_text(
-            texts.SUPPORT_UNAVAILABLE,
+        await message.reply_text(
+            texts.WELCOME_HINT,
             parse_mode=ParseMode.HTML,
-            reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
+            reply_markup=main_menu_kb(
+                update.effective_user.id if update.effective_user else None
+            ),
         )
-        _remember_user_prompt(context, prompt)
-        return ConversationHandler.END
-
-    await _clear_user_prompt(context)
-    await db.record_user(user.id, user.username, user.full_name)
-    await db.open_user_conversation(user.id)
-    await db.add_user_message(
-        user.id,
-        "in",
-        text or f"[وسيط وارد: {media_type}]",
-        media_type=media_type,
-        telegram_file_id=file_id,
-        telegram_message_id=getattr(message, "message_id", None),
-        filename=filename,
-    )
-    await db.audit(
-        user.id,
-        "user_support_message",
-        str(user.id),
-        (
-            f"type={media_type}; caption_length={len(text)}"
-            if media_type else f"عدد الأحرف: {len(text)}"
-        ),
-    )
-    await db.log_event(user.id, "support_message")
-    context.user_data.pop("support_pending", None)
-
-    delivered = 0
-    admin_message = (
-        "📩 <b>رسالة جديدة إلى الإدارة</b>\n"
-        "────────────────────\n"
-        f"👤 المرسل: {utils.esc(user.full_name or '-')}\n"
-        f"🆔 المعرف: <code>{user.id}</code>\n"
-        f"🔗 الحساب: @{utils.esc(user.username or 'بدون معرف')}\n\n"
-        +
-        (
-            f"{utils.esc(text)}\n\n"
-            if text else f"أرسل المستخدم وسيطًا: {media_type}\n\n"
-        ) + "يمكن متابعة المحادثة من قسم الرسائل في لوحة الإدارة."
-    )
-    for admin_id in config.ADMIN_IDS:
-        try:
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text=admin_message,
-                parse_mode=ParseMode.HTML,
-            )
-            delivered += 1
-        except Exception:
-            logger.warning(
-                "تعذر تنبيه المشرف %s برسالة المستخدم %s",
-                admin_id,
-                user.id,
-                exc_info=True,
-            )
-
-    prompt = await message.reply_text(
-        texts.SUPPORT_RECEIVED if delivered else texts.SUPPORT_SAVED_NO_NOTIFY,
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_kb(update.effective_user.id if update.effective_user else None),
-    )
-    _remember_user_prompt(context, prompt)
-    context.user_data.pop("support_pending", None)
     return ConversationHandler.END
 
 
@@ -2754,7 +2658,7 @@ async def verification_phone_back(
 # ==================================================================
 # معالج استدعاءات الأزرار المضمنة للمستخدم (usr:*)
 # ==================================================================
-def _my_reports_text(reports: list, total: int) -> str:
+def _my_reports_text(reports: list, total: int, page: int = 0) -> str:
     """نص شاشة «بلاغاتي»: بطاقة مختصرة لكل بلاغ (رقمها وحالتها وزمنها)."""
     shown = reports[:MY_REPORTS_MAX]
     lines = [
@@ -2762,9 +2666,12 @@ def _my_reports_text(reports: list, total: int) -> str:
         f"🕒 {utils.fmt_local(r['created_at'])}\n"
         for r in shown
     ]
-    more = texts.MY_REPORTS_MORE if total > len(shown) else ""
+    page_count = max(1, (total + MY_REPORTS_MAX - 1) // MY_REPORTS_MAX)
+    has_next = (page + 1) * MY_REPORTS_MAX < total
+    more = texts.MY_REPORTS_MORE if has_next else ""
+    page_label = f"\nالصفحة {page + 1} من {page_count}\n"
     return texts.MY_REPORTS_HEADER.format(
-        count=total, lines="".join(lines) + more
+        count=total, lines="".join(lines) + page_label + more
     )
 
 
@@ -2841,6 +2748,17 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         _remember_user_prompt(context, prompt)
         return ConversationHandler.END
 
+    if parts[1] == "continue":
+        await _clear_user_prompt(context)
+        await _clear_welcome_photo(context)
+        prompt = await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=texts.MAIN_MENU_PROMPT,
+            reply_markup=main_menu_kb(query.from_user.id),
+        )
+        _remember_user_prompt(context, prompt)
+        return ConversationHandler.END
+
     # --- بلاغ جديد ---
     if parts[1] == "report":
         return await _start_report_flow(update, context, db)
@@ -2861,9 +2779,24 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "status":
         context.user_data.clear()
         _pending_app_users.discard(query.from_user.id)
+        try:
+            page = max(0, int(parts[2])) if len(parts) > 2 else 0
+        except ValueError:
+            await query.answer(texts.UNKNOWN_BUTTON, show_alert=True)
+            return ConversationHandler.END
         reports, total = await db.list_user_reports(
-            query.from_user.id, limit=MY_REPORTS_MAX + 1
+            query.from_user.id,
+            limit=MY_REPORTS_MAX,
+            offset=page * MY_REPORTS_MAX,
         )
+        last_page = max(0, (total - 1) // MY_REPORTS_MAX)
+        if page > last_page:
+            page = last_page
+            reports, total = await db.list_user_reports(
+                query.from_user.id,
+                limit=MY_REPORTS_MAX,
+                offset=page * MY_REPORTS_MAX,
+            )
         if not reports:
             await query.edit_message_text(
                 texts.NO_REPORTS_YET, parse_mode=ParseMode.HTML,
@@ -2871,9 +2804,14 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             return ConversationHandler.END
         await query.edit_message_text(
-            _my_reports_text(reports, total),
+            _my_reports_text(reports, total, page),
             parse_mode=ParseMode.HTML,
-            reply_markup=my_reports_kb(reports[:MY_REPORTS_MAX]),
+            reply_markup=my_reports_kb(
+                reports,
+                page=page,
+                has_previous=page > 0,
+                has_next=(page + 1) * MY_REPORTS_MAX < total,
+            ),
         )
         _remember_user_prompt(context, query.message)
         return ConversationHandler.END
@@ -2889,13 +2827,28 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             _remember_user_prompt(context, query.message)
             return ConversationHandler.END
+        location_parts = []
+        if r.get("place"):
+            location_parts.append(str(r["place"]))
+        if r.get("latitude") is not None and r.get("longitude") is not None:
+            location_parts.append(f"{r['latitude']}, {r['longitude']}")
+        location = utils.esc(" · ".join(location_parts) or "-")
         await query.edit_message_text(
             texts.MY_REPORT_OPEN.format(
                 seq=r["seq"],
                 time=utils.fmt_local(r["created_at"]),
                 status=texts.badge(r["status"]),
                 status_detail=texts.status_explanation(r["status"]),
-                desc=utils.esc(utils.trunc(r.get("description") or "-", 200)),
+                category=utils.esc(r.get("category") or "-"),
+                type=utils.esc(r.get("violation_type") or "-"),
+                platform=utils.esc(r.get("platform") or "-"),
+                location=location,
+                desc=utils.esc(r.get("description") or "-"),
+                link=(
+                    f'<a href="{utils.esc(str(r["post_link"]))}">فتح الرابط الأصلي</a>'
+                    if str(r.get("post_link") or "").startswith(("http://", "https://"))
+                    else "-"
+                ),
             ),
             parse_mode=ParseMode.HTML,
             reply_markup=report_open_kb(
@@ -2992,14 +2945,37 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # --- تواصل مع الإدارة ---
     if parts[1] == "contact":
+        markup = keyboards.contact_app_kb()
+        if markup is None:
+            await query.edit_message_text(
+                texts.APP_NOT_READY,
+                parse_mode=ParseMode.HTML,
+                reply_markup=back_to_menu_kb(),
+            )
+            _remember_user_prompt(context, query.message)
+            return ConversationHandler.END
         await query.edit_message_text(
-            texts.ASK_SUPPORT,
-            parse_mode=ParseMode.HTML,
-            reply_markup=cancel_inline_kb(),
+            "تواصل مع الإدارة عبر محادثة خاصة محفوظة داخل التطبيق.",
+            reply_markup=markup,
         )
-        context.user_data["support_pending"] = True
         _remember_user_prompt(context, query.message)
-        return ASK_SUPPORT
+        return ConversationHandler.END
+
+    if parts[1] == "settings":
+        markup = keyboards.settings_app_kb()
+        if markup is None:
+            await query.edit_message_text(
+                texts.APP_NOT_READY,
+                parse_mode=ParseMode.HTML,
+                reply_markup=back_to_menu_kb(),
+            )
+        else:
+            await query.edit_message_text(
+                "إعدادات التنبيهات وحالة التوثيق.",
+                reply_markup=markup,
+            )
+        _remember_user_prompt(context, query.message)
+        return ConversationHandler.END
 
     if parts[1] == "verify-supplement":
         status = await db.verification_status(query.from_user.id)
@@ -3196,6 +3172,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if parts[1] == "back" and len(parts) == 3:
         target_states = {
             "category": ASK_CATEGORY,
+            "type": ASK_TYPE,
             "platform": ASK_PLATFORM,
             "description": ASK_DESC,
             "photo": ASK_PHOTO,
@@ -3205,6 +3182,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         }
         current = context.user_data.get("report_state")
         allowed_back = {
+            ASK_TYPE: {"category"},
             ASK_PLATFORM: {"category"},
             ASK_DESC: {
                 "platform"
@@ -3245,7 +3223,9 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.clear()
         context.user_data.update(
             report_category=category,
+            report_category_key=category,
             category=REPORT_CATEGORIES[category],
+            violation_type=None,
             post_link="",
             photo_path="",
             photo_file_id=None,
@@ -3254,9 +3234,7 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             longitude=None,
             contact_phone="",
         )
-        if category == "social":
-            return await _show_report_step(update, context, ASK_PLATFORM)
-        return await _show_report_step(update, context, ASK_DESC)
+        return await _show_report_step(update, context, ASK_TYPE)
 
     if parts[1] == "platform" and len(parts) == 3:
         platform_key = parts[2]
@@ -3299,15 +3277,19 @@ async def on_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # --- اختيار نوع المخالفة ---
     if parts[1] == "type" and len(parts) > 2:
         vtype = ":".join(parts[2:])
-        if vtype not in config.VIOLATION_TYPES:
+        category = context.user_data.get("report_category_key")
+        grouped_types = await db.effective_vtype_groups()
+        available_types = grouped_types.get(category, [])
+        if vtype not in available_types:
             await query.edit_message_text(
-                texts.INLINE_MESSAGES["unknown_category"],
-                reply_markup=back_to_menu_kb(),
+                texts.INLINE_MESSAGES["violation_type_unavailable"],
+                reply_markup=report_category_kb(),
             )
             _remember_user_prompt(context, query.message)
-            return ConversationHandler.END
+            return ASK_CATEGORY
         context.user_data["violation_type"] = vtype
-        return await _show_report_step(update, context, ASK_DESC)
+        next_step = ASK_PLATFORM if category == "social" else ASK_DESC
+        return await _show_report_step(update, context, next_step)
 
     # --- تأكيد الإرسال ---
     if parts[1] == "confirm":
@@ -3368,48 +3350,13 @@ async def welcome_hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.effective_message
     chat = update.effective_chat
-    if (
-        user
-        and message
-        and message.text
-        and chat
-        and guards.is_private_chat(chat.type)
-    ):
-        db = _db(context)
-        if await db.user_conversation_open(user.id):
-            text = message.text.strip()[:config.MAX_DESC_LEN]
-            if text:
-                await db.record_user(user.id, user.username, user.full_name)
-                await db.add_user_message(user.id, "in", text)
-                delivered = 0
-                admin_message = (
-                    "📩 <b>رسالة جديدة في محادثة مفتوحة</b>\n"
-                    f"👤 {utils.esc(user.full_name or '-')} "
-                    f"(<code>{user.id}</code>)\n\n"
-                    f"{utils.esc(text)}"
-                )
-                for admin_id in config.ADMIN_IDS:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=admin_id,
-                            text=admin_message,
-                            parse_mode=ParseMode.HTML,
-                        )
-                        delivered += 1
-                    except Exception:
-                        logger.warning(
-                            "تعذر تنبيه المشرف %s برسالة المستخدم %s",
-                            admin_id,
-                            user.id,
-                            exc_info=True,
-                        )
-                await message.reply_text(
-                    texts.INLINE_MESSAGES["chat_saved_notified"]
-                    if delivered
-                    else texts.INLINE_MESSAGES["chat_saved_no_notify"]
-                )
-                return
-    await update.effective_message.reply_text(texts.WELCOME_HINT, parse_mode=ParseMode.HTML)
+    if not message or not chat or not guards.is_private_chat(chat.type):
+        return
+    await message.reply_text(
+        texts.WELCOME_HINT,
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_kb(user.id if user else None),
+    )
 
 
 async def unmatched(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3481,6 +3428,10 @@ def build_conversation() -> ConversationHandler:
         ],
         states={
             ASK_CATEGORY: [
+                MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
+                MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
+            ],
+            ASK_TYPE: [
                 MessageHandler(_SemanticTextFilter("cancel"), cmd_cancel),
                 MessageHandler(filters.ALL & ~filters.COMMAND, unmatched),
             ],

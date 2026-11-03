@@ -27,6 +27,12 @@
     </nav>
   </header>
 
+  <nav class="miniapp-nav" aria-label="أقسام التطبيق">
+    <button class="btn ghost" type="button" data-open-view="report">البلاغات</button>
+    <button class="btn ghost" type="button" data-open-view="contact">التواصل</button>
+    <button class="btn ghost" type="button" data-open-view="settings">الإعدادات</button>
+  </nav>
+
   <main>
     <p id="status" class="hint" role="status" aria-live="polite">جارٍ تجهيز النموذج...</p>
 
@@ -39,9 +45,12 @@
     </section>
 
     <section id="card-step1" class="card" hidden>
-      <h2>١. التصنيف والموقع</h2>
-      <p class="hint">اختر التصنيف الأقرب، ثم أضف الموقع إن توفر.</p>
-      <div id="types" class="chips" role="group" aria-label="تصنيف المخالفة"></div>
+      <h2>١. القسم والنوع والموقع</h2>
+      <p class="hint">اختر القسم العام أولًا، ثم النوع المحدد داخله.</p>
+      <div id="categories" class="chips" role="group" aria-label="قسم البلاغ"></div>
+      <p id="types-label" class="hint" hidden></p>
+      <div id="types" class="chips" role="group" aria-label="نوع البلاغ" hidden></div>
+      <p id="taxonomy-error" class="err" role="alert" aria-live="assertive"></p>
       <h2>الموقع الجغرافي</h2>
       <div class="location-box">
         <span id="loc-status" class="loc-status" aria-live="polite">لم يتم تحديد الموقع</span>
@@ -76,7 +85,7 @@
       <h2>الصورة (اختياري)</h2>
       <div id="drop" class="drop" role="button" tabindex="0" aria-label="اختيار صورة للمعاينة">
         <span id="drop-label">📷 اضغط لاختيار صورة للمعاينة</span>
-        <img id="preview" alt="معاينة الصورة المختارة" hidden>
+        <div id="preview" class="photo-preview" role="img" aria-label="معاينة الصورة المختارة" hidden></div>
       </div>
       <input id="photo-input" type="file" accept="image/*" hidden>
       <p class="hint">سيطلب منك البوت إرسال الصورة في المحادثة بعد إرسال البلاغ.</p>
@@ -101,6 +110,52 @@
       <h2 id="done-title">تم الإرسال</h2>
       <p id="done-body"></p>
       <button id="btn-again" class="btn primary" type="button">إرسال بلاغ آخر</button>
+    </section>
+
+    <section id="card-contact" class="card" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">محادثة خاصة</p>
+          <h2>التواصل مع الإدارة</h2>
+        </div>
+        <span id="contact-state" class="status-pill">جارٍ التحقق</span>
+      </div>
+      <p id="contact-notice" class="note" role="status"></p>
+      <div id="chat-feed" class="chat-feed" aria-live="polite" aria-label="رسائل المحادثة"></div>
+      <form id="chat-form" class="chat-composer">
+        <label class="sr-only" for="chat-text">اكتب رسالتك</label>
+        <textarea id="chat-text" rows="2" maxlength="2000" placeholder="اكتب رسالتك..."></textarea>
+        <div class="composer-actions">
+          <label class="btn ghost attach-button" for="chat-file">📎 إرفاق صورة أو ملف</label>
+          <input id="chat-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.docx,.xlsx,.pptx" hidden>
+          <span id="chat-file-name" class="hint"></span>
+          <button id="chat-send" class="btn primary" type="submit">إرسال</button>
+        </div>
+        <p class="hint">الصور وPDF ومستندات Office فقط، حتى 20 ميغابايت لكل مرفق. لا تُقبل الأرشيفات أو الملفات التنفيذية.</p>
+      </form>
+    </section>
+
+    <section id="card-settings" class="card" hidden>
+      <p class="eyebrow">تحكم بتجربتك</p>
+      <h2>الإعدادات</h2>
+      <div class="setting-row">
+        <div>
+          <strong>تنبيه Telegram عند رد الإدارة</strong>
+          <p class="hint">إيقاف التنبيه لا يحذف الردود المحفوظة في المحادثة.</p>
+        </div>
+        <input id="setting-reply-alerts" type="checkbox" aria-label="تنبيه Telegram عند رد الإدارة" disabled>
+      </div>
+      <div class="setting-row">
+        <div>
+          <strong>إشعارات المنشورات الأمنية والعامة والهامة</strong>
+          <p class="hint">تصلك المنشورات من البوت مع محتواها أو رابطها.</p>
+        </div>
+        <input id="setting-publication-alerts" type="checkbox" aria-label="إشعارات المنشورات" disabled>
+      </div>
+      <div class="verification-status">
+        <h3>حالة توثيق الحساب</h3>
+        <p id="verification-summary" class="hint">جارٍ تحميل الحالة...</p>
+      </div>
     </section>
   </main>
 

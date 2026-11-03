@@ -219,6 +219,22 @@ CREATE TABLE IF NOT EXISTS user_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_user_messages_user_id ON user_messages(user_id, id);
 
+CREATE TABLE IF NOT EXISTS user_message_attachments (
+    message_id INTEGER PRIMARY KEY,
+    data BLOB NOT NULL,
+    content_type TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    FOREIGN KEY(message_id) REFERENCES user_messages(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_contact_preferences (
+    user_id INTEGER PRIMARY KEY,
+    telegram_reply_alerts INTEGER NOT NULL DEFAULT 1,
+    publication_alerts INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS broadcast_jobs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     text         TEXT NOT NULL,
@@ -836,23 +852,26 @@ class Database:
         return await asyncio.to_thread(self._last_report_by_user, user_id)
 
     def _list_user_reports(
-        self, user_id: int, limit: int = 10
+        self, user_id: int, limit: int = 10, offset: int = 0
     ) -> tuple[list[dict[str, Any]], int]:
         with self._lock:
             total = int(self._conn.execute(
                 "SELECT COUNT(*) AS c FROM reports WHERE user_id = ?", (user_id,)
             ).fetchone()["c"])
             rows = self._conn.execute(
-                "SELECT * FROM reports WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-                (user_id, limit),
+                "SELECT * FROM reports WHERE user_id = ? "
+                "ORDER BY id DESC LIMIT ? OFFSET ?",
+                (user_id, limit, max(0, int(offset))),
             ).fetchall()
             return [_row_to_dict(r) for r in rows], total
 
     async def list_user_reports(
-        self, user_id: int, limit: int = 10
+        self, user_id: int, limit: int = 10, offset: int = 0
     ) -> tuple[list[dict[str, Any]], int]:
         """(بلاغات مبلّغ من الأحدث، إجمالي بلاغاته) — لشاشة «بلاغاتي»."""
-        return await asyncio.to_thread(self._list_user_reports, user_id, limit)
+        return await asyncio.to_thread(
+            self._list_user_reports, user_id, limit, offset
+        )
 
     def _list_reports(self, status: str | None, page: int, size: int) -> tuple[list[dict], int]:
         with self._lock:
@@ -3783,11 +3802,17 @@ class Database:
         telegram_file_id: str | None = None,
         telegram_message_id: int | None = None,
         filename: str | None = None,
+        attachment_data: bytes | None = None,
+        attachment_content_type: str | None = None,
     ) -> int:
         if direction not in {"in", "out"}:
             raise ValueError("invalid message direction")
         if delivery_status not in {"delivered", "failed", "received"}:
             raise ValueError("invalid delivery status")
+        if attachment_data is not None and (
+            not attachment_content_type or not filename
+        ):
+            raise ValueError("attachment metadata is required")
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
         notification = None
         with self._lock:
@@ -3810,6 +3835,21 @@ class Database:
                 (now_iso, user_id),
             )
             message_id = int(cur.lastrowid)
+            if attachment_data is not None:
+                self._conn.execute(
+                    """
+                    INSERT INTO user_message_attachments
+                        (message_id, data, content_type, filename, size_bytes)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message_id,
+                        attachment_data,
+                        attachment_content_type,
+                        filename,
+                        len(attachment_data),
+                    ),
+                )
             if direction == "in":
                 notification = self._insert_notification_locked(
                     "user_message",
@@ -3835,6 +3875,8 @@ class Database:
         telegram_file_id: str | None = None,
         telegram_message_id: int | None = None,
         filename: str | None = None,
+        attachment_data: bytes | None = None,
+        attachment_content_type: str | None = None,
     ) -> int:
         return await asyncio.to_thread(
             self._add_user_message,
@@ -3848,6 +3890,137 @@ class Database:
             telegram_file_id,
             telegram_message_id,
             filename,
+            attachment_data,
+            attachment_content_type,
+        )
+
+    def _get_user_message_attachment(
+        self, user_id: int, message_id: int
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT a.data, a.content_type, a.filename, a.size_bytes
+                FROM user_message_attachments a
+                JOIN user_messages m ON m.id = a.message_id
+                WHERE m.user_id = ? AND m.id = ?
+                """,
+                (user_id, message_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "data": bytes(row["data"]),
+                "content_type": str(row["content_type"]),
+                "filename": str(row["filename"]),
+                "size_bytes": int(row["size_bytes"]),
+            }
+
+    async def get_user_message_attachment(
+        self, user_id: int, message_id: int
+    ) -> dict[str, Any] | None:
+        return await asyncio.to_thread(
+            self._get_user_message_attachment, user_id, message_id
+        )
+
+    def _user_contact_preferences(self, user_id: int) -> dict[str, bool]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT telegram_reply_alerts, publication_alerts "
+                "FROM user_contact_preferences WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                return {"telegram_reply_alerts": True, "publication_alerts": True}
+            return {
+                "telegram_reply_alerts": bool(row["telegram_reply_alerts"]),
+                "publication_alerts": bool(row["publication_alerts"]),
+            }
+
+    async def user_contact_preferences(self, user_id: int) -> dict[str, bool]:
+        return await asyncio.to_thread(self._user_contact_preferences, user_id)
+
+    def _set_user_contact_preferences(
+        self,
+        user_id: int,
+        telegram_reply_alerts: bool,
+        publication_alerts: bool,
+    ) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO user_contact_preferences
+                    (user_id, telegram_reply_alerts, publication_alerts, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    telegram_reply_alerts = excluded.telegram_reply_alerts,
+                    publication_alerts = excluded.publication_alerts,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    int(telegram_reply_alerts),
+                    int(publication_alerts),
+                    now_iso,
+                ),
+            )
+            self._conn.commit()
+
+    async def set_user_contact_preferences(
+        self,
+        user_id: int,
+        telegram_reply_alerts: bool,
+        publication_alerts: bool,
+    ) -> None:
+        await asyncio.to_thread(
+            self._set_user_contact_preferences,
+            user_id,
+            telegram_reply_alerts,
+            publication_alerts,
+        )
+
+    def _delete_user_conversation(
+        self, user_id: int, actor_id: int, reason: str
+    ) -> bool:
+        with self._lock:
+            exists = self._conn.execute(
+                "SELECT 1 FROM user_conversations WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if exists is None:
+                return False
+            self._conn.execute(
+                """
+                DELETE FROM user_message_attachments
+                WHERE message_id IN (
+                    SELECT id FROM user_messages WHERE user_id = ?
+                )
+                """,
+                (user_id,),
+            )
+            self._conn.execute("DELETE FROM user_messages WHERE user_id = ?", (user_id,))
+            cursor = self._conn.execute(
+                "DELETE FROM user_conversations WHERE user_id = ?", (user_id,)
+            )
+            if cursor.rowcount:
+                self._insert_audit_locked(
+                    actor_id,
+                    "user_conversation_deleted",
+                    str(user_id),
+                    f"reason={reason}",
+                )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def delete_user_conversation(
+        self, user_id: int, actor_id: int, reason: str
+    ) -> bool:
+        return await asyncio.to_thread(
+            self._delete_user_conversation,
+            user_id,
+            actor_id,
+            reason,
         )
 
     def _update_user_message_delivery(
@@ -3946,7 +4119,11 @@ class Database:
                 """
                 SELECT id, user_id, direction, text, admin_id, created_at,
                        delivery_status, error_code, media_type, telegram_file_id,
-                       telegram_message_id, filename, is_edited, is_deleted
+                       telegram_message_id, filename, is_edited, is_deleted,
+                       EXISTS(
+                           SELECT 1 FROM user_message_attachments a
+                           WHERE a.message_id = user_messages.id
+                       ) AS has_attachment
                 FROM user_messages
                 WHERE user_id = ? AND id > ?
                 ORDER BY id ASC LIMIT ?
@@ -4103,6 +4280,36 @@ class Database:
             json.dumps(list(vtypes), ensure_ascii=False),
         )
 
+    async def effective_vtype_groups(self) -> dict[str, list[str]]:
+        from services.report_taxonomy import (
+            default_vtype_groups,
+            normalize_vtype_groups,
+        )
+
+        items = await self.effective_vtypes()
+        raw = await self.get_state("violation_type_groups")
+        try:
+            parsed = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            parsed = None
+        groups = normalize_vtype_groups(parsed, items)
+        assigned = {
+            item for values in groups.values() for item in values
+        } if groups is not None else set()
+        if (
+            groups is None
+            or any(not values for values in groups.values())
+            or any(item not in assigned for item in items)
+        ):
+            return default_vtype_groups(items)
+        return groups
+
+    async def set_vtype_groups(self, groups: dict[str, list[str]]) -> None:
+        await self.set_state(
+            "violation_type_groups",
+            json.dumps(groups, ensure_ascii=False),
+        )
+
     async def get_templates(self) -> list[str]:
         """قوالب الردود الجاهزة (تُخزن كحالة نظام JSON)."""
         raw = await self.get_state("reply_templates")
@@ -4171,6 +4378,28 @@ class Database:
 
     async def all_user_ids(self, cap: int | None = None):
         return await asyncio.to_thread(self._all_user_ids, cap)
+
+    def _publication_subscriber_ids(
+        self, cap: int | None = None
+    ) -> tuple[list[int], bool]:
+        limit_sql = " LIMIT ?" if cap is not None else ""
+        params = (int(cap) + 1,) if cap is not None else ()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT u.user_id FROM ("
+                "SELECT user_id FROM bot_users UNION SELECT user_id FROM reports"
+                ") u LEFT JOIN user_contact_preferences p ON p.user_id = u.user_id "
+                "WHERE COALESCE(p.publication_alerts, 1) = 1 "
+                "ORDER BY u.user_id" + limit_sql,
+                params,
+            ).fetchall()
+        ids = [int(row[0]) for row in rows]
+        if cap is None:
+            return ids, False
+        return ids[:cap], len(ids) > cap
+
+    async def publication_subscriber_ids(self, cap: int | None = None):
+        return await asyncio.to_thread(self._publication_subscriber_ids, cap)
 
     def _create_broadcast_job(
         self, text: str, actor_id: int, total: int, media_type: str = ""

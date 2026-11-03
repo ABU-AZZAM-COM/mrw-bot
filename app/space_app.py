@@ -43,7 +43,7 @@ os.environ["DISABLE_HEALTH_SERVER"] = "1"
 
 from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import HTMLResponse, JSONResponse  # noqa: E402
+from fastapi.responses import HTMLResponse, JSONResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 # حزمة spaces هي التي تدير تخصيص كرت الشاشة داخل مساحات ZeroGPU.
@@ -62,6 +62,12 @@ except ImportError:  # pragma: no cover - بيئة محلية بدون Hugging F
 from app import config, main as bot_main  # noqa: E402
 from api import admin_api, admin_dashboard  # noqa: E402
 from bot import texts  # noqa: E402
+from services.chat_attachments import (  # noqa: E402
+    MAX_CHAT_ATTACHMENT_BYTES,
+    sanitize_attachment_filename,
+    validate_chat_attachment,
+)
+from services.report_taxonomy import REPORT_CATEGORIES
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
 logger = logging.getLogger("space")
 
@@ -183,6 +189,30 @@ def _verify_init_data(
     except Exception:  # noqa: BLE001
         return None
     return user if isinstance(user, dict) else None
+
+
+def _webapp_user_id(request: Request) -> int | None:
+    user = _verify_init_data(
+        request.headers.get("X-Telegram-Init-Data", ""),
+        BOT_TOKEN,
+    )
+    user_id = user.get("id") if user else None
+    return user_id if isinstance(user_id, int) and user_id > 0 else None
+
+
+def _webapp_database():
+    application = getattr(bot_main, "app", None)
+    if application is None:
+        return None
+    return application.bot_data.get("db")
+
+
+def _webapp_denied(status_code: int, error: str) -> JSONResponse:
+    return JSONResponse(
+        {"ok": False, "error": error},
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _inject_app_update(user_id: int, payload: dict, tg_user: dict) -> bool:
@@ -345,6 +375,7 @@ def build_app() -> FastAPI:
             "authorization",
             "x-admin-token",
             "x-setup-token",
+            "x-telegram-init-data",
             "content-type",
         ],
     )
@@ -485,11 +516,268 @@ def build_app() -> FastAPI:
             {
                 "ok": True,
                 "items": items,
+                "categories": REPORT_CATEGORIES,
+                "groups": await application.bot_data["db"].effective_vtype_groups(),
                 "max_desc_len": config.MAX_DESC_LEN,
                 "min_desc_len": config.MIN_DESC_LEN,
                 "min_desc_words": config.MIN_DESC_WORDS,
                 "max_photo_mb": config.MAX_PHOTO_MB,
             },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/user/settings")
+    async def user_settings(request: Request) -> JSONResponse:
+        user = _verify_init_data(
+            request.headers.get("X-Telegram-Init-Data", ""),
+            BOT_TOKEN,
+        )
+        user_id = user.get("id") if user else None
+        if not isinstance(user_id, int) or user_id <= 0:
+            return _webapp_denied(403, "invalid_init_data")
+        db = _webapp_database()
+        if db is None:
+            return _webapp_denied(503, "bot_not_ready")
+
+        global_raw = await db.get_state("contact_global_enabled")
+        global_enabled = global_raw != "0"
+        account_enabled = await db.user_contact_enabled(user_id)
+        preferences = await db.user_contact_preferences(user_id)
+        verification = await db.verification_status(user_id)
+        verification_summary = None
+        if verification:
+            verification_summary = {
+                "status": verification.get("status"),
+                "review_state": verification.get("review_state"),
+                "message": verification.get("supplement_message") or "",
+                "reason": verification.get("rejection_reason") or "",
+            }
+        return JSONResponse(
+            {
+                "ok": True,
+                "contact_global_enabled": global_enabled,
+                "account_contact_enabled": account_enabled,
+                "can_send_contact": global_enabled and account_enabled,
+                "preferences": preferences,
+                "verification": verification_summary,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.put("/api/user/settings")
+    async def update_user_settings(request: Request) -> JSONResponse:
+        user_id = _webapp_user_id(request)
+        if user_id is None:
+            return _webapp_denied(403, "invalid_init_data")
+        db = _webapp_database()
+        if db is None:
+            return _webapp_denied(503, "bot_not_ready")
+        try:
+            body = await request.json()
+        except Exception:
+            return _webapp_denied(400, "bad_json")
+        if not isinstance(body, dict):
+            return _webapp_denied(400, "bad_payload")
+        reply_alerts = body.get("telegram_reply_alerts")
+        publication_alerts = body.get("publication_alerts")
+        if type(reply_alerts) is not bool or type(publication_alerts) is not bool:
+            return _webapp_denied(400, "bad_settings")
+        await db.set_user_contact_preferences(
+            user_id,
+            reply_alerts,
+            publication_alerts,
+        )
+        return JSONResponse(
+            {"ok": True},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/user/messages")
+    async def user_messages(request: Request) -> JSONResponse:
+        user_id = _webapp_user_id(request)
+        if user_id is None:
+            return _webapp_denied(403, "invalid_init_data")
+        db = _webapp_database()
+        if db is None:
+            return _webapp_denied(503, "bot_not_ready")
+        try:
+            after_id = max(0, int(request.query_params.get("after_id", "0") or 0))
+        except ValueError:
+            return _webapp_denied(400, "bad_query")
+        items = await db.list_user_messages(user_id, after_id, 100)
+        safe_items = []
+        for item in items:
+            safe_items.append({
+                key: item.get(key)
+                for key in (
+                    "id",
+                    "direction",
+                    "text",
+                    "created_at",
+                    "delivery_status",
+                    "media_type",
+                    "filename",
+                    "is_edited",
+                    "is_deleted",
+                )
+            } | {
+                "has_media": bool(
+                    item.get("telegram_file_id") or item.get("has_attachment")
+                ),
+            })
+        return JSONResponse(
+            {"ok": True, "items": safe_items},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/user/messages/{message_id}/attachment")
+    async def user_message_attachment(
+        message_id: int, request: Request
+    ) -> Response:
+        user_id = _webapp_user_id(request)
+        if user_id is None:
+            return _webapp_denied(403, "invalid_init_data")
+        db = _webapp_database()
+        if db is None:
+            return _webapp_denied(503, "bot_not_ready")
+        rows = await db.list_user_messages(user_id, max(0, message_id - 1), 1)
+        if not rows or int(rows[0]["id"]) != message_id:
+            return _webapp_denied(404, "not_found")
+        item = rows[0]
+        if item.get("is_deleted"):
+            return _webapp_denied(404, "attachment_not_found")
+        attachment = await db.get_user_message_attachment(user_id, message_id)
+        if attachment is not None:
+            data = attachment["data"]
+            content_type = attachment["content_type"]
+            filename = attachment["filename"]
+        else:
+            file_id = str(item.get("telegram_file_id") or "")
+            if not file_id:
+                return _webapp_denied(404, "attachment_not_found")
+            application = getattr(bot_main, "app", None)
+            bot = getattr(application, "bot", None)
+            if bot is None:
+                return _webapp_denied(503, "bot_not_ready")
+
+            async def _download():
+                telegram_file = await bot.get_file(file_id)
+                return await telegram_file.download_as_bytearray()
+
+            try:
+                data = await admin_api._on_bot_loop_value(_download)
+            except Exception:
+                logger.exception(
+                    "تعذر تنزيل مرفق المحادثة %s للمستخدم %s",
+                    message_id,
+                    user_id,
+                )
+                return _webapp_denied(502, "attachment_download_failed")
+            if data is None:
+                return _webapp_denied(503, "bot_not_ready")
+            filename = str(item.get("filename") or f"attachment-{message_id}")
+            if str(item.get("media_type") or "") == "photo":
+                filename = "attachment.jpg"
+            detected = validate_chat_attachment(bytes(data), filename)
+            if detected is None:
+                return _webapp_denied(415, "unsupported_attachment")
+            _media_kind, content_type = detected
+        return Response(
+            content=bytes(data),
+            media_type=content_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "Content-Disposition": (
+                    "attachment; filename*=UTF-8''"
+                    + urllib.parse.quote(filename)
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.post("/api/user/messages")
+    async def create_user_message(request: Request) -> JSONResponse:
+        user_id = _webapp_user_id(request)
+        if user_id is None:
+            return _webapp_denied(403, "invalid_init_data")
+        db = _webapp_database()
+        if db is None:
+            return _webapp_denied(503, "bot_not_ready")
+        global_enabled = await db.get_state("contact_global_enabled") != "0"
+        if not global_enabled or not await db.user_contact_enabled(user_id):
+            return _webapp_denied(403, "contact_unavailable")
+        try:
+            body = await request.json()
+        except Exception:
+            return _webapp_denied(400, "bad_json")
+        text = str(body.get("text") or "").strip() if isinstance(body, dict) else ""
+        if not 1 <= len(text) <= 2000:
+            return _webapp_denied(400, "text_length")
+        await db.open_user_conversation(user_id)
+        message_id = await db.add_user_message(
+            user_id,
+            "in",
+            text,
+            delivery_status="received",
+        )
+        return JSONResponse(
+            {"ok": True, "message_id": message_id},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/user/messages/attachment")
+    async def create_user_message_attachment(request: Request) -> JSONResponse:
+        user_id = _webapp_user_id(request)
+        if user_id is None:
+            return _webapp_denied(403, "invalid_init_data")
+        db = _webapp_database()
+        if db is None:
+            return _webapp_denied(503, "bot_not_ready")
+        global_enabled = await db.get_state("contact_global_enabled") != "0"
+        if not global_enabled or not await db.user_contact_enabled(user_id):
+            return _webapp_denied(403, "contact_unavailable")
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > MAX_CHAT_ATTACHMENT_BYTES + 512 * 1024:
+                    return _webapp_denied(413, "attachment_too_large")
+            except ValueError:
+                return _webapp_denied(400, "bad_content_length")
+        try:
+            form = await request.form()
+        except Exception:
+            logger.exception("تعذر قراءة مرفق محادثة المستخدم")
+            return _webapp_denied(400, "invalid_multipart")
+        upload = form.get("file")
+        if not hasattr(upload, "read"):
+            return _webapp_denied(400, "attachment_required")
+        filename = sanitize_attachment_filename(getattr(upload, "filename", None))
+        try:
+            data = await upload.read(MAX_CHAT_ATTACHMENT_BYTES + 1)
+        finally:
+            await upload.close()
+        if len(data) > MAX_CHAT_ATTACHMENT_BYTES:
+            return _webapp_denied(413, "attachment_too_large")
+        detected = validate_chat_attachment(data, filename)
+        if detected is None:
+            return _webapp_denied(415, "unsupported_attachment")
+        media_type, content_type = detected
+        caption = str(form.get("text") or "").strip()
+        if len(caption) > 1000:
+            return _webapp_denied(400, "caption_too_long")
+        await db.open_user_conversation(user_id)
+        message_id = await db.add_user_message(
+            user_id,
+            "in",
+            caption or f"[مرفق: {filename}]",
+            delivery_status="received",
+            media_type=media_type,
+            filename=filename,
+            attachment_data=data,
+            attachment_content_type=content_type,
+        )
+        return JSONResponse(
+            {"ok": True, "message_id": message_id},
             headers={"Cache-Control": "no-store"},
         )
 

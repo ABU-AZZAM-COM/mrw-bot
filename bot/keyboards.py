@@ -15,6 +15,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     WebAppInfo,
 )
+from services.report_taxonomy import REPORT_CATEGORIES
 
 from database import (
     STATUS_AWAITING_INFO,
@@ -153,6 +154,7 @@ USER_MENU_ACTIONS: dict[str, str] = {
     "privacy": "🔒 سياسة الخصوصية",
     "verify": "🪪 التسجيل كمراسل موثوق",
     "verify-status": "🔎 حالة توثيق الحساب",
+    "settings": "⚙️ الإعدادات",
     "menu": "🏠 القائمة الرئيسية",
     "home": "🏠 العودة للقائمة",
     "cancel": "❌ إلغاء",
@@ -178,26 +180,15 @@ _user_menu_layout: Optional[list[list[dict[str, str]]]] = None
 
 
 def default_user_menu_layout() -> list[list[dict[str, str]]]:
-    """التخطيط الافتراضي لقائمة المستخدم (نفس ترتيب الأزرار الحالي)."""
+    """Five primary user actions, each on its own row."""
     rows: list[list[dict[str, str]]] = [
         [{"label": USER_MENU_ACTIONS["report"], "action": "report"}],
     ]
+    rows.append([{"label": USER_MENU_ACTIONS["status"], "action": "status"}])
     if verified_reporters.is_configured():
         rows.append([{"label": USER_MENU_ACTIONS["verify"], "action": "verify"}])
-        rows.append([
-            {
-                "label": USER_MENU_ACTIONS["verify-status"],
-                "action": "verify-status",
-            }
-        ])
-    rows.extend([
-        [{"label": USER_MENU_ACTIONS["status"], "action": "status"}],
-        [
-            {"label": USER_MENU_ACTIONS["about"], "action": "about"},
-            {"label": USER_MENU_ACTIONS["contact"], "action": "contact"},
-        ],
-        [{"label": USER_MENU_ACTIONS["privacy"], "action": "privacy"}],
-    ])
+    rows.append([{"label": USER_MENU_ACTIONS["contact"], "action": "contact"}])
+    rows.append([{"label": USER_MENU_ACTIONS["settings"], "action": "settings"}])
     return rows
 
 
@@ -406,6 +397,32 @@ def main_menu_kb(viewer_id: Optional[int] = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _miniapp_view_keyboard(view: str, button_text: str):
+    base_url = control.mini_app_url()
+    if not base_url:
+        return None
+    separator = "&" if "?" in base_url else "?"
+    url = f"{base_url}{separator}view={view}"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(button_text, web_app=WebAppInfo(url=url))],
+        [_cb(texts.KEYBOARD_LABELS["main_menu"], f"{USR_PREFIX}menu")],
+    ])
+
+
+def contact_app_kb():
+    return _miniapp_view_keyboard("contact", "💬 فتح المحادثة")
+
+
+def settings_app_kb():
+    return _miniapp_view_keyboard("settings", "⚙️ فتح الإعدادات")
+
+
+def welcome_continue_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [_cb("متابعة", f"{USR_PREFIX}continue")],
+    ])
+
+
 def verification_contact_kb() -> ReplyKeyboardMarkup:
     """Request the user's own Telegram contact before issuing a camera ticket."""
     markup = control.build_reply_keyboard("verification_contact")
@@ -475,16 +492,12 @@ def report_type_kb(
                 f"{USR_PREFIX}type:{last_type}",
             ),
         ])
-    rows.append([_cb(texts.KEYBOARD_LABELS["cancel"], f"{USR_PREFIX}cancel")])
+    rows.extend([
+        [_cb(texts.KEYBOARD_LABELS["back"], f"{USR_PREFIX}back:category")],
+        [_cb(texts.KEYBOARD_LABELS["cancel"], f"{USR_PREFIX}cancel")],
+    ])
     return InlineKeyboardMarkup(rows)
 
-
-REPORT_CATEGORIES = {
-    "conduct": "🚨 تجاوزات وسلوك فردي",
-    "administrative": "⚖️ مخالفات إدارية ومالية",
-    "social": "📱 مخالفات النشر والتواصل الاجتماعي",
-    "field": "📍 بلاغ ميداني عاجل / أخرى",
-}
 
 SOCIAL_PLATFORM_LABELS = {
     "facebook": "فيسبوك",
@@ -609,12 +622,24 @@ def back_to_menu_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def my_reports_kb(items: list[dict]) -> InlineKeyboardMarkup:
-    """شاشة «بلاغاتي»: زر لكل بطاقة بلاغ (رمز الحالة + رقمه) ثم العودة للقائمة."""
+def my_reports_kb(
+    items: list[dict],
+    page: int = 0,
+    has_previous: bool = False,
+    has_next: bool = False,
+) -> InlineKeyboardMarkup:
+    """شاشة «بلاغاتي»: بطاقة لكل بلاغ مع تنقل محدود بين الصفحات."""
     rows = [
         [_cb(f"{status_emoji(r['status'])} {r['seq']}", f"{USR_PREFIX}r:{r['id']}")]
         for r in items
     ]
+    if has_previous or has_next:
+        navigation = []
+        if has_previous:
+            navigation.append(_cb("السابق", f"{USR_PREFIX}status:{page - 1}"))
+        if has_next:
+            navigation.append(_cb("التالي", f"{USR_PREFIX}status:{page + 1}"))
+        rows.append(navigation)
     rows.append([_cb(texts.KEYBOARD_LABELS["main_menu"], f"{USR_PREFIX}menu")])
     return InlineKeyboardMarkup(rows)
 

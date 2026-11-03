@@ -50,6 +50,7 @@ class _MessagingPageState extends State<MessagingPage> {
   List<Map<String, dynamic>> _conversations = [];
   List<Map<String, dynamic>> _broadcastHistory = [];
   bool _canManageMessages = false;
+  bool _contactGlobalEnabled = true;
   String _conversationQuery = '';
   Timer? _conversationTimer;
 
@@ -97,9 +98,28 @@ class _MessagingPageState extends State<MessagingPage> {
         _conversations = (result['items'] as List? ?? const [])
             .map((item) => Map<String, dynamic>.from(item as Map))
             .toList();
+        _contactGlobalEnabled = result['contact_global_enabled'] != false;
       });
     } catch (error) {
       if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
+  Future<void> _setContactGlobal(bool enabled) async {
+    final previous = _contactGlobalEnabled;
+    setState(() => _contactGlobalEnabled = enabled);
+    try {
+      await widget.api.put('/api/admin/contact-settings', {'enabled': enabled});
+      if (mounted) {
+        toast(
+          context,
+          enabled ? 'تم فتح التواصل لجميع المستخدمين' : 'تم إيقاف التواصل للجميع',
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _contactGlobalEnabled = previous);
+      toast(context, errMsg(error), error: true);
     }
   }
 
@@ -472,6 +492,18 @@ class _MessagingPageState extends State<MessagingPage> {
           ),
           child: Column(
             children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('التواصل متاح للجميع'),
+                subtitle: Text(
+                  _contactGlobalEnabled
+                      ? 'يمكن للمستخدمين المسموح لهم إرسال رسائل جديدة.'
+                      : 'يمكن قراءة المحادثات، لكن إرسال رسائل جديدة متوقف.',
+                ),
+                value: _contactGlobalEnabled,
+                onChanged: _setContactGlobal,
+              ),
+              const Divider(),
               TextField(
                 decoration: const InputDecoration(
                   labelText: 'بحث بالاسم أو المعرّف',
@@ -751,6 +783,7 @@ class _ConversationDialogState extends State<_ConversationDialog> {
   bool _sending = false;
   bool _fetching = false;
   bool _canManageMessages = false;
+  bool _canDeleteConversation = false;
   final Map<int, Future<Uint8List>> _photoRequests = {};
 
   @override
@@ -781,6 +814,7 @@ class _ConversationDialogState extends State<_ConversationDialog> {
       setState(() {
         _items = items;
         _canManageMessages = result['can_manage_messages'] == true;
+        _canDeleteConversation = result['can_delete_conversation'] == true;
         _error = null;
         _loading = false;
       });
@@ -837,11 +871,8 @@ class _ConversationDialogState extends State<_ConversationDialog> {
 
   Future<void> _pickMedia() async {
     final accept = switch (_mediaType) {
-      'photo' => 'image/jpeg,image/png',
-      'video' => 'video/mp4',
-      'audio' => 'audio/*',
-      'voice' => '.ogg,.oga,audio/ogg',
-      _ => '*/*',
+      'photo' => 'image/jpeg,image/png,image/gif,image/webp',
+      _ => 'application/pdf,.docx,.xlsx,.pptx',
     };
     final picker = html.FileUploadInputElement()
       ..accept = accept
@@ -851,9 +882,7 @@ class _ConversationDialogState extends State<_ConversationDialog> {
     final files = picker.files;
     if (files == null || files.isEmpty) return;
     final file = files.first;
-    final maxBytes = _mediaType == 'photo'
-        ? 10 * 1024 * 1024
-        : 20 * 1024 * 1024;
+    const maxBytes = 20 * 1024 * 1024;
     if (file.size <= 0 || file.size > maxBytes) {
       if (mounted) {
         toast(
@@ -971,6 +1000,61 @@ class _ConversationDialogState extends State<_ConversationDialog> {
     }
   }
 
+  Future<void> _deleteConversation() async {
+    final controller = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('حذف المحادثة'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'سيُحذف سجل الرسائل ومرفقاته نهائيًا. يلزم تسجيل سبب واضح في سجل التدقيق.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              maxLines: 3,
+              maxLength: 500,
+              decoration: const InputDecoration(
+                labelText: 'سبب الحذف (5 أحرف على الأقل)',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.length >= 5) Navigator.pop(dialogContext, value);
+            },
+            child: const Text('حذف وتسجيل السبب'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (reason == null || !mounted) return;
+    try {
+      await widget.api.del(
+        '/api/admin/conversations/${widget.userId}',
+        {'reason': reason},
+      );
+      if (!mounted) return;
+      toast(context, 'حُذفت المحادثة وسُجّل السبب في التدقيق');
+      Navigator.of(context).pop();
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
+  }
+
   Future<void> _downloadMedia(Map<String, dynamic> item) async {
     try {
       await widget.api.download(
@@ -1053,7 +1137,7 @@ class _ConversationDialogState extends State<_ConversationDialog> {
                           overflow: TextOverflow.ellipsis,
                         ),
                         Text(
-                          'رسائل مباشرة عبر البوت · تحديث تلقائي',
+                          'محادثة محفوظة داخل التطبيق · تحديث تلقائي',
                           style: Theme.of(context).textTheme.labelSmall,
                         ),
                       ],
@@ -1063,6 +1147,11 @@ class _ConversationDialogState extends State<_ConversationDialog> {
                     tooltip: 'تحديث المحادثة',
                     onPressed: _loading ? null : _load,
                     icon: const Icon(Icons.refresh),
+                  ),
+                  IconButton(
+                    tooltip: 'حذف المحادثة مع تسجيل السبب',
+                    onPressed: _canDeleteConversation ? _deleteConversation : null,
+                    icon: const Icon(Icons.delete_forever_outlined),
                   ),
                   IconButton(
                     tooltip: 'إغلاق المحادثة',

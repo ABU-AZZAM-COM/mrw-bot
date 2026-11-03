@@ -3,6 +3,12 @@ import 'dart:typed_data';
 import 'api.dart';
 
 class DemoApi implements AdminApi {
+  static const Map<String, String> _reportCategories = {
+    'conduct': '🚨 تجاوزات وسلوك فردي',
+    'administrative': '⚖️ مخالفات إدارية ومالية',
+    'social': '📱 مخالفات النشر والتواصل الاجتماعي',
+    'field': '📍 بلاغ ميداني عاجل / أخرى',
+  };
   final List<String> _types = [
     'مخالفة الزي',
     'مخالفة التعليمات',
@@ -29,6 +35,9 @@ class DemoApi implements AdminApi {
   };
   final List<Map<String, dynamic>> _audit = [];
   final List<Map<String, dynamic>> _osintSources = [];
+  final Map<int, List<Map<String, dynamic>>> _userMessages = {};
+  Map<String, List<String>>? _typeGroups;
+  bool _contactGlobalEnabled = true;
 
   // ---- أزرار قائمة المستخدم (نسخة تجريبية داخلية) ----
   static const List<Map<String, String>> _botMenuActions = [
@@ -358,7 +367,29 @@ class DemoApi implements AdminApi {
       };
     }
     if (path == '/api/admin/conversations') {
-      return {'ok': true, 'items': <Map<String, dynamic>>[]};
+      return {
+        'ok': true,
+        'items': <Map<String, dynamic>>[],
+        'contact_global_enabled': _contactGlobalEnabled,
+      };
+    }
+    if (path == '/api/admin/contact-settings') {
+      return {'ok': true, 'enabled': _contactGlobalEnabled};
+    }
+    final userMessages = RegExp(
+      r'^/api/admin/users/(\d+)/messages$',
+    ).firstMatch(path);
+    if (userMessages != null) {
+      final uid = int.parse(userMessages.group(1)!);
+      if (!_users.containsKey(uid)) throw ApiException(404, 'not_found');
+      return {
+        'ok': true,
+        'can_manage_messages': true,
+        'can_delete_conversation': true,
+        'items': List<Map<String, dynamic>>.from(
+          _userMessages[uid] ?? const [],
+        ),
+      };
     }
     if (path == '/api/admin/overview') {
       final counts = <String, int>{
@@ -418,6 +449,12 @@ class DemoApi implements AdminApi {
       return {
         'ok': true,
         'items': [..._types],
+        'categories': _reportCategories,
+        'groups': _typeGroups ??
+            {
+              for (final category in _reportCategories.keys)
+                category: [..._types],
+            },
       };
     }
     if (path == '/api/admin/bot-buttons') {
@@ -727,6 +764,35 @@ class DemoApi implements AdminApi {
     String path,
     Map<String, dynamic> body,
   ) async {
+    final userMessage = RegExp(
+      r'^/api/admin/users/(\d+)/message$',
+    ).firstMatch(path);
+    if (userMessage != null) {
+      final uid = int.parse(userMessage.group(1)!);
+      if (!_users.containsKey(uid)) throw ApiException(404, 'not_found');
+      final text = '${body['text'] ?? ''}'.trim();
+      if (text.isEmpty || text.length > 1000) {
+        throw ApiException(400, 'text_length');
+      }
+      final items = _userMessages.putIfAbsent(uid, () => []);
+      final id = items.isEmpty ? 1 : (items.last['id'] as int) + 1;
+      items.add({
+        'id': id,
+        'user_id': uid,
+        'direction': 'out',
+        'text': text,
+        'created_at': DateTime.now().toIso8601String(),
+        'delivery_status': 'delivered',
+        'has_media': false,
+      });
+      _record('user_message', '$uid');
+      return {'ok': true, 'sent': true, 'message_id': id};
+    }
+    if (RegExp(
+      r'^/api/admin/users/\d+/messages/read$',
+    ).hasMatch(path)) {
+      return {'ok': true, 'last_message_id': body['last_message_id'] ?? 0};
+    }
     if (path == '/api/admin/bot-apply') {
       _record('bot_apply_all', 'إعادة تطبيق محلية');
       return {
@@ -892,14 +958,59 @@ class DemoApi implements AdminApi {
     String path,
     Map<String, dynamic> body,
   ) async {
+    if (path == '/api/admin/contact-settings') {
+      if (body['enabled'] is! bool) {
+        throw ApiException(400, 'bad_contact_setting');
+      }
+      _contactGlobalEnabled = body['enabled'] as bool;
+      _record(
+        'contact_global_enabled',
+        _contactGlobalEnabled ? 'مفتوح للجميع' : 'متوقف للجميع',
+      );
+      return {'ok': true, 'enabled': _contactGlobalEnabled};
+    }
+    final userContact = RegExp(
+      r'^/api/admin/users/(\d+)/contact$',
+    ).firstMatch(path);
+    if (userContact != null) {
+      final uid = int.parse(userContact.group(1)!);
+      final user = _users[uid];
+      if (user == null) throw ApiException(404, 'not_found');
+      if (body['enabled'] is! bool) {
+        throw ApiException(400, 'bad_contact_setting');
+      }
+      user['contact_enabled'] = body['enabled'];
+      _record(
+        body['enabled'] == true
+            ? 'user_contact_enabled'
+            : 'user_contact_disabled',
+        '$uid',
+      );
+      return {'ok': true, 'enabled': body['enabled'], 'changed': true};
+    }
     if (path == '/api/admin/vtypes') {
       _types
         ..clear()
         ..addAll(List<String>.from(body['items'] as List));
+      final groups = body['groups'];
+      if (groups is Map) {
+        _typeGroups = {
+          for (final category in _reportCategories.keys)
+            category: List<String>.from(
+              groups[category] as List? ?? const <String>[],
+            ),
+        };
+      }
       _record('vtypes_changed', 'قائمة محلية');
       return {
         'ok': true,
         'items': [..._types],
+        'categories': _reportCategories,
+        'groups': _typeGroups ??
+            {
+              for (final category in _reportCategories.keys)
+                category: [..._types],
+            },
       };
     }
     if (path == '/api/admin/bot-buttons') {
@@ -1047,6 +1158,15 @@ class DemoApi implements AdminApi {
     String path,
     Map<String, dynamic> body,
   ) async {
+    final conversation = RegExp(
+      r'^/api/admin/conversations/(\d+)$',
+    ).firstMatch(path);
+    if (conversation != null) {
+      final uid = int.parse(conversation.group(1)!);
+      _userMessages.remove(uid);
+      _record('user_conversation_deleted', '$uid');
+      return {'ok': true};
+    }
     if (path == '/api/admin/bot-buttons') {
       _botMenu = null;
       _record('bot_menu_reset', 'أزرار محلية');
@@ -1152,6 +1272,33 @@ class DemoApi implements AdminApi {
     String? filename,
     Uint8List? bytes,
   }) async {
+    final userMedia = RegExp(
+      r'^/api/admin/users/(\d+)/media$',
+    ).firstMatch(path);
+    if (userMedia != null) {
+      final uid = int.parse(userMedia.group(1)!);
+      if (!_users.containsKey(uid)) throw ApiException(404, 'not_found');
+      if (bytes == null || bytes.isEmpty) {
+        throw ApiException(400, 'media_required');
+      }
+      final items = _userMessages.putIfAbsent(uid, () => []);
+      final id = items.isEmpty ? 1 : (items.last['id'] as int) + 1;
+      final mediaType = fields['media_type'] ?? 'document';
+      items.add({
+        'id': id,
+        'user_id': uid,
+        'direction': 'out',
+        'text': fields['caption'] ?? '',
+        'created_at': DateTime.now().toIso8601String(),
+        'delivery_status': 'delivered',
+        'media_type': mediaType,
+        'filename': filename ?? 'attachment',
+        'has_media': true,
+        'has_attachment': true,
+      });
+      _record('user_media_message', '$uid');
+      return {'ok': true, 'sent': true, 'message_id': id};
+    }
     if (path == '/api/admin/bot-profile') {
       _botProfile
         ..['name'] = fields['name'] ?? ''

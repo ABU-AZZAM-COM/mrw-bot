@@ -103,7 +103,7 @@ h2 { font-size: 16px; color: var(--gold-soft); margin: 18px 0 10px; }
 
 .note {
   background: rgba(217, 164, 65, .08);
-  border-inline-start: 3px solid var(--gold);
+  border: 1px solid rgba(217, 164, 65, .22);
   padding: 10px 12px;
   border-radius: 10px;
   font-size: 13.5px;
@@ -198,7 +198,13 @@ h2 { font-size: 16px; color: var(--gold-soft); margin: 18px 0 10px; }
   padding: 14px;
   color: var(--muted);
 }
-.drop img { max-width: 100%; max-height: 260px; border-radius: 10px; }
+.photo-preview {
+  width: 100%;
+  min-height: 220px;
+  background-position: center;
+  background-size: contain;
+  background-repeat: no-repeat;
+}
 .drop.filled { border-style: solid; border-color: var(--ok); color: var(--ok); }
 
 /* ---------------- الملخص ---------------- */
@@ -226,3 +232,121 @@ h2 { font-size: 16px; color: var(--gold-soft); margin: 18px 0 10px; }
 .foot .sep { margin: 0 8px; opacity: .5; }
 
 .err { color: var(--danger); font-size: 13.5px; margin-top: 10px; }
+
+.miniapp-nav {
+  display: flex;
+  gap: 8px;
+  max-width: 640px;
+  width: 100%;
+  padding: 12px 16px 0;
+  margin-inline: auto;
+}
+.miniapp-nav .btn { flex: 1; padding-inline: 8px; }
+.section-heading, .setting-row, .composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.section-heading h2 { margin: 0; }
+.eyebrow {
+  margin: 0 0 4px;
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+.status-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.status-pill.open { color: var(--ok); border-color: var(--ok); }
+.status-pill.closed { color: var(--danger); border-color: var(--danger); }
+.chat-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.chat-message {
+  align-self: flex-start;
+  max-width: 88%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px 14px 14px 4px;
+  background: var(--bg-soft);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.chat-message.outgoing {
+  align-self: flex-end;
+  border-color: rgba(217, 164, 65, .35);
+  background: rgba(217, 164, 65, .1);
+  border-radius: 14px 14px 4px 14px;
+}
+.chat-message time { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.chat-attachment {
+  display: inline-block;
+  margin-top: 6px;
+  color: var(--gold-soft);
+  text-decoration: underline;
+}
+.chat-composer { margin-top: 12px; }
+.chat-composer textarea {
+  width: 100%;
+  min-height: 74px;
+  padding: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font: inherit;
+  resize: vertical;
+}
+.chat-composer textarea:focus { outline: 2px solid var(--gold); }
+.attach-button { display: inline-block; cursor: pointer; }
+.chat-composer .hint { margin-bottom: 0; }
+.setting-row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.setting-row > div { max-width: 82%; }
+.setting-row p { margin: 2px 0 0; }
+.setting-row input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--gold);
+}
+.verification-status {
+  margin-top: 18px;
+  padding: 14px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.verification-status h3 { margin: 0; color: var(--gold-soft); font-size: 14px; }
+.verification-status p { margin-bottom: 0; white-space: pre-wrap; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 420px) {
+  .miniapp-nav { gap: 4px; padding-inline: 10px; }
+  .miniapp-nav .btn { font-size: 13px; padding: 10px 4px; }
+  .composer-actions { flex-wrap: wrap; }
+}

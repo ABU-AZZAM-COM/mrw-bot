@@ -504,11 +504,10 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
             rows = keyboards.main_menu_kb().inline_keyboard
 
         self.assertEqual(rows[0][0].callback_data, "usr:report")
-        self.assertEqual(rows[1][0].callback_data, "usr:verify")
-        self.assertEqual(rows[2][0].callback_data, "usr:verify-status")
-        self.assertEqual(rows[3][0].callback_data, "usr:status")
-        self.assertEqual(rows[4][0].callback_data, "usr:about")
-        self.assertEqual(rows[4][1].callback_data, "usr:contact")
+        self.assertEqual(rows[1][0].callback_data, "usr:status")
+        self.assertEqual(rows[2][0].callback_data, "usr:verify")
+        self.assertEqual(rows[3][0].callback_data, "usr:contact")
+        self.assertEqual(rows[4][0].callback_data, "usr:settings")
 
     async def test_main_menu_shows_verification_when_encryption_is_ready(self):
         with (
@@ -517,8 +516,8 @@ class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
         ):
             rows = keyboards.main_menu_kb().inline_keyboard
 
-        self.assertEqual(rows[1][0].callback_data, "usr:verify")
-        self.assertEqual(rows[2][0].callback_data, "usr:verify-status")
+        self.assertEqual(rows[1][0].callback_data, "usr:status")
+        self.assertEqual(rows[2][0].callback_data, "usr:verify")
 
     async def test_confirmation_keeps_final_receipt_navigation_separate(self):
         receipt = keyboards.saved_receipt_kb()

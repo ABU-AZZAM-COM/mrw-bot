@@ -153,35 +153,11 @@ class MessageComposer extends StatelessWidget {
                       ),
                     ),
                     PopupMenuItem(
-                      value: 'video',
-                      child: ListTile(
-                        dense: true,
-                        leading: Icon(Icons.videocam_outlined),
-                        title: Text('فيديو MP4'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'audio',
-                      child: ListTile(
-                        dense: true,
-                        leading: Icon(Icons.audiotrack_outlined),
-                        title: Text('ملف صوتي'),
-                      ),
-                    ),
-                    PopupMenuItem(
-                      value: 'voice',
-                      child: ListTile(
-                        dense: true,
-                        leading: Icon(Icons.mic_none_outlined),
-                        title: Text('رسالة صوتية محفوظة'),
-                      ),
-                    ),
-                    PopupMenuItem(
                       value: 'document',
                       child: ListTile(
                         dense: true,
                         leading: Icon(Icons.insert_drive_file_outlined),
-                        title: Text('ملف'),
+                        title: Text('PDF أو مستند Office'),
                       ),
                     ),
                   ],

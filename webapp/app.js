@@ -7,6 +7,8 @@
 
   /* ---------- أنواع المخالفات ---------- */
   var TYPES = [];
+  var CATEGORIES = [];
+  var TYPE_GROUPS = {};
   var MAX_DESC_LEN = 1500;
   var MIN_DESC_LEN = 40;
   var MIN_DESC_WORDS = 6;
@@ -15,6 +17,7 @@
   /* ---------- الحالة ---------- */
   var state = {
     step: "intro",
+    category: "",
     type: "",
     lat: null,
     lon: null,
@@ -28,6 +31,9 @@
   };
 
   var tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  var chatAfterId = 0;
+  var chatPolling = null;
+  var chatLoaded = false;
 
   /* ---------- أدوات ---------- */
   function $(id) { return document.getElementById(id); }
@@ -109,7 +115,7 @@
 
   /* ---------- عرض الخطوات ---------- */
   function render() {
-    ["intro", "step1", "step2", "step3", "done"].forEach(function (name) {
+    ["intro", "step1", "step2", "step3", "done", "contact", "settings"].forEach(function (name) {
       var card = $("card-" + name);
       if (card) { hide(card); }
     });
@@ -127,6 +133,14 @@
       if (state.step === "intro" || state.step === "done") { tg.BackButton.hide(); }
       else { tg.BackButton.show(); }
     }
+    var navButtons = document.querySelectorAll("[data-open-view]");
+    for (var j = 0; j < navButtons.length; j++) {
+      navButtons[j].classList.toggle(
+        "primary",
+        navButtons[j].getAttribute("data-open-view") ===
+          (state.step === "contact" || state.step === "settings" ? state.step : "report")
+      );
+    }
   }
 
   function go(step) { state.step = step; render(); window.scrollTo(0, 0); }
@@ -135,25 +149,52 @@
     if (state.step === "step1") { go("intro"); }
     else if (state.step === "step2") { go("step1"); }
     else if (state.step === "step3") { go("step2"); }
+    else if (state.step === "contact" || state.step === "settings") { go("intro"); }
   }
 
   /* ---------- أنواع المخالفات ---------- */
   function buildTypes() {
+    var categoryBox = $("categories");
+    categoryBox.innerHTML = "";
+    $("types").innerHTML = "";
+    $("types").hidden = true;
+    $("types-label").hidden = true;
+    CATEGORIES.forEach(function (category) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "chip";
+      button.textContent = category.label;
+      button.addEventListener("click", function () {
+        var all = categoryBox.querySelectorAll(".chip");
+        for (var i = 0; i < all.length; i++) { all[i].classList.remove("on"); }
+        button.classList.add("on");
+        state.category = category.id;
+        state.type = "";
+        buildCategoryTypes(category);
+      });
+      categoryBox.appendChild(button);
+    });
+  }
+
+  function buildCategoryTypes(category) {
     var box = $("types");
     box.innerHTML = "";
-    TYPES.forEach(function (name) {
-      var b = document.createElement("button");
-      b.type = "button";
-      b.className = "chip";
-      b.textContent = name;
-      b.addEventListener("click", function () {
+    (TYPE_GROUPS[category.id] || []).forEach(function (name) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "chip";
+      button.textContent = name;
+      button.addEventListener("click", function () {
         var all = box.querySelectorAll(".chip");
         for (var i = 0; i < all.length; i++) { all[i].classList.remove("on"); }
-        b.classList.add("on");
+        button.classList.add("on");
         state.type = name;
       });
-      box.appendChild(b);
+      box.appendChild(button);
     });
+    $("types-label").textContent = "اختر النوع داخل " + category.label;
+    $("types-label").hidden = false;
+    box.hidden = false;
   }
 
   function loadTypes() {
@@ -169,10 +210,23 @@
             result.items.length === 0 ||
             !result.items.every(function (item) {
               return typeof item === "string" && item.trim().length > 0;
-            })) {
+            }) || !Array.isArray(result.categories) ||
+            !result.categories.length || !result.groups ||
+            typeof result.groups !== "object") {
           throw new Error("bad_types_response");
         }
         TYPES = result.items;
+        CATEGORIES = result.categories.filter(function (category) {
+          return category && typeof category.id === "string" &&
+            typeof category.label === "string" &&
+            Array.isArray(result.groups[category.id]) &&
+            result.groups[category.id].length > 0 &&
+            result.groups[category.id].every(function (item) {
+              return TYPES.indexOf(item) !== -1;
+            });
+        });
+        if (!CATEGORIES.length) { throw new Error("bad_category_groups"); }
+        TYPE_GROUPS = result.groups;
         MAX_DESC_LEN = Number.isInteger(result.max_desc_len) && result.max_desc_len > 0
           ? result.max_desc_len : MAX_DESC_LEN;
         MIN_DESC_LEN = Number.isInteger(result.min_desc_len) && result.min_desc_len > 0
@@ -235,7 +289,7 @@
     var preview = $("preview");
     var reader = new FileReader();
     reader.onload = function (e) {
-      preview.src = e.target.result;
+      preview.style.backgroundImage = "url('" + e.target.result + "')";
       preview.hidden = false;
       $("drop-label").hidden = true;
       $("drop").classList.add("filled");
@@ -245,8 +299,12 @@
 
   /* ---------- الملخص ---------- */
   function buildSummary() {
+    var selectedCategory = CATEGORIES.find(function (category) {
+      return category.id === state.category;
+    });
     var rows = [
       ["نوع المخالفة", state.type || "غير محدد"],
+      ["القسم", selectedCategory ? selectedCategory.label : "غير محدد"],
       ["منصة النشر", state.platform || "غير معروفة"],
       ["الموقع", (state.lat != null) ? (state.lat.toFixed(5) + " , " + state.lon.toFixed(5)) : "غير محدد"],
       ["وصف المكان", state.place || "—"],
@@ -269,6 +327,7 @@
     return {
       v: 1,
       type: state.type,
+      category: state.category,
       lat: state.lat,
       lon: state.lon,
       place: state.place,
@@ -326,36 +385,260 @@
         );
         return;
       }
+      fallbackSend(data);
+    });
+  }
 
-      // احتياطي: الإرسال الأصلي عبر تيليغرام (يعمل عند الفتح من زر لوحة الرد)
-      if (tg && tg.sendData) {
-        if (utf8Size(data) > 4000) {
-          status("تعذر الاتصال بالخادم والبيانات أكبر من حد تيليغرام. تحقق من الاتصال ثم أعد المحاولة.");
-          return;
+  function userApi(path, options) {
+        options = options || {};
+        options.headers = options.headers || {};
+        if (tg && tg.initData) {
+          options.headers["X-Telegram-Init-Data"] = tg.initData;
         }
-        try {
-          tg.sendData(data);
-          showDone(
-            "تم الإرسال ✅",
-            "ارجع إلى المحادثة: سيطلب منك البوت إرسال الصورة ثم يعطيك رقم البلاغ.",
-            0
-          );
-          return;
-        } catch (e) { /* نكمل إلى الخيار الأخير */ }
+        return fetch(path, options).then(function (response) {
+          return response.json().catch(function () { return { ok: false }; })
+            .then(function (result) {
+              if (!response.ok || !result || result.ok !== true) {
+                throw new Error(result && result.error ? result.error : "request_failed");
+              }
+              return result;
+            });
+        });
       }
 
-      // وضع التطبيق المستقل (بلا تيليغرام): مشاركة عبر رابط تيليغرام
-      var text = "بلاغ جديد عبر التطبيق:\n" + data;
-      var bot = (tg && tg.initDataUnsafe && tg.initDataUnsafe.bot_username) || "blgh_bot";
-      var url = "https://t.me/share/url?url=" + encodeURIComponent("https://t.me/" + bot) +
-                "&text=" + encodeURIComponent(text);
-      window.open(url, "_blank");
-      showDone(
-        "تم فتح تيليغرام",
-        "أرسل الرسالة إلى @blgh_bot ثم أرسل الصورة، وسيصلك رقم البلاغ.",
-        0
-      );
-    });
+  function openView(view) {
+        if (view === "report") {
+          if (chatPolling) { clearInterval(chatPolling); chatPolling = null; }
+          go("intro");
+          return;
+        }
+        go(view);
+        if (view === "contact") {
+          loadContactSettings();
+          loadChatMessages(true);
+          if (chatPolling) { clearInterval(chatPolling); }
+          chatPolling = setInterval(function () { loadChatMessages(false); }, 8000);
+        } else if (view === "settings") {
+          if (chatPolling) { clearInterval(chatPolling); chatPolling = null; }
+          loadUserSettings();
+        }
+      }
+
+  function loadContactSettings() {
+        if (!tg || !tg.initData) {
+          $("contact-state").textContent = "يتطلب Telegram";
+          $("contact-state").className = "status-pill closed";
+          $("contact-notice").textContent = "افتح هذه الصفحة من تطبيق البوت في Telegram لبدء محادثة آمنة.";
+          $("chat-send").disabled = true;
+          return;
+        }
+        userApi("/api/user/settings", { cache: "no-store" }).then(function (result) {
+          var open = result.can_send_contact === true;
+          $("contact-state").textContent = open ? "متاح" : "غير متاح";
+          $("contact-state").className = "status-pill " + (open ? "open" : "closed");
+          $("contact-notice").textContent = open
+            ? "تُحفظ رسائلك في محادثة خاصة واحدة مع الإدارة."
+            : "التواصل غير متاح لهذا الحساب حاليًا. يمكنك قراءة سجل المحادثة.";
+          $("chat-text").disabled = !open;
+          $("chat-file").disabled = !open;
+          $("chat-send").disabled = !open;
+          $("chat-form").setAttribute("data-can-send", open ? "1" : "0");
+        }).catch(function (error) {
+          $("contact-state").textContent = "تعذّر التحقق";
+          $("contact-state").className = "status-pill closed";
+          $("contact-notice").textContent = "تعذّر تحميل حالة التواصل. أعد فتح الصفحة وحاول مجددًا.";
+          $("chat-send").disabled = true;
+          console.error("تعذر تحميل حالة التواصل:", error);
+        });
+      }
+
+  function appendChatMessage(item) {
+        var feed = $("chat-feed");
+        var bubble = document.createElement("article");
+        bubble.className = "chat-message" + (item.direction === "out" ? " outgoing" : "");
+        bubble.appendChild(document.createTextNode(item.is_deleted ? "تم حذف هذه الرسالة" : (item.text || "")));
+        if (item.has_media && !item.is_deleted) {
+          var link = document.createElement("a");
+          link.className = "chat-attachment";
+          link.href = "#";
+          link.textContent = "📎 " + (item.filename || "عرض المرفق");
+          link.addEventListener("click", function (event) {
+            event.preventDefault();
+            fetch("/api/user/messages/" + encodeURIComponent(item.id) + "/attachment", {
+              headers: tg && tg.initData ? { "X-Telegram-Init-Data": tg.initData } : {}
+            }).then(function (response) {
+              if (!response.ok) { throw new Error("attachment_download_failed"); }
+              return response.blob();
+            }).then(function (blob) {
+              var objectUrl = URL.createObjectURL(blob);
+              var download = document.createElement("a");
+              download.href = objectUrl;
+              download.download = item.filename || "attachment";
+              document.body.appendChild(download);
+              download.click();
+              download.remove();
+              setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1000);
+            }).catch(function (error) {
+              console.error("تعذر تنزيل المرفق:", error);
+              status("تعذر تنزيل المرفق");
+            });
+          });
+          bubble.appendChild(document.createElement("br"));
+          bubble.appendChild(link);
+        }
+        if (item.created_at) {
+          var time = document.createElement("time");
+          time.textContent = new Date(item.created_at).toLocaleString("ar");
+          bubble.appendChild(time);
+        }
+        feed.appendChild(bubble);
+      }
+
+  function loadChatMessages(reset) {
+        if (!tg || !tg.initData) { return; }
+        if (reset) {
+          chatAfterId = 0;
+          chatLoaded = false;
+          $("chat-feed").textContent = "";
+        }
+        userApi("/api/user/messages?after_id=" + chatAfterId, { cache: "no-store" })
+          .then(function (result) {
+            var items = Array.isArray(result.items) ? result.items : [];
+            items.forEach(function (item) {
+              appendChatMessage(item);
+              chatAfterId = Math.max(chatAfterId, Number(item.id) || 0);
+            });
+            if (items.length) { $("chat-feed").scrollTop = $("chat-feed").scrollHeight; }
+            chatLoaded = true;
+          })
+          .catch(function (error) {
+            if (!chatLoaded) {
+              $("chat-feed").textContent = "تعذّر تحميل المحادثة. تحقق من الاتصال ثم أعد المحاولة.";
+            }
+            console.error("تعذر تحميل المحادثة:", error);
+          });
+      }
+
+  function sendChatMessage(event) {
+        event.preventDefault();
+        if ($("chat-form").getAttribute("data-can-send") !== "1") { return; }
+        var text = $("chat-text").value.trim();
+        var file = $("chat-file").files[0];
+        if (!file && !text) { return; }
+        if (file && file.size > 20 * 1024 * 1024) {
+          alert("حجم المرفق يتجاوز الحد الأقصى وهو 20 ميغابايت.");
+          return;
+        }
+        $("chat-send").disabled = true;
+        var request;
+        if (file) {
+          var form = new FormData();
+          form.append("file", file);
+          form.append("text", text);
+          request = userApi("/api/user/messages/attachment", { method: "POST", body: form });
+        } else {
+          request = userApi("/api/user/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: text })
+          });
+        }
+        request.then(function () {
+          $("chat-text").value = "";
+          $("chat-file").value = "";
+          $("chat-file-name").textContent = "";
+          loadChatMessages(false);
+        }).catch(function (error) {
+          var message = error.message === "contact_unavailable"
+            ? "التواصل غير متاح لهذا الحساب حاليًا."
+            : error.message === "unsupported_attachment"
+            ? "نوع الملف غير مسموح. أرسل صورة أو PDF أو مستند Office."
+            : "تعذّر إرسال الرسالة. حاول مرة أخرى.";
+          status(message);
+          console.error("تعذر إرسال رسالة التواصل:", error);
+        }).then(function () {
+          $("chat-send").disabled = $("chat-form").getAttribute("data-can-send") !== "1";
+        });
+      }
+
+  function loadUserSettings() {
+        if (!tg || !tg.initData) {
+          $("verification-summary").textContent = "افتح التطبيق من Telegram لتحميل إعدادات حسابك.";
+          return;
+        }
+        userApi("/api/user/settings", { cache: "no-store" }).then(function (result) {
+          var preferences = result.preferences || {};
+          $("setting-reply-alerts").checked = preferences.telegram_reply_alerts !== false;
+          $("setting-publication-alerts").checked = preferences.publication_alerts !== false;
+          $("setting-reply-alerts").disabled = false;
+          $("setting-publication-alerts").disabled = false;
+          var verification = result.verification;
+          if (!verification) {
+            $("verification-summary").textContent = "لم يبدأ طلب توثيق لهذا الحساب.";
+            return;
+          }
+          var labels = {
+            verified: "موثّق",
+            pending: "قيد المراجعة",
+            capturing: "استكمال خطوات التوثيق",
+            rejected: "مرفوض"
+          };
+          var summary = "الحالة: " + (labels[verification.status] || verification.status || "غير محددة");
+          if (verification.message) { summary += "\nرسالة المشرف: " + verification.message; }
+          if (verification.reason) { summary += "\nسبب الرفض: " + verification.reason; }
+          $("verification-summary").textContent = summary;
+        }).catch(function (error) {
+          $("verification-summary").textContent = "تعذّر تحميل الإعدادات. حاول مجددًا.";
+          console.error("تعذر تحميل الإعدادات:", error);
+        });
+      }
+
+  function saveUserSettings() {
+        userApi("/api/user/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            telegram_reply_alerts: $("setting-reply-alerts").checked,
+            publication_alerts: $("setting-publication-alerts").checked
+          })
+        }).then(function () {
+          status("تم حفظ الإعدادات");
+        }).catch(function (error) {
+          status("تعذر حفظ الإعدادات");
+          console.error("تعذر حفظ الإعدادات:", error);
+          loadUserSettings();
+        });
+  }
+
+  function fallbackSend(data) {
+    // احتياطي: الإرسال الأصلي عبر تيليغرام (يعمل عند الفتح من زر لوحة الرد)
+    if (tg && tg.sendData) {
+      if (utf8Size(data) > 4000) {
+        status("تعذر الاتصال بالخادم والبيانات أكبر من حد تيليغرام. تحقق من الاتصال ثم أعد المحاولة.");
+        return;
+      }
+      try {
+        tg.sendData(data);
+        showDone(
+          "تم الإرسال ✅",
+          "ارجع إلى المحادثة: سيطلب منك البوت إرسال الصورة ثم يعطيك رقم البلاغ.",
+          0
+        );
+        return;
+      } catch (e) { /* نكمل إلى الخيار الأخير */ }
+    }
+
+    // وضع التطبيق المستقل (بلا تيليغرام): مشاركة عبر رابط تيليغرام
+    var text = "بلاغ جديد عبر التطبيق:\n" + data;
+    var bot = (tg && tg.initDataUnsafe && tg.initDataUnsafe.bot_username) || "blgh_bot";
+    var url = "https://t.me/share/url?url=" + encodeURIComponent("https://t.me/" + bot) +
+              "&text=" + encodeURIComponent(text);
+    window.open(url, "_blank");
+    showDone(
+      "تم فتح تيليغرام",
+      "أرسل الرسالة إلى @blgh_bot ثم أرسل الصورة، وسيصلك رقم البلاغ.",
+      0
+    );
   }
 
   /* ---------- التهيئة ---------- */
@@ -366,6 +649,11 @@
     $("btn-begin").addEventListener("click", function () { go("step1"); });
     $("btn-locate").addEventListener("click", locate);
     $("btn-to-2").addEventListener("click", function () {
+      if (!state.category || !state.type) {
+        $("taxonomy-error").textContent = "اختر القسم والنوع أولًا.";
+        return;
+      }
+      $("taxonomy-error").textContent = "";
       state.place = $("place").value.trim();
       go("step2");
     });
@@ -410,12 +698,17 @@
     $("btn-send").addEventListener("click", send);
     $("btn-again").addEventListener("click", function () {
       state.type = ""; state.lat = null; state.lon = null;
+      state.category = "";
       state.place = ""; state.desc = ""; state.link = "";
       state.photoName = ""; state.photoSize = 0;
       $("place").value = ""; $("desc").value = ""; $("link").value = "";
-      $("preview").hidden = true; $("drop-label").hidden = false;
+      $("preview").hidden = true; $("preview").style.backgroundImage = "";
+      $("drop-label").hidden = false;
       $("drop").classList.remove("filled");
       $("photo-input").value = "";
+      $("types").hidden = true;
+      $("types-label").hidden = true;
+      $("taxonomy-error").textContent = "";
       var all = document.querySelectorAll(".chip");
       for (var i = 0; i < all.length; i++) { all[i].classList.remove("on"); }
       go("intro");
@@ -433,6 +726,18 @@
       }
     });
     $("photo-input").addEventListener("change", function () { onPhoto(this.files[0]); });
+    $("chat-form").addEventListener("submit", sendChatMessage);
+    $("chat-file").addEventListener("change", function () {
+      $("chat-file-name").textContent = this.files[0] ? this.files[0].name : "";
+    });
+    $("setting-reply-alerts").addEventListener("change", saveUserSettings);
+    $("setting-publication-alerts").addEventListener("change", saveUserSettings);
+    var viewButtons = document.querySelectorAll("[data-open-view]");
+    for (var v = 0; v < viewButtons.length; v++) {
+      viewButtons[v].addEventListener("click", function () {
+        openView(this.getAttribute("data-open-view"));
+      });
+    }
 
     var backs = document.querySelectorAll("[data-back]");
     for (var i = 0; i < backs.length; i++) {
@@ -445,6 +750,10 @@
 
     render();
     status(tg ? "جاهز — داخل تلغرام" : "جاهز — نسخة مستقلة");
+    var requestedView = new URLSearchParams(window.location.search).get("view");
+    if (requestedView === "contact" || requestedView === "settings") {
+      openView(requestedView);
+    }
   }
 
   if (document.readyState === "loading") {
