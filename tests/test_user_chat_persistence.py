@@ -36,6 +36,17 @@ class UserChatPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.db.get_user_message_attachment(202, message_id))
         self.assertTrue((await self.db.list_user_messages(101))[0]["has_attachment"])
 
+    async def test_messages_before_id_return_older_page_in_chronological_order(self):
+        await self.db.open_user_conversation(101)
+        ids = [
+            await self.db.add_user_message(101, "in", f"رسالة {index}")
+            for index in range(5)
+        ]
+
+        older = await self.db.list_user_messages_before(101, ids[3], 2)
+
+        self.assertEqual([item["id"] for item in older], ids[1:3])
+
     async def test_delete_conversation_removes_messages_and_records_reason(self):
         await self.db.open_user_conversation(101)
         await self.db.add_user_message(

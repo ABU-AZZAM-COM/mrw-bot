@@ -3,166 +3,79 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1b16">
-  <meta name="description" content="إرسال بلاغ موثق إلى منظومة استقبال البلاغات">
-  <title>إرسال بلاغ | منظومة البلاغات</title>
+  <meta name="theme-color" content="#075e54">
+  <meta name="description" content="محادثة خاصة بينك وبين إدارة منظومة استقبال البلاغات">
+  <title>التواصل مع الإدارة | منظومة استقبال البلاغات</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="shield" aria-hidden="true">🛡️</span>
-      <div>
-        <h1>منظومة استقبال البلاغات</h1>
-        <p>نموذج موثّق لإرسال البلاغ ومتابعته</p>
+  <!--
+  THESIS: A single private thread between the Telegram user and administration; this screen refuses report forms, settings, and service navigation.
+  OWN-WORLD: WhatsApp conversation grammar—forest-green contact bar, pale chat-paper canvas, white administration bubbles, green user bubbles, and a compact rounded composer.
+  STORY: Recognize the administration thread, scan persisted messages, then send text or an approved attachment.
+  FIRST VIEWPORT: Full-height, phone-width chat with contact status above a scrollable transcript and a composer anchored at the bottom.
+  FORM: User-pinned WhatsApp-inspired direct chat; the thread is the entire surface, with no concept-seed staging.
+  -->
+  <main class="chat-app" aria-label="محادثة التواصل مع الإدارة">
+    <header class="chat-header">
+      <button id="close-chat" class="icon-button close-button" type="button" aria-label="إغلاق المحادثة والعودة إلى Telegram" title="العودة إلى Telegram">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+      </button>
+      <img class="service-avatar" src="/icon.svg" alt="" aria-hidden="true">
+      <div class="contact-heading">
+        <h1>التواصل مع الإدارة</h1>
+        <p>منظومة استقبال البلاغات</p>
       </div>
-    </div>
-    <p id="whoami" class="hint" aria-live="polite"></p>
-    <nav class="steps" aria-label="خطوات البلاغ">
-      <span class="dot active" aria-label="الخطوة الأولى">1</span>
-      <span class="dot" aria-label="الخطوة الثانية">2</span>
-      <span class="dot" aria-label="الخطوة الثالثة">3</span>
-    </nav>
-  </header>
-
-  <nav class="miniapp-nav" aria-label="أقسام التطبيق">
-    <button class="btn ghost" type="button" data-open-view="report">البلاغات</button>
-    <button class="btn ghost" type="button" data-open-view="contact">التواصل</button>
-    <button class="btn ghost" type="button" data-open-view="settings">الإعدادات</button>
-  </nav>
-
-  <main>
-    <p id="status" class="hint" role="status" aria-live="polite">جارٍ تجهيز النموذج...</p>
-
-    <section id="card-intro" class="card">
-      <h2>إرسال بلاغ جديد</h2>
-      <p>أكمل البيانات وأرفق رابط المنشور الأصلي. بعد الإرسال سيطلب منك البوت إرسال الصورة في المحادثة.</p>
-      <div class="note">تُستخدم المعلومات لمراجعة البلاغ والتحقق منه. تأكد من دقة التفاصيل قبل الإرسال.</div>
-      <p id="types-error" class="err" role="alert" aria-live="assertive"></p>
-      <button id="btn-begin" class="btn primary big" type="button" disabled>ابدأ تعبئة البلاغ</button>
-    </section>
-
-    <section id="card-step1" class="card" hidden>
-      <h2>١. القسم والنوع والموقع</h2>
-      <p class="hint">اختر القسم العام أولًا، ثم النوع المحدد داخله.</p>
-      <div id="categories" class="chips" role="group" aria-label="قسم البلاغ"></div>
-      <p id="types-label" class="hint" hidden></p>
-      <div id="types" class="chips" role="group" aria-label="نوع البلاغ" hidden></div>
-      <p id="taxonomy-error" class="err" role="alert" aria-live="assertive"></p>
-      <h2>الموقع الجغرافي</h2>
-      <div class="location-box">
-        <span id="loc-status" class="loc-status" aria-live="polite">لم يتم تحديد الموقع</span>
-        <button id="btn-locate" class="btn" type="button">📍 تحديد موقعي</button>
-      </div>
-      <label class="field" for="place">
-        <span>وصف المكان (اختياري)</span>
-        <input id="place" type="text" maxlength="120" autocomplete="off" placeholder="مثال: قرب المدخل الرئيسي">
-      </label>
-      <div class="nav">
-        <button class="btn ghost" type="button" data-back="intro">رجوع</button>
-        <button id="btn-to-2" class="btn primary" type="button">متابعة</button>
-      </div>
-    </section>
-
-    <section id="card-step2" class="card" hidden>
-      <h2>٢. تفاصيل البلاغ</h2>
-      <label class="field" for="desc">
-        <span>وصف ما حدث <b class="req">*</b></span>
-        <textarea id="desc" rows="5" maxlength="1500" placeholder="اشرح ما حدث ومتى وأين..."></textarea>
-      </label>
-      <p id="desc-counter" class="hint" aria-live="polite">0 / 1500</p>
-      <span id="desc-help" class="hint">اكتب وصفًا واضحًا ومفصلًا.</span>
-      <span id="desc-note" class="req-note" aria-live="polite"></span>
-      <label class="field" for="link">
-        <span>رابط المنشور الأصلي <b class="req">*</b></span>
-        <input id="link" type="url" inputmode="url" autocomplete="url" placeholder="https://">
-      </label>
-      <span id="link-note" class="req-note" aria-live="polite">
-        الرابط مطلوب لإتمام البلاغ. بإرساله، توافق على مشاركته مع VirusTotal لفحصه أمنيًا.
+      <span id="contact-state" class="contact-state checking" role="status" aria-live="polite">
+        <span class="state-dot" aria-hidden="true"></span>
+        <span id="contact-state-label">جارٍ التحقق</span>
       </span>
-      <h2>الصورة (اختياري)</h2>
-      <div id="drop" class="drop" role="button" tabindex="0" aria-label="اختيار صورة للمعاينة">
-        <span id="drop-label">📷 اضغط لاختيار صورة للمعاينة</span>
-        <div id="preview" class="photo-preview" role="img" aria-label="معاينة الصورة المختارة" hidden></div>
-      </div>
-      <input id="photo-input" type="file" accept="image/*" hidden>
-      <p class="hint">سيطلب منك البوت إرسال الصورة في المحادثة بعد إرسال البلاغ.</p>
-      <div class="nav">
-        <button class="btn ghost" type="button" data-back="step1">رجوع</button>
-        <button id="btn-to-3" class="btn primary" type="button">مراجعة البلاغ</button>
-      </div>
-    </section>
+    </header>
 
-    <section id="card-step3" class="card" hidden>
-      <h2>٣. مراجعة قبل الإرسال</h2>
-      <div id="summary" class="summary"></div>
-      <p id="photo-note" class="note"></p>
-      <div class="nav">
-        <button class="btn ghost" type="button" data-back="step2">تعديل</button>
-        <button id="btn-send" class="btn primary" type="button">إرسال البلاغ</button>
+    <section class="conversation" aria-label="الرسائل">
+      <div class="conversation-notice">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3m-12 0h14v11H5z"/><path d="M12 14v3"/></svg>
+        <p>هذه محادثة خاصة محفوظة بينك وبين الإدارة.</p>
       </div>
-    </section>
-
-    <section id="card-done" class="card done" hidden>
-      <div class="done-icon" aria-hidden="true">✅</div>
-      <h2 id="done-title">تم الإرسال</h2>
-      <p id="done-body"></p>
-      <button id="btn-again" class="btn primary" type="button">إرسال بلاغ آخر</button>
-    </section>
-
-    <section id="card-contact" class="card" hidden>
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">محادثة خاصة</p>
-          <h2>التواصل مع الإدارة</h2>
+      <div id="chat-feed" class="chat-feed" role="log" aria-live="polite" aria-relevant="additions text" aria-label="سجل الرسائل">
+        <div id="chat-loading" class="conversation-state">
+          <span class="loading-mark" aria-hidden="true"></span>
+          <p>جارٍ تحميل المحادثة...</p>
         </div>
-        <span id="contact-state" class="status-pill">جارٍ التحقق</span>
       </div>
-      <p id="contact-notice" class="note" role="status"></p>
-      <div id="chat-feed" class="chat-feed" aria-live="polite" aria-label="رسائل المحادثة"></div>
-      <form id="chat-form" class="chat-composer">
+      <button id="latest-button" class="latest-button" type="button" hidden>
+        <span aria-hidden="true">↓</span>
+        رسائل جديدة
+      </button>
+    </section>
+
+    <section class="composer-area" aria-label="إرسال رسالة">
+      <p id="contact-notice" class="contact-notice" role="status" aria-live="polite" hidden></p>
+      <div id="attachment-preview" class="attachment-preview" hidden>
+        <span class="attachment-symbol" aria-hidden="true">📎</span>
+        <span id="attachment-name" class="attachment-name"></span>
+        <span id="attachment-size" class="attachment-size"></span>
+        <button id="remove-attachment" class="remove-attachment" type="button" aria-label="إزالة المرفق" title="إزالة المرفق">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
+        </button>
+      </div>
+      <form id="chat-form" class="composer">
+        <label id="attach-button" class="composer-icon attach-control" for="chat-file" aria-label="إرفاق صورة أو ملف" title="إرفاق صورة أو ملف">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
+        </label>
+        <input id="chat-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.docx,.xlsx,.pptx" hidden>
         <label class="sr-only" for="chat-text">اكتب رسالتك</label>
-        <textarea id="chat-text" rows="2" maxlength="2000" placeholder="اكتب رسالتك..."></textarea>
-        <div class="composer-actions">
-          <label class="btn ghost attach-button" for="chat-file">📎 إرفاق صورة أو ملف</label>
-          <input id="chat-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.docx,.xlsx,.pptx" hidden>
-          <span id="chat-file-name" class="hint"></span>
-          <button id="chat-send" class="btn primary" type="submit">إرسال</button>
-        </div>
-        <p class="hint">الصور وPDF ومستندات Office فقط، حتى 20 ميغابايت لكل مرفق. لا تُقبل الأرشيفات أو الملفات التنفيذية.</p>
+        <textarea id="chat-text" rows="1" maxlength="2000" placeholder="اكتب رسالة..." autocomplete="off"></textarea>
+        <button id="chat-send" class="send-button" type="submit" aria-label="إرسال الرسالة" title="إرسال الرسالة" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+        </button>
       </form>
-    </section>
-
-    <section id="card-settings" class="card" hidden>
-      <p class="eyebrow">تحكم بتجربتك</p>
-      <h2>الإعدادات</h2>
-      <div class="setting-row">
-        <div>
-          <strong>تنبيه Telegram عند رد الإدارة</strong>
-          <p class="hint">إيقاف التنبيه لا يحذف الردود المحفوظة في المحادثة.</p>
-        </div>
-        <input id="setting-reply-alerts" type="checkbox" aria-label="تنبيه Telegram عند رد الإدارة" disabled>
-      </div>
-      <div class="setting-row">
-        <div>
-          <strong>إشعارات المنشورات الأمنية والعامة والهامة</strong>
-          <p class="hint">تصلك المنشورات من البوت مع محتواها أو رابطها.</p>
-        </div>
-        <input id="setting-publication-alerts" type="checkbox" aria-label="إشعارات المنشورات" disabled>
-      </div>
-      <div class="verification-status">
-        <h3>حالة توثيق الحساب</h3>
-        <p id="verification-summary" class="hint">جارٍ تحميل الحالة...</p>
-      </div>
+      <p id="chat-status" class="chat-status" role="status" aria-live="polite" hidden></p>
+      <p class="composer-hint">صور وPDF ومستندات Office، حتى 20 ميغابايت لكل مرفق.</p>
     </section>
   </main>
-
-  <footer class="foot">
-    <span>منظومة استقبال البلاغات</span>
-    <span class="sep">•</span>
-    <span>يرجى استخدام النموذج بمسؤولية</span>
-  </footer>
 </body>
 </html>

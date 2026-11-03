@@ -604,7 +604,15 @@ def build_app() -> FastAPI:
             after_id = max(0, int(request.query_params.get("after_id", "0") or 0))
         except ValueError:
             return _webapp_denied(400, "bad_query")
-        items = await db.list_user_messages(user_id, after_id, 100)
+        raw_before_id = request.query_params.get("before_id")
+        if raw_before_id is not None:
+            try:
+                before_id = max(0, int(raw_before_id or 0))
+            except ValueError:
+                return _webapp_denied(400, "bad_query")
+            items = await db.list_user_messages_before(user_id, before_id, 100)
+        else:
+            items = await db.list_user_messages(user_id, after_id, 100)
         safe_items = []
         for item in items:
             safe_items.append({

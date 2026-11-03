@@ -4139,6 +4139,35 @@ class Database:
             self._list_user_messages, user_id, after_id, limit
         )
 
+    def _list_user_messages_before(
+        self, user_id: int, before_id: int = 0, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, user_id, direction, text, admin_id, created_at,
+                       delivery_status, error_code, media_type, telegram_file_id,
+                       telegram_message_id, filename, is_edited, is_deleted,
+                       EXISTS(
+                           SELECT 1 FROM user_message_attachments a
+                           WHERE a.message_id = user_messages.id
+                       ) AS has_attachment
+                FROM user_messages
+                WHERE user_id = ? AND (? = 0 OR id < ?)
+                ORDER BY id DESC LIMIT ?
+                """,
+                (user_id, max(0, int(before_id)), max(0, int(before_id)), limit),
+            ).fetchall()
+            return [_row_to_dict(row) for row in reversed(rows)]
+
+    async def list_user_messages_before(
+        self, user_id: int, before_id: int = 0, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._list_user_messages_before, user_id, before_id, limit
+        )
+
     def _get_outgoing_user_message(
         self, user_id: int, message_id: int
     ) -> dict[str, Any] | None:

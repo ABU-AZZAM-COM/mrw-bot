@@ -135,6 +135,31 @@ class UserChatApiTests(unittest.TestCase):
         self.assertEqual(len(history.json()["items"]), 1)
         self.assertEqual(blocked_send.status_code, 403)
 
+    def test_history_starts_with_latest_messages_and_supports_older_pages(self):
+        asyncio.run(self.db.open_user_conversation(101))
+        ids = [
+            asyncio.run(self.db.add_user_message(101, "in", f"رسالة {index}"))
+            for index in range(105)
+        ]
+        headers = self._headers(101)
+
+        latest = self.client.get(
+            "/api/user/messages?before_id=0", headers=headers
+        )
+        self.assertEqual(latest.status_code, 200)
+        latest_ids = [item["id"] for item in latest.json()["items"]]
+        self.assertEqual(latest_ids, ids[-100:])
+
+        older = self.client.get(
+            f"/api/user/messages?before_id={latest_ids[0]}",
+            headers=headers,
+        )
+        self.assertEqual(older.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in older.json()["items"]],
+            ids[:5],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
