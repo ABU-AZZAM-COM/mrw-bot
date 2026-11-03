@@ -392,6 +392,16 @@ async def _notify_reporter(context: ContextTypes.DEFAULT_TYPE, rid: int,
         note=texts.STATUS_FINAL_LINES.get(key, "") + note_extra,
     )
     try:
+        verification = await _db(context).verification_status(uid)
+    except Exception:
+        logger.exception(
+            "تعذر التحقق من شارة المراسل للمستخدم %s؛ سيُرسل إشعار الحالة دونها",
+            uid,
+        )
+    else:
+        if verification and verification.get("status") == "verified":
+            text = f"{texts.INLINE_MESSAGES['verified_reporter_badge']}\n\n{text}"
+    try:
         await context.bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.HTML)
     except Exception as exc:  # noqa: BLE001 — خطأ إرسال لا يوقف العمل
         logger.warning("لم يُرسل إشعار الحالة للمستخدم %s (ربما حجب البوت): %s", uid, exc)

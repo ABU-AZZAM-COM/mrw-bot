@@ -204,7 +204,7 @@ async def _main_menu_content(
     return await _with_verified_reporter_badge(welcome, db, user_id), parse_mode
 
 
-VERIFIED_REPORTER_BADGE = "✅ حساب موثّق كمراسل"
+VERIFIED_REPORTER_BADGE = texts.INLINE_MESSAGES["verified_reporter_badge"]
 
 
 async def _is_verified_reporter(db, user_id: int | None) -> bool:
@@ -1312,10 +1312,14 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         logger.exception("تعذرت إضافة بصمة البلاغ %s", report["seq"])
-    saved_text = texts.SAVED.format(
-        seq=report["seq"],
-        time=utils.fmt_local(report["created_at"]),
-        status=texts.badge(report["status"]),
+    saved_text = await _with_verified_reporter_badge(
+        texts.SAVED.format(
+            seq=report["seq"],
+            time=utils.fmt_local(report["created_at"]),
+            status=texts.badge(report["status"]),
+        ),
+        db,
+        user.id,
     )
     if update.callback_query:
         await update.callback_query.edit_message_text(
@@ -1535,26 +1539,30 @@ async def app_data_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if link_verdict.extra.get("needs_review")
         else ""
     )
+    app_data_confirmation = texts.APP_DATA_OK.format(
+        vtype=utils.esc(
+            violation_type or texts.INLINE_MESSAGES["unspecified_value"]
+        ),
+        place=utils.esc(place or texts.INLINE_MESSAGES["unspecified_value"]),
+        review=(
+            utils.esc(review_notice) + "\n\n"
+            if review_notice
+            else (
+                texts.INLINE_MESSAGES["app_duplicate_manual_review"]
+                if duplicate and duplicate.code in {"exact_duplicate", "similar_duplicate"}
+                else ""
+            )
+        ),
+    )
     await update.effective_message.reply_text(
-        texts.APP_DATA_OK.format(
-            vtype=utils.esc(
-                violation_type or texts.INLINE_MESSAGES["unspecified_value"]
-            ),
-            place=utils.esc(place or texts.INLINE_MESSAGES["unspecified_value"]),
-            review=(
-                utils.esc(review_notice) + "\n\n"
-                if review_notice
-                else (
-                    texts.INLINE_MESSAGES["app_duplicate_manual_review"]
-                    if duplicate and duplicate.code in {"exact_duplicate", "similar_duplicate"}
-                    else ""
-                )
-            ),
+        await _with_verified_reporter_badge(
+            app_data_confirmation, db, user.id
         ),
         parse_mode=ParseMode.HTML,
     )
     await update.effective_message.reply_text(
-        texts.APP_SEND_PHOTO, parse_mode=ParseMode.HTML
+        await _with_verified_reporter_badge(texts.APP_SEND_PHOTO, db, user.id),
+        parse_mode=ParseMode.HTML,
     )
     return None
 
@@ -1625,10 +1633,14 @@ async def app_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
     _pending_app_users.discard(user.id)
     logger.info("بلاغ جديد (تطبيق) %s من المستخدم %s", report["seq"], user.id)
     await update.effective_message.reply_text(
-        texts.SAVED.format(
-            seq=report["seq"],
-            time=utils.fmt_local(report["created_at"]),
-            status=texts.badge(report["status"]),
+        await _with_verified_reporter_badge(
+            texts.SAVED.format(
+                seq=report["seq"],
+                time=utils.fmt_local(report["created_at"]),
+                status=texts.badge(report["status"]),
+            ),
+            db,
+            user.id,
         ),
         parse_mode=ParseMode.HTML,
     )

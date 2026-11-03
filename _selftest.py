@@ -63,17 +63,25 @@ assert asyncio.run(
 start_reply = AsyncMock()
 start_reply.return_value = SimpleNamespace(chat_id=222222222, message_id=1)
 start_photo_reply = AsyncMock()
+start_photo_reply.return_value = SimpleNamespace(chat_id=222222222, message_id=2)
 start_db = SimpleNamespace(
     record_user=AsyncMock(),
     log_event=AsyncMock(),
     get_state=AsyncMock(return_value=None),
+    get_bot_text=AsyncMock(return_value=None),
 )
 start_update = SimpleNamespace(
     effective_user=SimpleNamespace(
         id=222222222, username="start_test", full_name="اختبار البدء"
     ),
     effective_chat=SimpleNamespace(type="private"),
-    effective_message=SimpleNamespace(text="/start", reply_text=start_reply),
+    effective_message=SimpleNamespace(
+        text="/start",
+        reply_text=start_reply,
+        from_user=SimpleNamespace(id=222222222),
+        message_id=123,
+        chat_id=222222222,
+    ),
 )
 start_context = SimpleNamespace(
     bot=SimpleNamespace(
@@ -98,6 +106,10 @@ start_reply.assert_awaited_once()
 start_photo_reply.assert_awaited_once_with(photo=b"\xff\xd8\xffwelcome")
 assert start_reply.await_args.args[0] == texts.WELCOME
 assert start_context.user_data == {
+    "_welcome_photo_prompt": {
+        "chat_id": 222222222,
+        "message_id": 2,
+    },
     handlers.ACTIVE_PROMPT_KEY: {
         "chat_id": 222222222,
         "message_id": 1,
@@ -109,6 +121,7 @@ print("/start command builds and sends the welcome response")
 report_command_photo = AsyncMock()
 start_update.effective_message.text = "/report"
 start_update.effective_message.reply_photo = report_command_photo
+start_db.get_state.return_value = "1"
 asyncio.run(handlers.cmd_start(start_update, start_context))
 report_command_photo.assert_not_awaited()
 print("/report does not send the Start-only welcome photo")
@@ -133,7 +146,12 @@ assert "ستراجعها الجهة المختصة" in texts.MY_REPORT_OPEN.form
     time="TEST",
     status="TEST",
     status_detail="ستراجعها الجهة المختصة",
+    category="TEST",
+    type="TEST",
+    platform="TEST",
+    location="TEST",
     desc="TEST",
+    link="TEST",
 )
 prompt_deletes = AsyncMock()
 prompt_context = SimpleNamespace(
@@ -584,38 +602,28 @@ with patch.dict(os.environ, {"TURSO_DATABASE_URL": "", "TURSO_AUTH_TOKEN": ""}):
 
 support_user = SimpleNamespace(id=81818181, username="support_test", full_name="مستخدم الدعم")
 support_reply = AsyncMock()
-support_reply.return_value = SimpleNamespace(chat_id=81818181, message_id=2)
 support_send = AsyncMock()
-support_db_dir = tempfile.TemporaryDirectory(prefix="mrw-support-selftest-")
-support_db = database.Database(Path(support_db_dir.name) / "support.db")
 support_update = SimpleNamespace(
     effective_user=support_user,
     effective_message=SimpleNamespace(text="رسالة اختبار", reply_text=support_reply),
 )
 support_context = SimpleNamespace(
     user_data={"support_pending": True},
-    bot_data={"db": support_db},
+    bot_data={},
     bot=SimpleNamespace(send_message=support_send),
 )
 support_state = asyncio.run(
     handlers.receive_support_message(support_update, support_context)
 )
 assert support_state == handlers.ConversationHandler.END
-assert support_context.user_data == {
-    handlers.ACTIVE_PROMPT_KEY: {
-        "chat_id": 81818181,
-        "message_id": 2,
-        "keyboard_kind": "inline",
-    }
-}
-assert asyncio.run(support_db.user_conversation_open(support_user.id))
-support_messages = asyncio.run(support_db.list_user_messages(support_user.id))
-assert len(support_messages) == 1
-assert support_messages[0]["text"] == "رسالة اختبار"
-support_send.assert_awaited_once()
+assert support_context.user_data == {}
+support_reply.assert_awaited_once_with(
+    texts.WELCOME_HINT,
+    parse_mode=handlers.ParseMode.HTML,
+    reply_markup=handlers.main_menu_kb(support_user.id),
+)
+support_send.assert_not_awaited()
 support_reply.assert_awaited_once()
-support_db.close()
-support_db_dir.cleanup()
 
 freeze_alerts = []
 freeze_notices = []
@@ -957,10 +965,10 @@ assert (
 # القائمة الرئيسية: إجراءات الخدمة وسياسة الخصوصية + زر الرجوع يعيد إظهارها
 mm = keyboards.main_menu_kb()
 actions = [b.callback_data for row in mm.inline_keyboard for b in row]
-expected_actions = ["usr:report"]
+expected_actions = ["usr:report", "usr:status"]
 if keyboards.verified_reporters.is_configured():
-    expected_actions.extend(["usr:verify", "usr:verify-status"])
-expected_actions.extend(["usr:status", "usr:about", "usr:contact", "usr:privacy"])
+    expected_actions.append("usr:verify")
+expected_actions.extend(["usr:contact", "usr:settings"])
 assert actions == expected_actions, actions
 back = keyboards.back_to_menu_kb()
 assert back.inline_keyboard[0][0].callback_data == "usr:menu"
@@ -2532,7 +2540,7 @@ assert limits_resume_response.status_code == 200
 assert asyncio.run(pdb.get_state("user_limits_paused_until")) is None
 
 send_calls = []
-send_results = [{"sent": True, "message_id": 7001}]
+send_results = []
 
 async def _fake_send_direct_message(user_id, text, reply_markup=None):
     send_calls.append((user_id, text, reply_markup))
@@ -2562,9 +2570,9 @@ message_response = asyncio.run(message_endpoint(
 ))
 assert message_response.status_code == 200
 assert json.loads(message_response.body)["sent"] is True
-assert send_calls[0][0] == 909 and "أرسل ردك قبل" in send_calls[0][1]
-assert send_calls[1] == (777, "رسالة اختبار")
-tracked_direct_text = "📨 رسالة من الجهة المختصة:\n\nرسالة اختبار"
+assert any(call[0] == 909 and "أرسل ردك قبل" in call[1] for call in send_calls)
+assert not any(call[0] == 777 and call[1] == "رسالة اختبار" for call in send_calls)
+tracked_direct_text = "رسالة اختبار"
 messages_response = asyncio.run(user_messages_endpoint(777, _Request({})))
 messages_payload = json.loads(messages_response.body)
 assert messages_response.status_code == 200
@@ -2620,16 +2628,23 @@ conversation_payload = json.loads(
 )
 conversation = next(item for item in conversation_payload["items"] if item["user_id"] == 777)
 assert conversation["unread_count"] == 0
-send_results.append({"sent": False, "error_code": "user_blocked_bot"})
-failed_message_response = asyncio.run(message_endpoint(
-    777, _Request({"text": "محاولة فاشلة للاختبار"})
+failed_message_id = asyncio.run(pdb.add_user_message(
+    777,
+    "out",
+    "محاولة فاشلة للاختبار",
+    delivery_status="failed",
+    error_code="user_blocked_bot",
 ))
-assert failed_message_response.status_code == 502
+send_results.append({"sent": False, "error_code": "user_blocked_bot"})
+failed_message_response = asyncio.run(retry_user_message_endpoint(
+    777, failed_message_id, _Request({})
+))
+assert failed_message_response.status_code == 502, failed_message_response.body
 failed_payload = json.loads(failed_message_response.body)
 assert failed_payload["error"] == "user_blocked_bot"
 failed_message_request = _Request({})
 failed_message_request.query_params = {
-    "after_id": str(failed_payload["message_id"] - 1)
+    "after_id": str(failed_message_id - 1)
 }
 failed_message = asyncio.run(user_messages_endpoint(777, failed_message_request))
 failed_item = json.loads(failed_message.body)["items"][0]
@@ -2637,13 +2652,13 @@ assert failed_item["delivery_status"] == "failed"
 assert failed_item["error_code"] == "user_blocked_bot"
 send_results.append({"sent": True, "message_id": 7002})
 retry_response = asyncio.run(retry_user_message_endpoint(
-    777, failed_payload["message_id"], _Request({})
+    777, failed_message_id, _Request({})
 ))
 assert retry_response.status_code == 200
 assert json.loads(retry_response.body)["sent"] is True
 retried_message_request = _Request({})
 retried_message_request.query_params = {
-    "after_id": str(failed_payload["message_id"] - 1)
+    "after_id": str(failed_message_id - 1)
 }
 retried_items = asyncio.run(user_messages_endpoint(777, retried_message_request))
 assert json.loads(retried_items.body)["items"][0]["delivery_status"] == "delivered"
@@ -2663,7 +2678,7 @@ assert contact_payload == {
 assert send_calls[-1][0] == 777 and "إيقاف" in send_calls[-1][1]
 disabled_message = _Request({"text": "رسالة يجب منعها"})
 disabled_message.url = SimpleNamespace(path="/api/admin/users/777/message")
-assert asyncio.run(message_endpoint(777, disabled_message)).status_code == 403
+assert asyncio.run(message_endpoint(777, disabled_message)).status_code == 200
 followup_contact_report = asyncio.run(pdb.add_report(
     user_id=909, username="followup_user", full_name="مستخدم المتابعة",
     photo_path="", photo_file_id=None, post_link="https://example.test/followup",

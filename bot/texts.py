@@ -301,6 +301,7 @@ INLINE_MESSAGES = {
     "verification_status_not_started": (
         "لم تقدّم طلب توثيق. يمكنك التقديم اختياريًا من القائمة الرئيسية."
     ),
+    "verified_reporter_badge": "✅ حساب موثّق كمراسل",
     "verification_status_verified": (
         "✅ حسابك موثّق كمراسل. هذه الشارة لا تعني اعتماد أي بلاغ تلقائيًا."
     ),

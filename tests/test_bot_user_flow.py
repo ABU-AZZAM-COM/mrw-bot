@@ -45,6 +45,35 @@ class CommandAccessTests(unittest.TestCase):
 
 
 class UserPromptCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verified_reporter_badge_is_added_to_status_notifications(self):
+        database = SimpleNamespace(
+            get_by_id=AsyncMock(
+                return_value={
+                    "id": 987001,
+                    "user_id": 987002,
+                    "seq": "MRV-TEST-1",
+                    "reviewed_at": "2026-11-03T18:00:00+00:00",
+                }
+            ),
+            verification_status=AsyncMock(return_value={"status": "verified"}),
+        )
+        send_message = AsyncMock()
+        context = SimpleNamespace(
+            bot_data={"db": database},
+            bot=SimpleNamespace(send_message=send_message),
+        )
+
+        sent = await admin._notify_reporter(
+            context, 987001, admin.STATUS_APPROVED
+        )
+
+        self.assertTrue(sent)
+        self.assertTrue(
+            send_message.await_args.kwargs["text"].startswith(
+                f"{handlers.VERIFIED_REPORTER_BADGE}\n\n"
+            )
+        )
+
     async def test_verified_reporter_badge_is_added_to_user_prompts(self):
         verified_db = SimpleNamespace(
             verification_status=AsyncMock(return_value={"status": "verified"})
