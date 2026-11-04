@@ -3694,14 +3694,23 @@ class Database:
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 200))
         query = (q or "").strip()
-        where = ""
+        where = """
+            WHERE EXISTS (
+                SELECT 1 FROM user_messages visible
+                WHERE visible.user_id = c.user_id
+                  AND (
+                      visible.direction = 'in'
+                      OR (visible.direction = 'out' AND visible.admin_id IS NOT NULL)
+                  )
+            )
+        """
         params: list[Any] = []
         if query:
             needle = f"%{query}%"
-            where = (
-                "WHERE CAST(c.user_id AS TEXT) LIKE ? "
+            where += (
+                "AND (CAST(c.user_id AS TEXT) LIKE ? "
                 "OR COALESCE(u.username, '') LIKE ? "
-                "OR COALESCE(u.full_name, '') LIKE ?"
+                "OR COALESCE(u.full_name, '') LIKE ?)"
             )
             params.extend((needle, needle, needle))
         params.append(limit)
@@ -3713,16 +3722,28 @@ class Database:
                        COALESCE(u.username, r.username) AS username,
                        c.updated_at,
                        (SELECT m.id FROM user_messages m
-                        WHERE m.user_id = c.user_id ORDER BY m.id DESC LIMIT 1)
+                        WHERE m.user_id = c.user_id
+                          AND (m.direction = 'in'
+                               OR (m.direction = 'out' AND m.admin_id IS NOT NULL))
+                        ORDER BY m.id DESC LIMIT 1)
                            AS last_message_id,
                        (SELECT m.text FROM user_messages m
-                        WHERE m.user_id = c.user_id ORDER BY m.id DESC LIMIT 1)
+                        WHERE m.user_id = c.user_id
+                          AND (m.direction = 'in'
+                               OR (m.direction = 'out' AND m.admin_id IS NOT NULL))
+                        ORDER BY m.id DESC LIMIT 1)
                            AS last_message,
                        (SELECT m.direction FROM user_messages m
-                        WHERE m.user_id = c.user_id ORDER BY m.id DESC LIMIT 1)
+                        WHERE m.user_id = c.user_id
+                          AND (m.direction = 'in'
+                               OR (m.direction = 'out' AND m.admin_id IS NOT NULL))
+                        ORDER BY m.id DESC LIMIT 1)
                            AS last_direction,
                        (SELECT m.created_at FROM user_messages m
-                        WHERE m.user_id = c.user_id ORDER BY m.id DESC LIMIT 1)
+                        WHERE m.user_id = c.user_id
+                          AND (m.direction = 'in'
+                               OR (m.direction = 'out' AND m.admin_id IS NOT NULL))
+                        ORDER BY m.id DESC LIMIT 1)
                            AS last_message_at,
                        (SELECT COUNT(*) FROM user_messages m
                         WHERE m.user_id = c.user_id AND m.direction = 'in'
@@ -4111,12 +4132,22 @@ class Database:
         )
 
     def _list_user_messages(
-        self, user_id: int, after_id: int = 0, limit: int = 100
+        self,
+        user_id: int,
+        after_id: int = 0,
+        limit: int = 100,
+        conversation_only: bool = False,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 200))
+        conversation_filter = (
+            "AND (direction = 'in' "
+            "OR (direction = 'out' AND admin_id IS NOT NULL))"
+            if conversation_only
+            else ""
+        )
         with self._lock:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT id, user_id, direction, text, admin_id, created_at,
                        delivery_status, error_code, media_type, telegram_file_id,
                        telegram_message_id, filename, is_edited, is_deleted,
@@ -4125,7 +4156,7 @@ class Database:
                            WHERE a.message_id = user_messages.id
                        ) AS has_attachment
                 FROM user_messages
-                WHERE user_id = ? AND id > ?
+                WHERE user_id = ? AND id > ? {conversation_filter}
                 ORDER BY id ASC LIMIT ?
                 """,
                 (user_id, max(0, int(after_id)), limit),
@@ -4133,19 +4164,37 @@ class Database:
             return [_row_to_dict(row) for row in rows]
 
     async def list_user_messages(
-        self, user_id: int, after_id: int = 0, limit: int = 100
+        self,
+        user_id: int,
+        after_id: int = 0,
+        limit: int = 100,
+        conversation_only: bool = False,
     ) -> list[dict[str, Any]]:
         return await asyncio.to_thread(
-            self._list_user_messages, user_id, after_id, limit
+            self._list_user_messages,
+            user_id,
+            after_id,
+            limit,
+            conversation_only,
         )
 
     def _list_user_messages_before(
-        self, user_id: int, before_id: int = 0, limit: int = 100
+        self,
+        user_id: int,
+        before_id: int = 0,
+        limit: int = 100,
+        conversation_only: bool = False,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 200))
+        conversation_filter = (
+            "AND (direction = 'in' "
+            "OR (direction = 'out' AND admin_id IS NOT NULL))"
+            if conversation_only
+            else ""
+        )
         with self._lock:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT id, user_id, direction, text, admin_id, created_at,
                        delivery_status, error_code, media_type, telegram_file_id,
                        telegram_message_id, filename, is_edited, is_deleted,
@@ -4154,7 +4203,7 @@ class Database:
                            WHERE a.message_id = user_messages.id
                        ) AS has_attachment
                 FROM user_messages
-                WHERE user_id = ? AND (? = 0 OR id < ?)
+                WHERE user_id = ? AND (? = 0 OR id < ?) {conversation_filter}
                 ORDER BY id DESC LIMIT ?
                 """,
                 (user_id, max(0, int(before_id)), max(0, int(before_id)), limit),
@@ -4162,10 +4211,18 @@ class Database:
             return [_row_to_dict(row) for row in reversed(rows)]
 
     async def list_user_messages_before(
-        self, user_id: int, before_id: int = 0, limit: int = 100
+        self,
+        user_id: int,
+        before_id: int = 0,
+        limit: int = 100,
+        conversation_only: bool = False,
     ) -> list[dict[str, Any]]:
         return await asyncio.to_thread(
-            self._list_user_messages_before, user_id, before_id, limit
+            self._list_user_messages_before,
+            user_id,
+            before_id,
+            limit,
+            conversation_only,
         )
 
     def _get_outgoing_user_message(
@@ -4174,7 +4231,8 @@ class Database:
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM user_messages "
-                "WHERE user_id = ? AND id = ? AND direction = 'out'",
+                "WHERE user_id = ? AND id = ? AND direction = 'out' "
+                "AND admin_id IS NOT NULL",
                 (user_id, message_id),
             ).fetchone()
             return _row_to_dict(row) if row else None

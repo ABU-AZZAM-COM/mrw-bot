@@ -160,6 +160,44 @@ class UserChatApiTests(unittest.TestCase):
             ids[:5],
         )
 
+    def test_user_history_hides_bot_notifications_and_button_prompts(self):
+        asyncio.run(self.db.open_user_conversation(101))
+        incoming_id = asyncio.run(
+            self.db.add_user_message(101, "in", "رسالة المستخدم")
+        )
+        asyncio.run(
+            self.db.add_user_message(
+                101,
+                "out",
+                "نص زر أو تنبيه",
+                telegram_message_id=21,
+            )
+        )
+        admin_reply_id = asyncio.run(
+            self.db.add_user_message(
+                101,
+                "out",
+                "رد الإدارة",
+                admin_id=9002,
+                telegram_message_id=22,
+            )
+        )
+
+        response = self.client.get(
+            "/api/user/messages?before_id=0",
+            headers=self._headers(101),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in response.json()["items"]],
+            [incoming_id, admin_reply_id],
+        )
+        self.assertEqual(
+            [item["text"] for item in response.json()["items"]],
+            ["رسالة المستخدم", "رد الإدارة"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

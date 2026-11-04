@@ -2936,6 +2936,14 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         db = db_of()
         if not await db.user_profile(uid):
             return bad("not_found", 404)
+        if "after_id" in request.query_params:
+            items = await db.list_user_messages(
+                uid, after_id, limit, conversation_only=True
+            )
+        else:
+            items = await db.list_user_messages_before(
+                uid, 0, limit, conversation_only=True
+            )
         return JSONResponse({
             "ok": True,
             "can_manage_messages": (
@@ -2955,7 +2963,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                         item.get("telegram_file_id") or item.get("has_attachment")
                     )
                 }
-                for item in await db.list_user_messages(uid, after_id, limit)
+                for item in items
             ],
         })
 
@@ -2966,7 +2974,12 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
         refuse = _auth(request)
         if refuse:
             return refuse
-        messages = await db_of().list_user_messages(uid, max(0, message_id - 1), 1)
+        messages = await db_of().list_user_messages(
+            uid,
+            max(0, message_id - 1),
+            1,
+            conversation_only=True,
+        )
         if not messages or int(messages[0]["id"]) != message_id:
             return bad("not_found", 404)
         item = messages[0]
@@ -3158,7 +3171,12 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("not_found", 404)
         if not await db.user_contact_enabled(uid):
             return bad("direct_contact_disabled", 403)
-        rows = await db.list_user_messages(uid, max(0, message_id - 1), 1)
+        rows = await db.list_user_messages(
+            uid,
+            max(0, message_id - 1),
+            1,
+            conversation_only=True,
+        )
         if not rows or int(rows[0]["id"]) != message_id:
             return bad("not_found", 404)
         message = rows[0]

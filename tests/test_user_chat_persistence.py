@@ -47,6 +47,39 @@ class UserChatPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item["id"] for item in older], ids[1:3])
 
+    async def test_conversation_history_excludes_unattributed_bot_messages(self):
+        await self.db.open_user_conversation(101)
+        incoming_id = await self.db.add_user_message(
+            101, "in", "رسالة المستخدم"
+        )
+        bot_message_id = await self.db.add_user_message(
+            101, "out", "نص زر أو تنبيه", telegram_message_id=21
+        )
+        admin_reply_id = await self.db.add_user_message(
+            101, "out", "رد الإدارة", admin_id=9002, telegram_message_id=22
+        )
+        await self.db.open_user_conversation(202)
+        await self.db.add_user_message(
+            202, "out", "رسالة آلية فقط", telegram_message_id=23
+        )
+
+        history = await self.db.list_user_messages(
+            101, conversation_only=True
+        )
+        older = await self.db.list_user_messages_before(
+            101, 0, conversation_only=True
+        )
+        conversations = await self.db.list_user_conversations()
+
+        self.assertEqual(
+            [item["id"] for item in history],
+            [incoming_id, admin_reply_id],
+        )
+        self.assertEqual([item["id"] for item in older], [incoming_id, admin_reply_id])
+        self.assertEqual([item["user_id"] for item in conversations], [101])
+        self.assertEqual(conversations[0]["last_message"], "رد الإدارة")
+        self.assertEqual(bot_message_id, incoming_id + 1)
+
     async def test_delete_conversation_removes_messages_and_records_reason(self):
         await self.db.open_user_conversation(101)
         await self.db.add_user_message(

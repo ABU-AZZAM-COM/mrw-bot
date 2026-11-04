@@ -610,9 +610,13 @@ def build_app() -> FastAPI:
                 before_id = max(0, int(raw_before_id or 0))
             except ValueError:
                 return _webapp_denied(400, "bad_query")
-            items = await db.list_user_messages_before(user_id, before_id, 100)
+            items = await db.list_user_messages_before(
+                user_id, before_id, 100, conversation_only=True
+            )
         else:
-            items = await db.list_user_messages(user_id, after_id, 100)
+            items = await db.list_user_messages(
+                user_id, after_id, 100, conversation_only=True
+            )
         safe_items = []
         for item in items:
             safe_items.append({
@@ -648,7 +652,12 @@ def build_app() -> FastAPI:
         db = _webapp_database()
         if db is None:
             return _webapp_denied(503, "bot_not_ready")
-        rows = await db.list_user_messages(user_id, max(0, message_id - 1), 1)
+        rows = await db.list_user_messages(
+            user_id,
+            max(0, message_id - 1),
+            1,
+            conversation_only=True,
+        )
         if not rows or int(rows[0]["id"]) != message_id:
             return _webapp_denied(404, "not_found")
         item = rows[0]

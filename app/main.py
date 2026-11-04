@@ -27,10 +27,9 @@ except Exception:
 
 from app import config  # noqa: E402  (بعد تهيئة الطرفية)
 from app import health_server  # noqa: E402
-from bot import admin, control, handlers, keyboards, texts, tracking_bot
+from bot import admin, control, handlers, keyboards, texts
 from services import archive, guards, hub_backup
 from database import Database  # noqa: E402
-from bot.tracking_bot import TrackedBot  # noqa: E402
 
 from telegram import BotCommand, BotCommandScopeChat, MenuButtonDefault, Update
 from telegram.ext import (
@@ -454,7 +453,7 @@ def main() -> None:
 
     app = (
         ApplicationBuilder()
-        .bot(TrackedBot(config.BOT_TOKEN, config.ADMIN_IDS))
+        .token(config.BOT_TOKEN)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
@@ -462,7 +461,6 @@ def main() -> None:
 
     # قاعدة البيانات متاحة لكل المعالجات عبر context.bot_data["db"]
     app.bot_data["db"] = db
-    app.bot.set_tracking_database(db)
 
     # Run before every command-specific handler so unlisted commands are gated too.
     app.add_handler(
