@@ -457,6 +457,12 @@ class _ReportsPageState extends State<ReportsPage> {
               headingRowColor: WidgetStatePropertyAll(
                 Theme.of(context).colorScheme.surfaceContainerHighest,
               ),
+              headingRowHeight: 44,
+              dataRowMinHeight: 48,
+              dataRowMaxHeight: 64,
+              horizontalMargin: AdminTokens.s4,
+              columnSpacing: AdminTokens.s6,
+              dividerThickness: 1,
               columns: const [
                 DataColumn(label: Text('الرقم')),
                 DataColumn(label: Text('الحالة')),
@@ -661,11 +667,17 @@ class _ReportsPageState extends State<ReportsPage> {
     final reportId = int.tryParse('${r['id'] ?? ''}');
     final userId = int.tryParse('${r['user_id'] ?? ''}');
     return DataRow(
-      color: WidgetStatePropertyAll(
-        status == 'جديد'
-            ? Theme.of(context).colorScheme.surfaceContainerHighest
-            : Colors.transparent,
-      ),
+      // تمييز الصف عند المرور، مع بقاء لون «جديد» كخلفية أساسية.
+      color: WidgetStateProperty.resolveWith((states) {
+        final scheme = Theme.of(context).colorScheme;
+        if (states.contains(WidgetState.hovered) ||
+            states.contains(WidgetState.focused)) {
+          return scheme.primary.withValues(alpha: 0.08);
+        }
+        return status == 'جديد'
+            ? scheme.surfaceContainerHighest
+            : Colors.transparent;
+      }),
       cells: [
         DataCell(
           SelectableText(
