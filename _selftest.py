@@ -19,6 +19,7 @@ import database
 import keyboards
 import exporters
 import handlers
+from bot import report_flow
 import admin
 import archive
 import health_server
@@ -683,7 +684,7 @@ assert asyncio.run(DB.get_block_evidence(freeze_user.id)) is None
 assert asyncio.run(guards.check_rate_limits(DB, freeze_user.id)).allowed
 print("automatic explicit-image freeze persists, audits, alerts without forwarding image, and admin unblock restores access")
 
-original_save_photo = handlers._save_photo
+original_save_photo = report_flow._save_photo
 
 async def _fake_flagged_photo(_update, _context):
     return "", "test-file-id", "test-file-id", flagged_result
@@ -698,7 +699,7 @@ async def _capture_user_prompt(*args, **kwargs):
     await _capture_freeze_notice(*args, **kwargs)
     return SimpleNamespace(edit_text=_capture_progress_edit)
 
-handlers._save_photo = _fake_flagged_photo
+report_flow._save_photo = _fake_flagged_photo
 try:
     conversation_user = SimpleNamespace(id=90909091, full_name="مستخدم محادثة")
     conversation_context = SimpleNamespace(
@@ -741,7 +742,7 @@ try:
     assert not asyncio.run(DB.list_user_reports(app_user.id))[0]
     assert not app_context.user_data and app_user.id not in handlers._pending_app_users
 finally:
-    handlers._save_photo = original_save_photo
+    report_flow._save_photo = original_save_photo
 print("conversation and Mini App photo flows freeze and stop without saving a report")
 
 fake_row = dict(

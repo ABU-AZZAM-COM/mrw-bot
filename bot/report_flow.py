@@ -1,6 +1,6 @@
-"""طھط¯ظپظ‚ ط¥ط±ط³ط§ظ„ ط§ظ„ط¨ظ„ط§ط؛.
+"""تدفق إرسال البلاغ.
 
-ظ†ظڈظ‚ظ„طھ ظ…ظ† ``bot/handlers.py`` ظ…ط¹ ط¥ط¹ط§ط¯ط© ط§ط³طھظٹط±ط§ط¯ ط£ط³ظ…ط§ط¦ظ‡ط§ ظ‡ظ†ط§ظƒ.
+نُقلت الدوال من ``bot/handlers.py`` مع إعادة تصدير أسمائها هناك.
 """
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 
 
 def _late_bound(name: str):
-    """ط؛ظ„ط§ظپ ظٹط­ظ„ظ‘ ط§ظ„ط§ط³ظ… ظ…ظ† ``bot.handlers`` ظˆظ‚طھ ط§ظ„ط·ظ„ط¨ ظ„ط§ ظˆظ‚طھ ط§ظ„طھط±ظƒظٹط¨."""
+    """غلاف يحل الاسم من ``bot.handlers`` وقت الطلب لا وقت التركيب."""
 
     def call(*args, **kwargs):
         from bot import handlers
@@ -206,17 +206,17 @@ async def _start_report_flow(
 
 
 # ==================================================================
-# ظ†ظ‚ط·ط© ط§ظ„ط¯ط®ظˆظ„: /start ط£ظˆ /report
+# نقطة الدخول: /start أو /report
 # ==================================================================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ط§ظ„ظ‚ط§ط¦ظ…ط© ط§ظ„ط±ط¦ظٹط³ظٹط© ط§ظ„ط§ط­طھط±ط§ظپظٹط© â€” ظƒظ„ ط§ظ„طھظ†ظ‚ظ„ ط¨ط£ط²ط±ط§ط± ظ…ط¶ظ…ظ†ط©طŒ ظ„ط§ ط£ظˆط§ظ…ط± ظƒطھط§ط¨ظٹط©."""
+    """القائمة الرئيسية الاحترافية — كل التنقل بأزرار مضمنة، لا أوامر كتابية."""
     user = update.effective_user
     chat = update.effective_chat
     db = _db(context)
 
     # ------------------------------------------------------------------
-    # ط§ظ„ط­ظ…ط§ظٹط© â‘¢: ط§ظ„ط§ط³طھظ‚ط¨ط§ظ„ ظپظٹ ط§ظ„ظ…ط­ط§ط¯ط«ط§طھ ط§ظ„ط®ط§طµط© ظپظ‚ط·
-    # (ظٹظ…ظ†ط¹ ط§ط³طھط¹ظ…ط§ظ„ ط§ظ„ط¨ظˆطھ ط¯ط§ط®ظ„ ط§ظ„ظ…ط¬ظ…ظˆط¹ط§طھطŒ ظˆظ‡ظˆ ط£ظ‚ظˆظ‰ ظˆط³ظٹظ„ط© ط¶ط¯ ط§ظ„ط¥ط¨ظ„ط§ط؛ ط§ظ„ط¬ظ…ط§ط¹ظٹ)
+    # الحماية ③: استقبال البلاغات في المحادثات الخاصة فقط.
+    # يمنع استخدام البوت داخل المجموعات والبلاغ الجماعي الكيدي.
     # ------------------------------------------------------------------
     if not guards.is_private_chat(chat.type):
         await update.effective_message.reply_text(
@@ -257,7 +257,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "message_id": photo_message.message_id,
             }
         except Exception:
-            logger.exception("طھط¹ط°ط± ط¥ط±ط³ط§ظ„ طµظˆط±ط© ط§ظ„طھط±ط­ظٹط¨ ظ„ظ„ظ…ط³طھط®ط¯ظ… %s", user.id)
+            logger.exception("تعذر إرسال صورة الترحيب للمستخدم %s", user.id)
     if command == "/start":
         await _send_clean_prompt(
             update,
@@ -280,7 +280,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==================================================================
-# ط§ظ„ط­ط§ظ„ط© 1: ط§ظ„طµظˆط±ط© ط§ظ„طھظˆط«ظٹظ‚ظٹط©
+# الحالة 1: الصورة التوثيقية
 # ==================================================================
 async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Save the photo and optionally run local screening before it reaches admins."""
@@ -288,7 +288,7 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     if msg.photo:
-        media = msg.photo[-1]          # ط£ط¹ظ„ظ‰ ط¬ظˆط¯ط© ظ…طھط§ط­ط©
+        media = msg.photo[-1]          # أعلى جودة متاحة
         ext = ".jpg"
     else:
         doc = msg.document
@@ -311,10 +311,8 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     # ------------------------------------------------------------------
-    # ط­ظپط¸ ط§ظ„طµظˆط±ط© ط¹ظ„ظ‰ ط§ظ„ظ‚ط±طµ: ط§ط®طھظٹط§ط±ظٹ.
-    # ظپظٹ ط§ظ„ط§ط³طھط¶ط§ظپط© ط§ظ„ط³ط­ط§ط¨ظٹط© ط§ظ„ظ…ط¬ط§ظ†ظٹط© ظ‚ط¯ ظ„ط§ ظٹظˆط¬ط¯ ظ‚ط±طµ ط¯ط§ط¦ظ…طŒ ظˆظ†ط³طھط·ظٹط¹ ط§ظ„ط§ظƒطھظپط§ط،
-    # ط¨ظ€ file_id ظ„ط£ظ† طھظ„ط؛ط±ط§ظ… ظٹط­ظپط¸ ط§ظ„طµظˆط±ط© ظپظٹ ط®ظˆط§ط¯ظ…ظ‡ ط¥ظ„ظ‰ ط§ظ„ط£ط¨ط¯ â€” ظˆظ‡ظٹ ط§ظ„ط·ط±ظٹظ‚ط©
-    # ط§ظ„طھظٹ طھط¬ط¹ظ„ ط§ظ„ط¯ظ„ظٹظ„ ظٹط¨ظ‚ظ‰ ظ…طھط§ط­ظ‹ط§ ط¨ط¹ط¯ ط¥ط¹ط§ط¯ط© طھط´ط؛ظٹظ„ ط§ظ„ط®ط§ط¯ظ….
+    # حفظ الصورة على القرص اختياري؛ يمكن الاعتماد على file_id في الاستضافة السحابية.
+    # يحتفظ Telegram بالصورة، فتظل متاحة بعد إعادة تشغيل الخادم.
     # ------------------------------------------------------------------
     if config.SAVE_MEDIA_LOCALLY:
         stamp = _stamp_name()
@@ -323,7 +321,7 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tg_file = await media.get_file()
             await tg_file.download_to_drive(custom_path=str(path))
         except Exception:
-            logger.exception("ظپط´ظ„ طھط­ظ…ظٹظ„ ط§ظ„طµظˆط±ط© ظ„ظ„ظ…ط³طھط®ط¯ظ… %s", user.id)
+            logger.exception("فشل تحميل الصورة للمستخدم %s", user.id)
             return "", None, "", image_moderation.ScreeningResult(
                 False, error=texts.PHOTO_FAILED
             )
@@ -345,15 +343,15 @@ async def _save_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if screening.review_required:
         context.user_data["image_moderation_flag"] = screening.error or (
-            "ظ…ط¤ط´ط±ط§طھ ظ…ط­طھظˆظ‰ ط­ط³ط§ط³: "
+            "مؤشرات محتوى حساس: "
             + ", ".join(screening.labels)
-            + f" (ط«ظ‚ط© {screening.max_score:.0%})"
+            + f" (ثقة {screening.max_score:.0%})"
         )
     if screening.flagged and photo_path:
         try:
             Path(photo_path).unlink(missing_ok=True)
         except OSError:
-            logger.exception("طھط¹ط°ط± ط­ط°ظپ طµظˆط±ط© ط§ظ„ظ…ط®ط§ظ„ظپط© ظ„ظ„ظ…ط³طھط®ط¯ظ… %s", user.id)
+            logger.exception("تعذر حذف صورة المخالفة للمستخدم %s", user.id)
         photo_path = ""
         photo_name = media.file_id
     return photo_path, media.file_id, photo_name, screening
@@ -408,13 +406,13 @@ async def _show_report_confirmation(update: Update, context: ContextTypes.DEFAUL
     if ud.get("link_review_reason") == "virustotal":
         review_note += texts.VIRUSTOTAL_REVIEW
     if ud.get("image_moderation_flag"):
-        review_note += "âڑ ï¸ڈ طµظˆط±ط© ط§ظ„ط¨ظ„ط§ط؛ طھط­طھط§ط¬ ط¥ظ„ظ‰ ظ…ط±ط§ط¬ط¹ط© ظٹط¯ظˆظٹط©.\n"
+        review_note += "⚠️ صورة البلاغ تحتاج إلى مراجعة يدوية.\n"
     await _send_clean_prompt(
         update,
         context,
         texts.SUMMARY.format(
             category=utils.esc(category),
-            platform=utils.esc(ud.get("platform") or "â€”"),
+            platform=utils.esc(ud.get("platform") or "—"),
             photo=(
                 texts.INLINE_MESSAGES["report_photo_received"]
                 if ud.get("photo_file_id")
@@ -425,8 +423,8 @@ async def _show_report_confirmation(update: Update, context: ContextTypes.DEFAUL
                 if ud.get("post_link")
                 else texts.INLINE_MESSAGES["report_link_missing"]
             ),
-            place=utils.esc(place or "â€”"),
-            contact=utils.esc(ud.get("contact_phone") or "â€”"),
+            place=utils.esc(place or "—"),
+            contact=utils.esc(ud.get("contact_phone") or "—"),
             vtype=utils.esc(ud.get("violation_type") or category),
             desc=utils.esc(ud.get("description") or ""),
             review_note=review_note,
@@ -448,7 +446,7 @@ async def _assess_link_and_description(
         and not ud.get("photo_file_id")
     ):
         raise ValueError(
-            "ظ„ظ‚ط³ظ… ظ…ط®ط§ظ„ظپط§طھ ط§ظ„ظ†ط´ط±طŒ ط£ط±ظپظ‚ ط±ط§ط¨ط· ط§ظ„ظ…ظ†ط´ظˆط± ط£ظˆ ظ„ظ‚ط·ط© ط´ط§ط´ط© ظˆط§ط­ط¯ط© ط¹ظ„ظ‰ ط§ظ„ط£ظ‚ظ„."
+            "لقسم مخالفات النشر، أرفق رابط المنشور أو لقطة شاشة واحدة على الأقل."
         )
     description = ud.get("description") or ""
     duplicate = None
@@ -469,13 +467,13 @@ async def _assess_link_and_description(
         matches = (
             not detected_platform
             or platform_key == "other"
-            or (platform_key == "instagram_tiktok" and detected_platform in {"ط¥ظ†ط³طھط؛ط±ط§ظ…", "طھظٹظƒ طھظˆظƒ"})
+            or (platform_key == "instagram_tiktok" and detected_platform in {"إنستغرام", "تيك توك"})
             or detected_platform == selected_platform
         )
         if detected_platform and selected_platform and not matches:
             raise ValueError(
-                "ط§ظ„ط±ط§ط¨ط· ظ„ط§ ظٹطھظˆط§ظپظ‚ ظ…ط¹ ط§ظ„ظ…ظ†طµط© ط§ظ„ظ…ط®طھط§ط±ط©. ط£ط±ط³ظ„ ط±ط§ط¨ط·ظ‹ط§ ظ…ظ† ط§ظ„ظ…ظ†طµط© ظ†ظپط³ظ‡ط§ "
-                "ط£ظˆ ط§ط®طھط± آ«ظ…ظ†طµط© ط£ط®ط±ظ‰آ» ط¹ظ†ط¯ ط¨ط¯ط، ط§ظ„ط¨ظ„ط§ط؛."
+                "الرابط لا يتوافق مع المنصة المختارة. أرسل رابطًا من المنصة نفسها "
+                "أو اختر «منصة أخرى» عند بدء البلاغ."
             )
         elif detected_platform:
             ud["platform"] = detected_platform
@@ -515,12 +513,12 @@ async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id
                 )
             except Exception:
                 logger.exception(
-                    "طھط¹ط°ط± ظپط­طµ طµظˆط±ط© ط§ظ„ظ…ط³طھط®ط¯ظ… %s ظ…ط­ظ„ظٹظ‹ط§", user_id
+                    "تعذر فحص صورة المستخدم %s محليًا", user_id
                 )
                 local_result = image_moderation.ScreeningResult(
                     False,
                     review_required=True,
-                    error="طھط¹ط°ط± ط¥ظƒظ…ط§ظ„ ط§ظ„ظپط­طµ ط§ظ„ظ…ط­ظ„ظٹط› ظٹظ„ط²ظ… ط§ظ„طھط­ظ‚ظ‚ ط§ظ„ظٹط¯ظˆظٹ",
+                    error="تعذر إكمال الفحص المحلي؛ يلزم التحقق اليدوي",
                 )
 
         if sightengine_moderation.credentials():
@@ -530,16 +528,16 @@ async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id
                 )
             except sightengine_moderation.SightengineError as exc:
                 logger.warning(
-                    "طھط¹ط°ط± ظپط­طµ طµظˆط±ط© ط§ظ„ظ…ط³طھط®ط¯ظ… %s ط¹ط¨ط± Sightengine: %s",
+                    "تعذر فحص صورة المستخدم %s عبر Sightengine: %s",
                     user_id,
                     exc,
                 )
                 sightengine_error = (
-                    f"طھط¹ط°ط± ظپط­طµ ط§ظ„طµظˆط±ط© ط¹ط¨ط± Sightengine: {exc}ط› ظٹظ„ط²ظ… ط§ظ„طھط­ظ‚ظ‚ ط§ظ„ظٹط¯ظˆظٹ"
+                    f"تعذر فحص الصورة عبر Sightengine: {exc}؛ يلزم التحقق اليدوي"
                 )
         else:
             sightengine_error = (
-                "ط¨ظٹط§ظ†ط§طھ Sightengine ط؛ظٹط± ظ…ظƒطھظ…ظ„ط©ط› طھظ… ط§ظ„ط§ط¹طھظ…ط§ط¯ ط¹ظ„ظ‰ ط§ظ„ظپط­طµ ط§ظ„ظ…ط­ظ„ظٹ"
+                "بيانات Sightengine غير مكتملة؛ تم الاعتماد على الفحص المحلي"
             )
 
         labels = set(local_result.labels)
@@ -566,18 +564,18 @@ async def _screen_uploaded_photo(media, photo_path: str, extension: str, user_id
             error=sightengine_error or local_result.error,
         )
     except Exception:
-        logger.exception("طھط¹ط°ط± ظپط­طµ طµظˆط±ط© ط§ظ„ظ…ط³طھط®ط¯ظ… %sط› ط£ظڈط­ظٹظ„ ط§ظ„ط¨ظ„ط§ط؛ ظ„ظ„ظ…ط±ط§ط¬ط¹ط© ط§ظ„ظٹط¯ظˆظٹط©", user_id)
+        logger.exception("تعذر فحص صورة المستخدم %s؛ أُحيل البلاغ للمراجعة اليدوية", user_id)
         return image_moderation.ScreeningResult(
             False,
             review_required=True,
-            error="طھط¹ط°ط± ط¥ظƒظ…ط§ظ„ ط§ظ„ظپط­طµ ط§ظ„ط¢ظ„ظٹ ظ„ظ„طµظˆط±ط©ط› ظٹظ„ط²ظ… ط§ظ„طھط­ظ‚ظ‚ ط§ظ„ظٹط¯ظˆظٹ",
+            error="تعذر إكمال الفحص الآلي للصورة؛ يلزم التحقق اليدوي",
         )
     finally:
         if temporary_path is not None:
             try:
                 temporary_path.unlink(missing_ok=True)
             except OSError:
-                logger.warning("طھط¹ط°ط± ط­ط°ظپ ظ…ظ„ظپ ط§ظ„ظپط­طµ ط§ظ„ظ…ط¤ظ‚طھ ظ„ظ„ظ…ط³طھط®ط¯ظ… %s", user_id, exc_info=True)
+                logger.warning("تعذر حذف ملف الفحص المؤقت للمستخدم %s", user_id, exc_info=True)
 
 
 async def _freeze_for_sensitive_image(
@@ -591,9 +589,9 @@ async def _freeze_for_sensitive_image(
     user = update.effective_user
     db = _db(context)
     reason = (
-        "ظƒط´ظپ ط¢ظ„ظٹ ظ„ظ…ط¤ط´ط±ط§طھ ظ…ط­طھظˆظ‰ ط­ط³ط§ط³: "
+        "كشف آلي لمؤشرات محتوى حساس: "
         + ", ".join(screening.labels)
-        + f" (ط«ظ‚ط© {screening.max_score:.0%})"
+        + f" (ثقة {screening.max_score:.0%})"
     )
     frozen_until = "9999-12-31T00:00:00"
     previous_block = await db.get_block(user.id)
@@ -613,18 +611,18 @@ async def _freeze_for_sensitive_image(
             reason,
         )
     except Exception:
-        logger.exception("طھط¹ط°ط± طھط³ط¬ظٹظ„ طھط¬ظ…ظٹط¯ ط§ظ„طµظˆط±ط© ظپظٹ ط³ط¬ظ„ ط§ظ„طھط¯ظ‚ظٹظ‚ ظ„ظ„ظ…ط³طھط®ط¯ظ… %s", user.id)
+        logger.exception("تعذر تسجيل تجميد الصورة في سجل التدقيق للمستخدم %s", user.id)
 
     _pending_app_users.discard(user.id)
     context.user_data.clear()
     admin_message = (
-        "ًںڑ¨ <b>طھط¬ظ…ظٹط¯ ط¢ظ„ظٹ ط¯ط§ط¦ظ… â€” ظ…ط­طھظˆظ‰ ط­ط³ط§ط³</b>\n"
-        f"ط§ظ„ظ…ط³طھط®ط¯ظ…: {utils.esc(user.full_name or '-')}\n"
-        f"ط§ظ„ظ…ط¹ط±ظ‘ظپ: <code>{user.id}</code>\n"
-        f"ط§ظ„ظ…ط¤ط´ط±ط§طھ: <code>{utils.esc(', '.join(screening.labels))}</code>\n"
-        f"ط«ظ‚ط© ط§ظ„ظ…طµظ†ظ‘ظپ: <b>{screening.max_score:.0%}</b>\n"
-        "ظ„ظ… طھظڈط±ط³ظ„ ط§ظ„طµظˆط±ط© ط£ظˆ طھظڈط±ظپظ‚ ط¨ط§ظ„طھظ†ط¨ظٹظ‡. ظ‡ط°ط§ طھطµظ†ظٹظپ ط¢ظ„ظٹ ط§ط­طھظ…ط§ظ„ظٹط› "
-        "ظٹظ…ظƒظ† ظ…ط±ط§ط¬ط¹ط© ط§ظ„ط³ط¨ط¨ ظˆط±ظپط¹ ط§ظ„ط­ط¬ط¨ ظٹط¯ظˆظٹظ‹ط§ ظ…ظ† ظ„ظˆط­ط© ط§ظ„ط¥ط¯ط§ط±ط©."
+        "🚨 <b>تجميد آلي دائم — محتوى حساس</b>\n"
+        f"المستخدم: {utils.esc(user.full_name or '-')}\n"
+        f"المعرّف: <code>{user.id}</code>\n"
+        f"المؤشرات: <code>{utils.esc(', '.join(screening.labels))}</code>\n"
+        f"ثقة المصنّف: <b>{screening.max_score:.0%}</b>\n"
+        "لم تُرسل الصورة أو تُرفق بالتنبيه. هذا تصنيف آلي احتمالي؛ "
+        "يمكن مراجعة السبب ورفع الحجب يدويًا من لوحة الإدارة."
     )
     for admin_id in config.ADMIN_IDS:
         try:
@@ -635,7 +633,7 @@ async def _freeze_for_sensitive_image(
             )
         except Exception:
             logger.exception(
-                "طھط¹ط°ط± طھظ†ط¨ظٹظ‡ ط§ظ„ظ…ط´ط±ظپ %s ط¹ظ† ط§ظ„طھط¬ظ…ظٹط¯ ط§ظ„ط¢ظ„ظٹ ظ„ظ„ظ…ط³طھط®ط¯ظ… %s",
+                "تعذر تنبيه المشرف %s عن التجميد الآلي للمستخدم %s",
                 admin_id,
                 user.id,
             )
@@ -644,15 +642,15 @@ async def _freeze_for_sensitive_image(
         notice = await guards.render_block_message(
             db,
             "manual_block",
-            {"kind": "ط­ط¸ط± ط¯ط§ط¦ظ…", "reason": "ط¥ط±ط³ط§ظ„ طµظˆط±ط© ط®ط§ظ„ظپطھ ظ‚ظˆط§ط¹ط¯ ط§ظ„ط§ط³طھط®ط¯ط§ظ…"},
+            {"kind": "حظر دائم", "reason": "إرسال صورة خالفت قواعد الاستخدام"},
         )
         await update.effective_message.reply_text(notice, parse_mode=ParseMode.HTML)
     except Exception:
-        logger.exception("طھط¹ط°ط± ط¥ط¨ظ„ط§ط؛ ط§ظ„ظ…ط³طھط®ط¯ظ… %s ط¨ط§ظ„ط­ط¸ط± ط§ظ„ط¢ظ„ظٹ", user.id)
+        logger.exception("تعذر إبلاغ المستخدم %s بالحظر الآلي", user.id)
 
 
 async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ط§ط³طھظ‚ط¨ط§ظ„ ط§ظ„طµظˆط±ط© (ظ…ط¶ط؛ظˆط·ط© ط£ظˆ ظƒظ…ظ„ظپ) ظˆط­ظپط¸ظ‡ط§ ظپظٹ ظ…ط¬ظ„ط¯ media/."""
+    """استقبال الصورة (مضغوطة أو كملف) وحفظها في مجلد media/."""
     msg = update.message
     await _clear_optional_prompt(context)
     progress = await _send_clean_prompt(
@@ -696,7 +694,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def remind_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ط¹ظ†ط¯ظ…ط§ ظٹط±ط³ظ„ ط§ظ„ظ…ط³طھط®ط¯ظ… ط´ظٹط¦ظ‹ط§ ط؛ظٹط± طµظˆط±ط© ظپظٹ ط®ط·ظˆط© ط§ظ„طµظˆط±ط©."""
+    """عندما يرسل المستخدم شيئًا غير صورة في خطوة الصورة."""
     await _clear_optional_prompt(context)
     prompt = await _send_clean_prompt(
         update,
@@ -710,7 +708,7 @@ async def remind_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==================================================================
-# ط§ظ„ط­ط§ظ„ط© 2: ط±ط§ط¨ط· ط§ظ„ظ…ظ†ط´ظˆط±
+# الحالة 2: رابط المنشور
 # ==================================================================
 async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
@@ -776,7 +774,7 @@ async def remind_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==================================================================
-# ط§ظ„ط­ط§ظ„ط© 3: ظˆطµظپ ط§ظ„ظ…ط®ط§ظ„ظپط©
+# الحالة 3: وصف المخالفة
 # ==================================================================
 async def receive_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
@@ -853,9 +851,9 @@ async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["place"] = ""
     else:
         place = (message.text or "").strip()
-        if place == control.semantic_text("back", "â†©ï¸ڈ ط±ط¬ظˆط¹"):
+        if place == control.semantic_text("back", "↩️ رجوع"):
             return await _dispatch_show_step(update, context, ASK_PHOTO)
-        if place != control.semantic_text("skip", "âڈ­ï¸ڈ طھط®ط·ظٹ"):
+        if place != control.semantic_text("skip", "⏭️ تخطي"):
             if not place or len(place) > 120:
                 await _send_clean_prompt(
                     update,
@@ -876,7 +874,7 @@ async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     contact = message.contact
     if not contact and (message.text or "").strip() == control.semantic_text(
-        "back", "â†©ï¸ڈ ط±ط¬ظˆط¹"
+        "back", "↩️ رجوع"
     ):
         return await _dispatch_show_step(
             update, context, _contact_back_step(context)
@@ -892,7 +890,7 @@ async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ASK_CONTACT
         context.user_data["contact_phone"] = contact.phone_number[:32]
     elif (message.text or "").strip() == control.semantic_text(
-        "skip", "âڈ­ï¸ڈ طھط®ط·ظٹ"
+        "skip", "⏭️ تخطي"
     ):
         context.user_data["contact_phone"] = ""
     else:
@@ -908,10 +906,10 @@ async def receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==================================================================
-# ط§ظ„ط­ط§ظ„ط© 4: ط§ظ„طھط£ظƒظٹط¯ ظˆط§ظ„ط­ظپط¸
+# الحالة 4: التأكيد والحفظ
 # ==================================================================
 async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ط­ظپط¸ ط§ظ„ط¨ظ„ط§ط؛ ظ†ظ‡ط§ط¦ظٹظ‹ط§ ظˆط¥ط´ط¹ط§ط± ط§ظ„ظ…ط´ط±ظپظٹظ† ط¨ظˆط¬ظˆط¯ظ‡."""
+    """حفظ البلاغ نهائيًا وإشعار المشرفين بوجوده."""
     db = _db(context)
     if await guards.is_emergency(db):
         await _send_clean_prompt(
@@ -945,7 +943,7 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             admin_note=ud.get("image_moderation_flag") or None,
         )
     except Exception:
-        logger.exception("ظپط´ظ„ ط­ظپط¸ ط§ظ„ط¨ظ„ط§ط؛ ظ„ظ„ظ…ط³طھط®ط¯ظ… %s", user.id)
+        logger.exception("فشل حفظ البلاغ للمستخدم %s", user.id)
         await _send_clean_prompt(
             update,
             context,
@@ -954,7 +952,7 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    logger.info("ط¨ظ„ط§ط؛ ط¬ط¯ظٹط¯ %s ظ…ظ† ط§ظ„ظ…ط³طھط®ط¯ظ… %s", report["seq"], user.id)
+    logger.info("بلاغ جديد %s من المستخدم %s", report["seq"], user.id)
     try:
         await db.add_fingerprint(
             report["id"],
@@ -963,7 +961,7 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             None,
         )
     except Exception:
-        logger.exception("طھط¹ط°ط±طھ ط¥ط¶ط§ظپط© ط¨طµظ…ط© ط§ظ„ط¨ظ„ط§ط؛ %s", report["seq"])
+        logger.exception("تعذرت إضافة بصمة البلاغ %s", report["seq"])
     saved_text = await _with_verified_reporter_badge(
         texts.SAVED.format(
             seq=report["seq"],
@@ -990,11 +988,10 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _notify_admins(context, report)
 
     # ------------------------------------------------------------------
-    # ط§ظ„ط£ط±ط´ظپط© ط§ظ„ط±ط³ظ…ظٹط©:
-    #   1) ظ†ط´ط± ط§ظ„ط¨ظ„ط§ط؛ ظپظٹ ط§ظ„ظ‚ظ†ط§ط© ط§ظ„ط±ط³ظ…ظٹط© ط§ظ„ظ…ظˆط­ظ‘ط¯ط© (ط³ط¬ظ„ ط²ظ…ظ†ظٹ ظˆط§ط­ط¯ ظ„ظƒظ„ ط§ظ„ط¨ظ„ط§ط؛ط§طھ)
-    #   2) ط±ظپط¹ ظ†ط³ط®ط© ظ…ظ† ظ‚ط§ط¹ط¯ط© ط§ظ„ط¨ظٹط§ظ†ط§طھ ط¥ظ„ظ‰ ط§ظ„ظ‚ظ†ط§ط© (ط­ظ…ط§ظٹط© ط§ظ„ط¨ظٹط§ظ†ط§طھ ظ…ظ† ظپظ‚ط¯ط§ظ† ط§ظ„ظ‚ط±طµ)
-    # ط§ظ„ط­ظ…ط§ظٹط© â‘¤: ط§ظ„ظ†ط´ط± ظ„ط§ ظٹطھظ… طھظ„ظ‚ط§ط¦ظٹظ‹ط§ â€” ظٹظڈظ†طھط¸ط± ط±ط£ظٹ ط§ظ„ظ…ط´ط±ظپ
-    # (ظٹظ…ظ†ط¹ ظˆطµظˆظ„ ط¨ظ„ط§ط؛ ظƒظٹط¯ظٹ ط£ظˆ ظ…ط®ط§ظ„ظپ ط¥ظ„ظ‰ ط§ظ„ظ‚ظ†ط§ط© ط§ظ„ط±ط³ظ…ظٹط©).
+    # الأرشفة الرسمية:
+    # 1) نشر البلاغ في القناة الموحدة كسجل زمني.
+    # 2) رفع نسخة من قاعدة البيانات لحمايتها من فقدان القرص.
+    # لا يُنشر البلاغ تلقائيًا قبل مراجعة المشرف.
     # ------------------------------------------------------------------
     if config.AUTO_PUBLISH_TO_ARCHIVE:
         await archive.post_report(context.bot, report)
@@ -1010,5 +1007,5 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==================================================================
-# ط£ظ…ط± /app â€” ظپطھط­ ط§ظ„طھط·ط¨ظٹظ‚
+# أمر /app — فتح التطبيق
 # ==================================================================
