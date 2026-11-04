@@ -530,7 +530,8 @@ from api.routers import audit as audit_router  # noqa: E402
 from api.routers import osint as osint_router  # noqa: E402
 from api.routers import users as users_router  # noqa: E402
 from api.routers import broadcast as broadcast_router  # noqa: E402
-from api.routers import bot_config as bot_config_router  # noqa: E402
+from api.routers import bot_menu as bot_menu_router  # noqa: E402
+from api.routers import bot_profile as bot_profile_router  # noqa: E402
 from api.routers import platform as platform_router  # noqa: E402
 def register(app) -> None:  # noqa: ANN001 — FastAPI
     OK = JSONResponse({"ok": True})
@@ -592,7 +593,8 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
     osint_router.register(app, db_of=db_of, bad=bad)
     audit_router.register(app, db_of=db_of, bad=bad)
     broadcast_router.register(app, db_of=db_of, bad=bad)
-    bot_config_router.register(app, db_of=db_of, bad=bad)
+    bot_menu_router.register(app, db_of=db_of, bad=bad)
+    bot_profile_router.register(app, db_of=db_of, bad=bad)
 # ==================================================================
 # أدوات مساعدة
 # ==================================================================
