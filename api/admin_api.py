@@ -521,6 +521,7 @@ def _status_text(r: dict[str, Any], new_status: str, note_extra: str) -> str:
 # ==================================================================
 # التسجيل: يضيف كل نقاط الواجهة إلى تطبيق FastAPI في space_app
 # ==================================================================
+from api.routers import notifications as notifications_router  # noqa: E402
 def register(app) -> None:  # noqa: ANN001 — FastAPI
     OK = JSONResponse({"ok": True})
 
@@ -557,125 +558,14 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
                 request.state.admin_auth_unavailable = True
         return await call_next(request)
 
-    @app.get("/api/admin/events/stream")
-    async def events_stream(request: Request):
-        refuse = _auth(request)
-        if refuse:
-            return refuse
-        import queue
-
-        db = db_of()
-        subscriber = db.subscribe_notifications()
-
-        async def events():
-            try:
-                yield ": connected\n\n"
-                while not await request.is_disconnected():
-                    try:
-                        event = await asyncio.to_thread(subscriber.get, True, 15)
-                    except queue.Empty:
-                        yield ": keepalive\n\n"
-                        continue
-                    yield (
-                        f"id: {event['id']}\n"
-                        f"event: notification\n"
-                        f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    )
-            finally:
-                db.unsubscribe_notifications(subscriber)
-
-        return StreamingResponse(
-            events(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    @app.get("/api/admin/notifications")
-    async def list_notifications(
-        request: Request,
-        unread: bool = False,
-        limit: int = 20,
-        kind: str | None = None,
-    ):
-        refuse = _auth(request)
-        if refuse:
-            return refuse
-        if limit < 1 or limit > 100:
-            return bad("bad_limit")
-        if kind not in (None, "regular", "heartbeat"):
-            return bad("bad_notification_kind")
-        items, unread_count = await db_of().list_notifications(
-            unread_only=unread, limit=limit, kind=kind
-        )
-        return JSONResponse({
-            "ok": True,
-            "items": items,
-            "unread_count": unread_count,
-        })
-
-    @app.get("/api/admin/notifications/stats")
-    async def notification_stats(request: Request):
-        refuse = _auth(request)
-        if refuse:
-            return refuse
-        return JSONResponse({"ok": True, **await db_of().notification_stats()})
-
-    @app.post("/api/admin/notifications/cleanup")
-    async def cleanup_notifications(request: Request):
-        refuse = _auth(request)
-        if refuse:
-            return refuse
-        refuse = _owner_only(request)
-        if refuse:
-            return refuse
-        db = db_of()
-        deleted = await db.cleanup_notifications()
-        await db.audit(
-            _admin_actor(request),
-            "notifications_cleanup",
-            "notifications",
-            f"deleted={deleted}",
-        )
-        return JSONResponse({"ok": True, "deleted": deleted})
-
-    @app.post("/api/admin/notifications/clear")
-    async def clear_notifications(request: Request):
-        refuse = _auth(request)
-        if refuse:
-            return refuse
-        refuse = _owner_only(request)
-        if refuse:
-            return refuse
-        db = db_of()
-        deleted = await db.clear_notifications()
-        await db.audit(
-            _admin_actor(request),
-            "notifications_clear",
-            "notifications",
-            f"deleted={deleted}",
-        )
-        return JSONResponse({"ok": True, "deleted": deleted})
-
-    @app.post("/api/admin/notifications/{notification_id}/read")
-    async def read_notification(notification_id: int, request: Request):
-        refuse = _auth(request)
-        if refuse:
-            return refuse
-        changed = await db_of().mark_notification_read(notification_id)
-        if not changed:
-            return bad("notification_not_found", 404)
-        return JSONResponse({"ok": True})
-
-    @app.post("/api/admin/notifications/read-all")
-    async def read_all_notifications(request: Request):
-        refuse = _auth(request)
-        if refuse:
-            return refuse
-        count = await db_of().mark_all_notifications_read()
-        return JSONResponse({"ok": True, "updated": count})
+    notifications_router.register(
+        app,
+        db_of=db_of,
+        bad=bad,
+        auth=_auth,
+        owner_only=_owner_only,
+        admin_actor=_admin_actor,
+    )
 
     @app.get("/db-health")
     def db_health() -> JSONResponse:
