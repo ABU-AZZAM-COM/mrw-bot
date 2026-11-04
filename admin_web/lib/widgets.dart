@@ -370,11 +370,15 @@ class StateBadge extends StatelessWidget {
     super.key,
     this.color = const Color(0xFF3FA66B),
     this.outline = false,
+    this.icon,
   });
 
   final String text;
   final Color color;
   final bool outline;
+
+  /// أيقونة اختيارية قبل النص (مثل رمز التأخير أو الإسناد).
+  final IconData? icon;
 
   @override
   Widget build(BuildContext context) {
@@ -386,9 +390,22 @@ class StateBadge extends StatelessWidget {
         border: Border.all(color: c),
         borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
       ),
-      child: Text(
-        text,
-        style: TextStyle(color: c, fontSize: 12, fontWeight: FontWeight.w600),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 13, color: c),
+            const SizedBox(width: 4),
+          ],
+          Text(
+            text,
+            style: TextStyle(
+              color: c,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }

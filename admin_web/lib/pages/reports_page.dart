@@ -486,67 +486,81 @@ class _ReportsPageState extends State<ReportsPage> {
     final hasPhoto =
         report['has_photo'] == true ||
         (report['photo_file_id'] ?? '').toString().isNotEmpty;
+    final overdue = _isOverdue(report, status);
+    final assigned = (report['assigned_to'] ?? '').toString().isNotEmpty;
+    final muted = theme.colorScheme.onSurfaceVariant;
 
     return Card(
       clipBehavior: Clip.antiAlias,
+      elevation: 0,
       color: status == 'جديد'
           ? theme.colorScheme.surfaceContainerHighest
           : theme.cardColor,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
+        side: BorderSide(
+          color: overdue
+              ? theme.colorScheme.error.withValues(alpha: 0.45)
+              : theme.colorScheme.outlineVariant.withValues(alpha: 0.55),
+        ),
+      ),
       child: InkWell(
         onTap: () => _detailDialog(context, report),
         child: Padding(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(AdminTokens.cardInset),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // الصف الأول: رقم البلاغ + الحالة + تأخير المتابعة.
               Row(
                 children: [
-                  Expanded(
-                    child: SelectableText(
-                      '${report['seq'] ?? '-'}',
-                      textDirection: TextDirection.ltr,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                  SelectableText(
+                    '${report['seq'] ?? '-'}',
+                    textDirection: TextDirection.ltr,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.2,
                     ),
                   ),
+                  const SizedBox(width: AdminTokens.gapSmall),
                   StateBadge(status, color: style?.$1 ?? Colors.grey),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '${report['full_name'] ?? '-'}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                  if (overdue) ...[
+                    const SizedBox(width: AdminTokens.gapSmall),
+                    StateBadge(
+                      'متأخر',
+                      color: theme.colorScheme.error,
+                      icon: Icons.schedule,
                     ),
-                  ),
-                  const SizedBox(width: 8),
+                  ],
+                  const Spacer(),
                   UserActivityIndicator(
                     lastSeen: report['user_last_at'] as String?,
                   ),
                 ],
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: AdminTokens.gapSmall),
+              Text(
+                '${report['full_name'] ?? '-'}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  height: 1.25,
+                ),
+              ),
+              const SizedBox(height: 2),
               Text(
                 'معرّف المستخدم ${report['user_id'] ?? '-'}'
                 '  ·  ${fmt((report['created_at'] ?? '') as String)}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textDirection: TextDirection.rtl,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+                style: theme.textTheme.bodySmall?.copyWith(color: muted),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: AdminTokens.gapMedium),
               Wrap(
-                spacing: 7,
-                runSpacing: 7,
+                spacing: 6,
+                runSpacing: 6,
                 children: [
                   StateBadge(
                     '${report['violation_type'] ?? 'بلا تصنيف'}',
@@ -556,44 +570,54 @@ class _ReportsPageState extends State<ReportsPage> {
                     'أولوية ${priorityLabel(priority)}',
                     color: _priorityColor(theme, priority),
                   ),
+                  if (assigned)
+                    StateBadge(
+                      'مسند',
+                      color: theme.colorScheme.tertiary,
+                      icon: Icons.person_outline,
+                    ),
                 ],
               ),
-              const SizedBox(height: 6),
-              Align(
-                alignment: AlignmentDirectional.centerStart,
-                child: Wrap(
-                  spacing: 4,
-                  children: [
-                    if (hasPhoto)
-                      IconButton(
-                        tooltip: 'معاينة صورة البلاغ',
-                        onPressed: reportId == null
-                            ? null
-                            : () => _previewPhoto(reportId),
-                        icon: const Icon(Icons.image_search_outlined),
-                      ),
-                    if (hasPhoto)
-                      IconButton(
-                        tooltip: 'تنزيل صورة البلاغ',
-                        onPressed: reportId == null
-                            ? null
-                            : () => _downloadPhoto(reportId),
-                        icon: const Icon(Icons.download_outlined),
-                      ),
-                    IconButton(
-                      tooltip: 'فتح محادثة مباشرة مع المستخدم',
-                      onPressed: userId == null
+              const SizedBox(height: AdminTokens.gapSmall),
+              // شريط الإجراءات: أيقونات مضغوطة + زر التفاصيل الأساسي.
+              Row(
+                children: [
+                  if (hasPhoto)
+                    _compactIcon(
+                      tooltip: 'معاينة صورة البلاغ',
+                      icon: Icons.image_search_outlined,
+                      onPressed: reportId == null
                           ? null
-                          : () => _openConversation(report),
-                      icon: const Icon(Icons.chat_outlined),
+                          : () => _previewPhoto(reportId),
                     ),
-                    TextButton.icon(
-                      onPressed: () => _detailDialog(context, report),
-                      icon: const Icon(Icons.open_in_new, size: 17),
-                      label: const Text('تفاصيل البلاغ'),
+                  if (hasPhoto)
+                    _compactIcon(
+                      tooltip: 'تنزيل صورة البلاغ',
+                      icon: Icons.download_outlined,
+                      onPressed: reportId == null
+                          ? null
+                          : () => _downloadPhoto(reportId),
                     ),
-                  ],
-                ),
+                  _compactIcon(
+                    tooltip: 'فتح محادثة مباشرة مع المستخدم',
+                    icon: Icons.chat_outlined,
+                    onPressed: userId == null
+                        ? null
+                        : () => _openConversation(report),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AdminTokens.gapMedium,
+                      ),
+                    ),
+                    onPressed: () => _detailDialog(context, report),
+                    icon: const Icon(Icons.open_in_new, size: 16),
+                    label: const Text('تفاصيل البلاغ'),
+                  ),
+                ],
               ),
             ],
           ),
@@ -601,6 +625,28 @@ class _ReportsPageState extends State<ReportsPage> {
       ),
     );
   }
+
+  /// زر أيقونة مضغوط يحافظ على مساحة اللمس 40×40 مع تقليل الحشو البصري.
+  Widget _compactIcon({
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback? onPressed,
+  }) => IconButton(
+    tooltip: tooltip,
+    onPressed: onPressed,
+    icon: Icon(icon, size: AdminTokens.iconMedium),
+    visualDensity: VisualDensity.compact,
+    constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+    padding: EdgeInsets.zero,
+  );
+
+  /// هل تجاوز البلاغ موعد المتابعة وما زال مفتوحًا؟
+  bool _isOverdue(Map<String, dynamic> report, String status) {
+    if (status == 'معتمد' || status == 'مرفوض') return false;
+    final due = DateTime.tryParse('${report['due_at'] ?? ''}');
+    return due != null && due.isBefore(DateTime.now());
+  }
+
 
   Color _priorityColor(ThemeData theme, String priority) => switch (priority) {
     'urgent' => const Color(0xFFFF7C83),
