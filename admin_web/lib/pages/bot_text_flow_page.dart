@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 
 enum _ContentFilter { all, buttons, messages }
 
@@ -900,7 +901,7 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
                             _mobileFlowPicker()
                           else if (constraints.maxWidth < 1120)
                             _flowChips(),
-                          const SizedBox(height: 10),
+                          const SizedBox(height: AdminTokens.gapSmall),
                           Row(
                             children: [
                               Expanded(
@@ -1010,14 +1011,19 @@ class _BotTextManagementPageState extends State<BotTextManagementPage> {
   }
 }
 
-class _SectionHeading extends StatelessWidget {
+  class _SectionHeading extends StatelessWidget {
   const _SectionHeading({required this.title});
 
   final String title;
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(12, 16, 12, 4),
+    padding: const EdgeInsets.fromLTRB(
+      AdminTokens.s3,
+      AdminTokens.s4,
+      AdminTokens.s3,
+      AdminTokens.gapTight,
+    ),
     child: Text(
       title,
       style: Theme.of(context).textTheme.titleSmall?.copyWith(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 import 'shared_dialogs.dart';
 
@@ -415,17 +416,22 @@ class _OperationsPageState extends State<OperationsPage> {
     final bool emergency = ov['emergency'] == true;
     final bool botReady = ov['bot_ready'] == true;
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(
+        AdminTokens.pageInset,
+        AdminTokens.s3,
+        AdminTokens.pageInset,
+        AdminTokens.s8,
+      ),
       children: [
         Row(
           children: [
             StateBadge(
               botReady ? '🤖 البوت متصل ويعمل' : '🤖 البوت غير متصل حالياً',
               color: botReady
-                  ? const Color(0xFF3FA66B)
-                  : const Color(0xFFE06C75),
+                  ? AdminTokens.onlineOk
+                  : AdminTokens.onlineError,
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: AdminTokens.gapSmall),
             IconButton(
               tooltip: 'تحديث',
               onPressed: _load,
@@ -433,10 +439,13 @@ class _OperationsPageState extends State<OperationsPage> {
             ),
           ],
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: AdminTokens.sectionGap),
         SectionCard(
-          'الإيقاف الطارئ — السيطرة الكامل',
+          'الإيقاف الطارئ — السيطرة الكاملة',
           icon: Icons.emergency,
+          subtitle: emergency
+              ? 'الاستقبال متوقف — البلاغات الجديدة تُرفض'
+              : 'الاستقبال تعمل',
           trailing: _busy
               ? const SizedBox(
                   width: 16,
@@ -445,7 +454,7 @@ class _OperationsPageState extends State<OperationsPage> {
                 )
               : null,
           child: SwitchListTile(
-            activeThumbColor: const Color(0xFFE06C75),
+            activeThumbColor: AdminTokens.onlineError,
             contentPadding: EdgeInsets.zero,
             title: Text(
               emergency
@@ -460,7 +469,7 @@ class _OperationsPageState extends State<OperationsPage> {
             onChanged: _busy ? null : (v) => _setEmergency(v == true),
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: AdminTokens.sectionGap),
         SectionCard(
           'إدارة الحظر وحدود المحاولات',
           icon: Icons.person_off_outlined,
@@ -468,7 +477,7 @@ class _OperationsPageState extends State<OperationsPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SwitchListTile(
-                activeThumbColor: const Color(0xFFE0A44C),
+                activeThumbColor: AdminTokens.onlineWarning,
                 contentPadding: EdgeInsets.zero,
                 title: Text(
                   _userLimitsPaused

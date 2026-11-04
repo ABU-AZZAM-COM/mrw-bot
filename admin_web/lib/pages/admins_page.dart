@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 
 class AdminsPage extends StatefulWidget {
@@ -465,7 +466,12 @@ class _AdminsPageState extends State<AdminsPage> {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_error != null) return ErrorView(_error!, _load);
     return ListView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.fromLTRB(
+        AdminTokens.pageInset,
+        AdminTokens.s4,
+        AdminTokens.pageInset,
+        AdminTokens.s8,
+      ),
       children: [
         SectionCard(
           'إدارة الوصول',
@@ -478,8 +484,8 @@ class _AdminsPageState extends State<AdminsPage> {
             icon: const Icon(Icons.refresh),
           ),
           child: Wrap(
-            spacing: 10,
-            runSpacing: 10,
+            spacing: AdminTokens.gapSmall,
+            runSpacing: AdminTokens.gapSmall,
             children: [
               FilledButton.icon(
                 onPressed: _busy ? null : _create,
@@ -503,7 +509,7 @@ class _AdminsPageState extends State<AdminsPage> {
             ],
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: AdminTokens.sectionGap),
         if (!_bootstrapDisabled)
           Card(
             child: ListTile(
@@ -514,6 +520,7 @@ class _AdminsPageState extends State<AdminsPage> {
               ),
             ),
           ),
+        const SizedBox(height: AdminTokens.sectionGap),
         SectionCard(
           'المشرفون',
           icon: Icons.groups_2_outlined,
@@ -521,7 +528,7 @@ class _AdminsPageState extends State<AdminsPage> {
               'يمكن إيقاف أي حساب أو تغيير مستواه دون كشف كلمة مروره الحالية.',
           child: _items.isEmpty
               ? const Padding(
-                  padding: EdgeInsets.all(20),
+                  padding: EdgeInsets.all(AdminTokens.cardInset),
                   child: Center(child: Text('لا توجد حسابات إضافية مسجلة')),
                 )
               : Column(

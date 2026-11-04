@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 import 'messaging_page.dart' show openUserConversation;
 import 'overview_page.dart' show fmt;
@@ -91,7 +92,12 @@ class _UsersPageState extends State<UsersPage> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          padding: const EdgeInsets.fromLTRB(
+            AdminTokens.pageInset,
+            AdminTokens.s3,
+            AdminTokens.pageInset,
+            AdminTokens.s2,
+          ),
           child: Row(
             children: [
               Expanded(

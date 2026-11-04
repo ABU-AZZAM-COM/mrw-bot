@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 import 'shared_dialogs.dart';
 
@@ -158,20 +159,20 @@ class _BlockedPageState extends State<BlockedPage> {
       children: [
         Expanded(
           child: ListView(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(
+              AdminTokens.pageInset,
+              AdminTokens.s3,
+              AdminTokens.pageInset,
+              AdminTokens.s4,
+            ),
             children: [
               SectionCard(
                 'المُقيَّدون',
                 icon: Icons.block_outlined,
+                subtitle: '$_total حجب سارٍ',
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      '$_total حجب سارٍ',
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
                     IconButton(
                       tooltip: 'تحديث القائمة',
                       onPressed: _load,
@@ -192,7 +193,7 @@ class _BlockedPageState extends State<BlockedPage> {
           ),
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
+          padding: const EdgeInsets.symmetric(vertical: AdminTokens.s3),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [

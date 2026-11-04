@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 
 /// إجراء متاح لزر قائمة المستخدم (يأتي من الخادم معرّفًا ومُتحقَّقًا منه).
 class _MenuAction {
@@ -298,7 +299,7 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
     final colors = Theme.of(context).colorScheme;
     switch (style) {
       case 'success':
-        return Colors.green.shade700;
+        return AdminTokens.onlineOk;
       case 'danger':
         return colors.error;
       case 'primary':
@@ -1075,7 +1076,7 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
     if (_error != null) {
       return Card(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(AdminTokens.cardInset),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -1129,12 +1130,17 @@ class _BotButtonMapPageState extends State<BotButtonMapPage> {
 
   @override
   Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.all(16),
+    padding: const EdgeInsets.fromLTRB(
+      AdminTokens.pageInset,
+      AdminTokens.s4,
+      AdminTokens.pageInset,
+      AdminTokens.s8,
+    ),
     children: [
       _banner(context),
-      const SizedBox(height: 12),
+      const SizedBox(height: AdminTokens.sectionGap),
       _toolbar(context),
-      const SizedBox(height: 14),
+      const SizedBox(height: AdminTokens.sectionGap),
       _body(context),
     ],
   );

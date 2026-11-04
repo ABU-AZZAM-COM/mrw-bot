@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 import 'overview_page.dart' show fmt;
 
@@ -488,28 +489,63 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            const Icon(Icons.verified_user_outlined),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text('توثيق المراسلين', style: theme.textTheme.titleLarge),
-            ),
-            IconButton(
-              tooltip: 'تحديث',
-              onPressed: _loading ? null : _load,
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: AdminTokens.gapTight),
+          child: Row(
+            children: [
+              Container(
+                width: AdminTokens.iconMedium * 2,
+                height: AdminTokens.iconMedium * 2,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary.withValues(alpha: 0.11),
+                  borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
+                ),
+                child: Icon(
+                  Icons.verified_user_outlined,
+                  size: AdminTokens.iconMedium,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+              const SizedBox(width: AdminTokens.s2),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'توثيق المراسلين',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: AdminTokens.gapTight),
+                    Text(
+                      'طلبات التوثيق المرسلة عبر البوت وحالتها الحالية',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'تحديث',
+                onPressed: _loading ? null : _load,
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AdminTokens.sectionGap),
         _analyticsCards(),
-        const SizedBox(height: 12),
+        const SizedBox(height: AdminTokens.sectionGap),
         _trendChart(),
-        const SizedBox(height: 12),
+        const SizedBox(height: AdminTokens.sectionGap),
         _filters(),
-        const SizedBox(height: 8),
+        const SizedBox(height: AdminTokens.gapSmall),
         Expanded(child: _listBody()),
+        const SizedBox(height: AdminTokens.s3),
         _pagination(),
       ],
     );
@@ -518,76 +554,62 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
   Widget _analyticsCards() {
     final counts = _analytics['counts'] as Map<String, dynamic>? ?? const {};
     final waiting = _analytics['waiting'] as Map<String, dynamic>? ?? const {};
-    final values = <(String, String, IconData, String?)>[
-      (
-        'بانتظار المراجعة',
+    final avgWait = waiting['average_wait_hours'] == null
+        ? '—'
+        : '${waiting['average_wait_hours']} س';
+    final stats = <String, _Stat>{
+      'بانتظار المراجعة': _Stat(
         '${counts['pending'] ?? 0}',
         Icons.hourglass_top,
+        AdminTokens.statusReview,
         'pending',
       ),
-      (
-        'بانتظار الاستكمال',
+      'بانتظار الاستكمال': _Stat(
         '${counts['needs_info'] ?? 0}',
         Icons.more_time,
+        AdminTokens.statusReview,
         'needs_info',
       ),
-      (
-        'معتمد',
+      'معتمد': _Stat(
         '${counts['verified'] ?? 0}',
         Icons.verified_outlined,
+        AdminTokens.statusApproved,
         'verified',
       ),
-      ('مرفوض', '${counts['rejected'] ?? 0}', Icons.block_outlined, 'rejected'),
-      (
-        'متوسط الانتظار',
-        waiting['average_wait_hours'] == null
-            ? '—'
-            : '${waiting['average_wait_hours']} س',
+      'مرفوض': _Stat(
+        '${counts['rejected'] ?? 0}',
+        Icons.block_outlined,
+        AdminTokens.statusRejected,
+        'rejected',
+      ),
+      'متوسط الانتظار': _Stat(
+        avgWait,
         Icons.schedule,
+        AdminTokens.statusNew,
         null,
       ),
-    ];
+    };
     return Wrap(
-      spacing: 10,
-      runSpacing: 10,
+      spacing: AdminTokens.sectionGap,
+      runSpacing: AdminTokens.sectionGap,
       children: [
-        for (final item in values)
+        for (final entry in stats.entries)
           SizedBox(
             width: 170,
-            child: Card(
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap: item.$4 == null
-                    ? null
-                    : () {
-                        setState(() {
-                          _status = item.$4!;
-                          _page = 0;
-                        });
-                        _load();
-                      },
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Row(
-                    children: [
-                      Icon(item.$3),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(item.$1, style: const TextStyle(fontSize: 12)),
-                            Text(
-                              _analyticsLoading ? '…' : item.$2,
-                              style: Theme.of(context).textTheme.titleLarge,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+            child: StatCard(
+              title: entry.key,
+              value: entry.value.value,
+              color: entry.value.color,
+              icon: entry.value.icon,
+              onTap: entry.value.status == null
+                  ? null
+                  : () {
+                      setState(() {
+                        _status = entry.value.status!;
+                        _page = 0;
+                      });
+                      _load();
+                    },
             ),
           ),
       ],
@@ -599,61 +621,52 @@ class _VerifiedReportersPageState extends State<VerifiedReportersPage> {
         .whereType<Map>()
         .map((item) => Map<String, dynamic>.from(item))
         .toList();
-    return Card(
-      child: Padding(
-        padding: const EdgeInsetsDirectional.fromSTEB(16, 12, 16, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'اتجاه الطلبات',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ),
-                SizedBox(
-                  width: 130,
-                  child: DropdownButtonFormField<int>(
-                    initialValue: _analyticsDays,
-                    isDense: true,
-                    decoration: const InputDecoration(
-                      labelText: 'الفترة',
-                      border: InputBorder.none,
-                    ),
-                    items: const [
-                      DropdownMenuItem(value: 7, child: Text('7 أيام')),
-                      DropdownMenuItem(value: 30, child: Text('30 يومًا')),
-                      DropdownMenuItem(value: 90, child: Text('90 يومًا')),
-                    ],
-                    onChanged: (days) {
-                      if (days == null) return;
-                      setState(() => _analyticsDays = days);
-                      _loadAnalytics();
-                    },
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 110,
-              child: _analyticsLoading || trend.isEmpty
-                  ? const Center(child: Text('لا توجد بيانات كافية'))
-                  : CustomPaint(
-                      painter: _TrendPainter(
-                        trend
-                            .map((item) => (item['count'] as num).toDouble())
-                            .toList(),
-                        Theme.of(context).colorScheme.primary,
-                        Theme.of(context).colorScheme.outlineVariant,
-                      ),
-                      child: const SizedBox.expand(),
-                    ),
-            ),
+    final scheme = Theme.of(context).colorScheme;
+    return SectionCard(
+      'اتجاه الطلبات',
+      icon: Icons.show_chart,
+      trailing: SizedBox(
+        width: 130,
+        child: DropdownButtonFormField<int>(
+          initialValue: _analyticsDays,
+          isDense: true,
+          decoration: const InputDecoration(
+            labelText: 'الفترة',
+            border: InputBorder.none,
+          ),
+          items: const [
+            DropdownMenuItem(value: 7, child: Text('7 أيام')),
+            DropdownMenuItem(value: 30, child: Text('30 يومًا')),
+            DropdownMenuItem(value: 90, child: Text('90 يومًا')),
           ],
+          onChanged: (days) {
+            if (days == null) return;
+            setState(() => _analyticsDays = days);
+            _loadAnalytics();
+          },
         ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(height: AdminTokens.gapTight),
+          SizedBox(
+            height: 110,
+            child: _analyticsLoading || trend.isEmpty
+                ? const Center(child: EmptyView('لا توجد بيانات كافية'))
+                : CustomPaint(
+                    painter: _TrendPainter(
+                      trend
+                          .map((item) => (item['count'] as num).toDouble())
+                          .toList(),
+                      scheme.primary,
+                      scheme.outlineVariant,
+                    ),
+                    child: const SizedBox.expand(),
+                  ),
+          ),
+        ],
       ),
     );
   }
@@ -1159,6 +1172,15 @@ class _ImageInspectorState extends State<_ImageInspector> {
       ],
     ),
   );
+}
+
+class _Stat {
+  const _Stat(this.value, this.icon, this.color, [this.status]);
+
+  final String value;
+  final IconData icon;
+  final Color color;
+  final String? status;
 }
 
 class _TrendPainter extends CustomPainter {

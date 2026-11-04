@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 import 'message_composer.dart';
 import 'shared_dialogs.dart';
@@ -480,7 +481,12 @@ class _MessagingPageState extends State<MessagingPage> {
   @override
   Widget build(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(
+        AdminTokens.pageInset,
+        AdminTokens.s4,
+        AdminTokens.pageInset,
+        AdminTokens.s8,
+      ),
       children: [
         SectionCard(
           'محادثات المستخدمين',
@@ -514,10 +520,10 @@ class _MessagingPageState extends State<MessagingPage> {
                   _loadConversations();
                 },
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: AdminTokens.gapSmall),
               if (_conversations.isEmpty)
                 const Padding(
-                  padding: EdgeInsets.all(12),
+                  padding: EdgeInsets.all(AdminTokens.cardInset),
                   child: Text('لا توجد محادثات محفوظة بعد.'),
                 )
               else
@@ -526,7 +532,7 @@ class _MessagingPageState extends State<MessagingPage> {
             ],
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: AdminTokens.sectionGap),
         SectionCard(
           'محادثة خاصة مع مستخدم',
           icon: Icons.forum_outlined,
@@ -541,7 +547,7 @@ class _MessagingPageState extends State<MessagingPage> {
                   hintText: 'أدخل المعرف الرقمي للمستخدم',
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: AdminTokens.gapSmall),
               TextField(
                 controller: _privateText,
                 maxLines: 3,
@@ -551,6 +557,7 @@ class _MessagingPageState extends State<MessagingPage> {
                   alignLabelWithHint: true,
                 ),
               ),
+              const SizedBox(height: AdminTokens.gapSmall),
               Align(
                 alignment: AlignmentDirectional.centerEnd,
                 child: FilledButton.icon(
@@ -562,7 +569,7 @@ class _MessagingPageState extends State<MessagingPage> {
             ],
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: AdminTokens.sectionGap),
         SectionCard(
           'تعميم إلى جميع مستخدمي البوت',
           icon: Icons.campaign_outlined,
@@ -592,12 +599,12 @@ class _MessagingPageState extends State<MessagingPage> {
                   alignLabelWithHint: true,
                 ),
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: AdminTokens.gapTight),
               const Text(
                 'يُرسل إلى كل من بدأ استخدام البوت أو سبق تسجيله، مع حفظ تقدم الإرسال.',
               ),
               if (_broadcastJob != null) ...[
-                const SizedBox(height: 8),
+                const SizedBox(height: AdminTokens.gapSmall),
                 LinearProgressIndicator(
                   value: (_broadcastJob!['total'] as num? ?? 0) == 0
                       ? null
@@ -662,7 +669,7 @@ class _MessagingPageState extends State<MessagingPage> {
                                     : null,
                                 icon: const Icon(
                                   Icons.delete_outline,
-                                  color: Color(0xFFE06C75),
+                                  color: AdminTokens.statusRejected,
                                 ),
                               ),
                             ],
@@ -670,7 +677,7 @@ class _MessagingPageState extends State<MessagingPage> {
                         : null,
                   ),
               ],
-              const SizedBox(height: 8),
+              const SizedBox(height: AdminTokens.gapSmall),
               FilledButton.icon(
                 onPressed: _busy ? null : _sendBroadcast,
                 icon: const Icon(Icons.send),
@@ -679,7 +686,7 @@ class _MessagingPageState extends State<MessagingPage> {
             ],
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: AdminTokens.sectionGap),
         SectionCard(
           'قوالب الردود الجاهزة',
           icon: Icons.format_quote_outlined,
@@ -748,10 +755,10 @@ class _MessagingPageState extends State<MessagingPage> {
                           ),
                         ],
                       ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: AdminTokens.gapTight),
                     const Text(
                       'القوالب تُستخدم للرد السريع في تفصيل أي بلاغ — زر "قوالب" يعبّئ الرد فوراً',
-                      style: TextStyle(fontSize: 12),
+                      style: TextStyle(fontSize: AdminTokens.iconSmall),
                     ),
                   ],
                 ),
