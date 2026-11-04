@@ -400,9 +400,11 @@ class _DashboardHero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final critical = emergency || !botReady;
+    final criticalColor = critical ? scheme.error : scheme.primary;
     return Container(
-      padding: const EdgeInsets.all(22),
+      padding: const EdgeInsets.all(AdminTokens.s6),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: AlignmentDirectional.topStart,
@@ -413,8 +415,7 @@ class _DashboardHero extends StatelessWidget {
         ),
         borderRadius: BorderRadius.circular(AdminTokens.heroRadius),
         border: Border.all(
-          color: (critical ? const Color(0xFFFF7C83) : const Color(0xFF56D6A0))
-              .withValues(alpha: 0.32),
+          color: criticalColor.withValues(alpha: 0.32),
         ),
       ),
       child: LayoutBuilder(
@@ -426,18 +427,18 @@ class _DashboardHero extends StatelessWidget {
               Row(
                 children: [
                   Container(
-                    width: 42,
-                    height: 42,
+                    width: AdminTokens.iconMedium * 2 + AdminTokens.s2,
+                    height: AdminTokens.iconMedium * 2 + AdminTokens.s2,
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.09),
-                      borderRadius: BorderRadius.circular(13),
+                      borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
                     ),
                     child: const Icon(
                       Icons.shield_moon_outlined,
                       color: Color(0xFF8EE6C0),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: AdminTokens.s4),
                   Expanded(
                     child: Text(
                       'مركز قيادة البلاغات',
@@ -449,17 +450,17 @@ class _DashboardHero extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: AdminTokens.s2),
               Text(
                 'ملخص تشغيلي يساعدك على رؤية الأولويات واتخاذ الإجراء المناسب.',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: Colors.white.withValues(alpha: 0.72),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: AdminTokens.s4),
               Wrap(
-                spacing: 8,
-                runSpacing: 8,
+                spacing: AdminTokens.s3,
+                runSpacing: AdminTokens.s3,
                 children: [
                   _HealthPill(
                     label: botReady ? 'البوت متصل بالخدمة' : 'البوت غير جاهز',
@@ -486,12 +487,12 @@ class _DashboardHero extends StatelessWidget {
             ],
           );
           final actions = Wrap(
-            spacing: 8,
-            runSpacing: 8,
+            spacing: AdminTokens.s3,
+            runSpacing: AdminTokens.s3,
             children: [
               OutlinedButton.icon(
                 onPressed: onOperations,
-                icon: const Icon(Icons.tune_rounded, size: 18),
+                icon: const Icon(Icons.tune_rounded, size: AdminTokens.iconSmall),
                 label: const Text('حالة النظام'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Colors.white,
@@ -502,11 +503,11 @@ class _DashboardHero extends StatelessWidget {
                 onPressed: refreshing ? null : onRefresh,
                 icon: refreshing
                     ? const SizedBox(
-                        width: 16,
-                        height: 16,
+                        width: AdminTokens.iconSmall,
+                        height: AdminTokens.iconSmall,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Icon(Icons.refresh_rounded, size: 18),
+                    : const Icon(Icons.refresh_rounded, size: AdminTokens.iconSmall),
                 label: const Text('تحديث'),
               ),
             ],
@@ -516,10 +517,10 @@ class _DashboardHero extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 heading,
-                const SizedBox(height: 18),
+                const SizedBox(height: AdminTokens.s4),
                 actions,
                 if (updatedAt != null) ...[
-                  const SizedBox(height: 10),
+                  const SizedBox(height: AdminTokens.s2),
                   _UpdatedText(time: updatedAt!),
                 ],
               ],
@@ -529,13 +530,13 @@ class _DashboardHero extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Expanded(child: heading),
-              const SizedBox(width: 16),
+              const SizedBox(width: AdminTokens.s4),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   actions,
                   if (updatedAt != null) ...[
-                    const SizedBox(height: 10),
+                    const SizedBox(height: AdminTokens.s2),
                     _UpdatedText(time: updatedAt!),
                   ],
                 ],
@@ -573,18 +574,26 @@ class _HealthPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+    padding: const EdgeInsets.symmetric(horizontal: AdminTokens.s3, vertical: AdminTokens.s1),
     decoration: BoxDecoration(
       color: Colors.black.withValues(alpha: 0.14),
-      borderRadius: BorderRadius.circular(30),
+      borderRadius: BorderRadius.circular(AdminTokens.chipRadius),
       border: Border.all(color: color.withValues(alpha: 0.4)),
     ),
     child: Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 16, color: color),
-        const SizedBox(width: 7),
-        Text(label, style: const TextStyle(color: Colors.white, fontSize: 12)),
+        Icon(icon, size: AdminTokens.iconSmall, color: color),
+        const SizedBox(width: AdminTokens.s1),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 130),
+          child: Text(
+            label,
+            style: const TextStyle(color: Colors.white, fontSize: AdminTokens.iconSmall),
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+        ),
       ],
     ),
   );
@@ -622,7 +631,7 @@ class _MetricCard extends StatelessWidget {
           onTap: onTap,
           child: Container(
             constraints: const BoxConstraints(minHeight: 142),
-            padding: const EdgeInsets.all(17),
+            padding: const EdgeInsets.all(AdminTokens.cardInset),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
               border: Border.all(color: theme.dividerColor),
@@ -642,17 +651,17 @@ class _MetricCard extends StatelessWidget {
                       ),
                     ),
                     Container(
-                      width: 36,
-                      height: 36,
+                      width: AdminTokens.iconMedium * 2 - AdminTokens.s1,
+                      height: AdminTokens.iconMedium * 2 - AdminTokens.s1,
                       decoration: BoxDecoration(
                         color: color.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(11),
+                        borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
                       ),
-                      child: Icon(icon, color: color, size: 19),
+                      child: Icon(icon, color: color, size: AdminTokens.iconMedium),
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: AdminTokens.s4),
                 Text(
                   value,
                   style: theme.textTheme.headlineMedium?.copyWith(
@@ -660,14 +669,14 @@ class _MetricCard extends StatelessWidget {
                     height: 1.05,
                   ),
                 ),
-                const SizedBox(height: 7),
+                const SizedBox(height: AdminTokens.s1),
                 Text(
                   subtitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: theme.colorScheme.onSurfaceVariant,
-                    fontSize: 12,
+                    fontSize: AdminTokens.iconSmall,
                   ),
                 ),
               ],
@@ -734,10 +743,10 @@ class _StatusDistribution extends StatelessWidget {
       children: [
         for (final status in kStatusOrder)
           Padding(
-            padding: const EdgeInsets.only(bottom: 15),
+            padding: const EdgeInsets.only(bottom: AdminTokens.s3),
             child: InkWell(
               onTap: onTap,
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),
                 child: Builder(
@@ -749,8 +758,8 @@ class _StatusDistribution extends StatelessWidget {
                       children: [
                         Row(
                           children: [
-                            Icon(style.$2, size: 17, color: style.$1),
-                            const SizedBox(width: 7),
+                            Icon(style.$2, size: AdminTokens.iconSmall, color: style.$1),
+                            const SizedBox(width: AdminTokens.s1),
                             Expanded(child: Text(status)),
                             Text(
                               '${value.toInt()}',
@@ -758,7 +767,7 @@ class _StatusDistribution extends StatelessWidget {
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
-                            const SizedBox(width: 8),
+                            const SizedBox(width: AdminTokens.s2),
                             SizedBox(
                               width: 38,
                               child: Text(
@@ -768,18 +777,18 @@ class _StatusDistribution extends StatelessWidget {
                                   color: Theme.of(
                                     context,
                                   ).colorScheme.onSurfaceVariant,
-                                  fontSize: 11,
+                                  fontSize: AdminTokens.iconSmall,
                                 ),
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: AdminTokens.s2),
                         ClipRRect(
-                          borderRadius: BorderRadius.circular(20),
+                          borderRadius: BorderRadius.circular(AdminTokens.chipRadius),
                           child: LinearProgressIndicator(
                             value: ratio.clamp(0.0, 1.0).toDouble(),
-                            minHeight: 6,
+                            minHeight: AdminTokens.s1,
                             color: style.$1,
                             backgroundColor: style.$1.withValues(alpha: 0.12),
                           ),
@@ -831,7 +840,7 @@ class _AttentionCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
           child: Container(
             constraints: const BoxConstraints(minHeight: 134),
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.all(AdminTokens.cardInset),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
               border: Border.all(color: color.withValues(alpha: 0.22)),
@@ -841,8 +850,8 @@ class _AttentionCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Icon(icon, color: color, size: 19),
-                    const SizedBox(width: 7),
+                    Icon(icon, color: color, size: AdminTokens.iconMedium),
+                    const SizedBox(width: AdminTokens.s1),
                     Expanded(
                       child: Text(
                         title,
@@ -859,21 +868,21 @@ class _AttentionCard extends StatelessWidget {
                     ),
                   ],
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: AdminTokens.s1),
                 Text(
                   hint,
                   style: TextStyle(
                     color: theme.colorScheme.onSurfaceVariant,
-                    fontSize: 12,
+                    fontSize: AdminTokens.iconSmall,
                   ),
                 ),
                 if (items.isNotEmpty) ...[
-                  const SizedBox(height: 10),
+                  const SizedBox(height: AdminTokens.s3),
                   Text(
                     _reportLabel(items.first),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12),
+                    style: const TextStyle(fontSize: AdminTokens.iconSmall),
                   ),
                 ],
               ],
@@ -935,26 +944,27 @@ class _RecentReportRow extends StatelessWidget {
     )?.toLocal();
     return InkWell(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12),
+        padding: const EdgeInsets.symmetric(vertical: AdminTokens.s3),
         child: Row(
           children: [
             Container(
-              width: 38,
-              height: 38,
+              width: AdminTokens.iconMedium * 2 - AdminTokens.s1,
+              height: AdminTokens.iconMedium * 2 - AdminTokens.s1,
               decoration: BoxDecoration(
                 color: (style?.$1 ?? theme.colorScheme.primary).withValues(
                   alpha: 0.12,
                 ),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
               ),
               child: Icon(
                 style?.$2 ?? Icons.description_outlined,
                 color: style?.$1 ?? theme.colorScheme.primary,
-                size: 19,
+                size: AdminTokens.iconMedium,
               ),
             ),
-            const SizedBox(width: 11),
+            const SizedBox(width: AdminTokens.s3),
             Expanded(
               flex: 3,
               child: Column(
@@ -966,32 +976,32 @@ class _RecentReportRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
-                  const SizedBox(height: 3),
+                  const SizedBox(height: AdminTokens.s1),
                   Text(
                     '${item['seq'] ?? 'بلاغ ${item['id'] ?? '-'}'}'
                     '  •  ${createdAt == null ? '-' : TimeOfDay.fromDateTime(createdAt).format(context)}',
                     style: TextStyle(
                       color: theme.colorScheme.onSurfaceVariant,
-                      fontSize: 11,
+                      fontSize: AdminTokens.iconSmall,
                     ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: AdminTokens.s2),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: AdminTokens.s3, vertical: AdminTokens.s1),
               decoration: BoxDecoration(
                 color: (style?.$1 ?? theme.colorScheme.outline).withValues(
                   alpha: 0.12,
                 ),
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(AdminTokens.chipRadius),
               ),
               child: Text(
                 status,
                 style: TextStyle(
                   color: style?.$1 ?? theme.colorScheme.onSurfaceVariant,
-                  fontSize: 11,
+                  fontSize: AdminTokens.iconSmall,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1018,21 +1028,21 @@ class _PartialErrorBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(12),
+    padding: const EdgeInsets.all(AdminTokens.s3),
     decoration: BoxDecoration(
-      color: const Color(0xFFFFC857).withValues(alpha: 0.1),
-      borderRadius: BorderRadius.circular(13),
-      border: Border.all(color: const Color(0xFFFFC857).withValues(alpha: 0.4)),
+      color: AdminTokens.statusNew.withValues(alpha: 0.1),
+      borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
+      border: Border.all(color: AdminTokens.statusNew.withValues(alpha: 0.4)),
     ),
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Icon(Icons.info_outline, color: Color(0xFFFFC857), size: 19),
-        const SizedBox(width: 9),
+        const Icon(Icons.info_outline, color: AdminTokens.statusNew, size: AdminTokens.iconMedium),
+        const SizedBox(width: AdminTokens.s2),
         Expanded(
           child: Text(
             'بعض الأقسام لم تُحمّل: ${errors.join('، ')}',
-            style: const TextStyle(fontSize: 12),
+            style: const TextStyle(fontSize: AdminTokens.iconSmall),
           ),
         ),
       ],
@@ -1048,21 +1058,21 @@ class _InlineEmpty extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 24),
+    padding: const EdgeInsets.symmetric(vertical: AdminTokens.s6),
     child: Center(
       child: Column(
         children: [
           Icon(
             icon,
             color: Theme.of(context).colorScheme.onSurfaceVariant,
-            size: 25,
+            size: AdminTokens.iconMedium * 1.2,
           ),
-          const SizedBox(height: 7),
+          const SizedBox(height: AdminTokens.s2),
           Text(
             message,
             style: TextStyle(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
-              fontSize: 12,
+              fontSize: AdminTokens.iconSmall,
             ),
           ),
         ],

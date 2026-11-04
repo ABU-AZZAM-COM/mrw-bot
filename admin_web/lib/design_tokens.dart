@@ -59,4 +59,29 @@ abstract final class AdminTokens {
 
   /// حد أقصى لعرض محتوى القراءة حتى لا يتمدد النص على الشاشات العريضة.
   static const readingMaxWidth = 760.0;
+
+  // ---------------------------------------------------------------
+  // ألوان الدرجات الحالة (Status)
+  // ---------------------------------------------------------------
+  static const Color statusNew = Color(0xFFFFC857);
+  static const Color statusReview = Color(0xFF79B8FF);
+  static const Color statusApproved = Color(0xFF56D6A0);
+  static const Color statusRejected = Color(0xFFFF7C83);
+
+  // ---------------------------------------------------------------
+  // ألوان سريعة للحالات التشغيلية
+  // ---------------------------------------------------------------
+  static const Color onlineOk = Color(0xFF56D6A0);
+  static const Color onlineWarning = Color(0xFFFFA33A);
+  static const Color onlineError = Color(0xFFFF7C83);
+  static const Color emergencyBgDark = Color(0xFF3B2028);
+  static const Color emergencyBgLight = Color(0xFF1E1822);
+  static const Color normalBgDark = Color(0xFF12352D);
+  static const Color normalBgLight = Color(0xFF152535);
+
+  // ---------------------------------------------------------------
+  // ألوان نصية مساعدة للخلفيات الداكنة
+  // ---------------------------------------------------------------
+  static const Color surfaceDim = Color(0xFF8EE6C0);
+  static const Color surfaceDimSecondary = Color(0xFFB9C8C4);
 }

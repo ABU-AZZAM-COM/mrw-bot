@@ -205,7 +205,7 @@ void main() {
     expect(find.text('مركز قيادة البلاغات'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('حركة البلاغات'),
-      240,
+      520,
       scrollable: find.descendant(
         of: find.byType(ListView),
         matching: find.byType(Scrollable),
