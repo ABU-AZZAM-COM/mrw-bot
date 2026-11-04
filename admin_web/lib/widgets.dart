@@ -463,3 +463,88 @@ class _UserActivityIndicatorState extends State<UserActivityIndicator> {
     );
   }
 }
+
+/// مستطيل تحميل مبدئي (skeleton) يُظهر شكل المحتوى قبل وصوله.
+///
+/// بلا حركة متكررة عن قصد: الحركة اللانهائية تُفشل `pumpAndSettle` في
+/// الاختبارات، وتستهلك رسمًا لا داعي له. الشكل وحده يكفي للإحساس بالسرعة.
+class SkeletonBox extends StatelessWidget {
+  const SkeletonBox({
+    super.key,
+    this.width,
+    this.height = 14,
+    this.radius = 8,
+  });
+
+  final double? width;
+  final double height;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(radius),
+      ),
+    );
+  }
+}
+
+/// هيكل تحميل لقائمة البلاغات: بطاقات متطابقة الشكل مع المسافات الفعلية.
+class ReportListSkeleton extends StatelessWidget {
+  const ReportListSkeleton({super.key, this.count = 5, this.compact = false});
+
+  final int count;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListView.separated(
+      padding: const EdgeInsets.all(AdminTokens.s3),
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: count,
+      separatorBuilder: (_, _) => const SizedBox(height: AdminTokens.gapSmall),
+      itemBuilder: (_, _) => Container(
+        padding: const EdgeInsets.all(AdminTokens.cardInset),
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          borderRadius: BorderRadius.circular(AdminTokens.cardRadius),
+          border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const SkeletonBox(width: 64, height: 18, radius: 999),
+                const SizedBox(width: AdminTokens.gapSmall),
+                const SkeletonBox(width: 88, height: 18, radius: 999),
+                const Spacer(),
+                const SkeletonBox(width: 52, height: 14),
+              ],
+            ),
+            const SizedBox(height: AdminTokens.gapMedium),
+            const SkeletonBox(width: double.infinity, height: 13),
+            const SizedBox(height: AdminTokens.gapSmall),
+            const SkeletonBox(width: 220, height: 13),
+            if (!compact) ...[
+              const SizedBox(height: AdminTokens.gapMedium),
+              const Row(
+                children: [
+                  SkeletonBox(width: 92, height: 32, radius: 999),
+                  SizedBox(width: AdminTokens.gapSmall),
+                  SkeletonBox(width: 92, height: 32, radius: 999),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}

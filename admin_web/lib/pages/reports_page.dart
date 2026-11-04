@@ -433,7 +433,9 @@ class _ReportsPageState extends State<ReportsPage> {
   }
 
   Widget _body(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loading) {
+      return const ReportListSkeleton();
+    }
     if (_err != null) return ErrorView(_err!, _load);
     if (_items.isEmpty) return const EmptyView('لا بلاغات مطابقة');
     return LayoutBuilder(
