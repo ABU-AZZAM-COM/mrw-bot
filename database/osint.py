@@ -107,3 +107,6 @@ class OsintMixin(object):
             self._conn.commit()
             return cursor.rowcount > 0
 
+    async def delete_osint_source(self, source_id: int) -> bool:
+        return await asyncio.to_thread(self._delete_osint_source, source_id)
+

@@ -90,3 +90,8 @@ class AuditMixin(object):
             self._conn.commit()
             return int(cursor.rowcount)
 
+    async def delete_audit_range(self, start_iso: str, end_exclusive_iso: str) -> int:
+        return await asyncio.to_thread(
+            self._delete_audit_range, start_iso, end_exclusive_iso
+        )
+

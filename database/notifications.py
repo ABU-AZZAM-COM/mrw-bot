@@ -235,3 +235,6 @@ class NotificationsMixin(object):
             self._conn.commit()
             return int(cursor.rowcount)
 
+    async def mark_all_notifications_read(self) -> int:
+        return await asyncio.to_thread(self._mark_all_notifications_read)
+
