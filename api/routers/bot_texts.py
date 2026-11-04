@@ -18,9 +18,17 @@ def register(app, *, db_of, bad, auth, json_body, admin_actor, owner_only) -> No
     # تستخدمها المعالجات دون استيراد دائري عند تحميل الوحدة.
     from api import admin_api as core
 
-    _bot_runtime = core._bot_runtime
-    _on_bot_loop_value = core._on_bot_loop_value
-    _apply_bot_text_update = core._apply_bot_text_update
+    # أغلفة تربط الأسماء وقت الطلب لا وقت التركيب: تبقى قابلة للاستبدال
+    # في الاختبارات عبر patch على admin_api، وتمنع الاستيراد الدائري.
+    def _bot_runtime(*args, **kwargs):
+        return core._bot_runtime(*args, **kwargs)
+
+    def _on_bot_loop_value(*args, **kwargs):
+        return core._on_bot_loop_value(*args, **kwargs)
+
+    def _apply_bot_text_update(*args, **kwargs):
+        return core._apply_bot_text_update(*args, **kwargs)
+
     _owner_only = owner_only
 
     @app.get("/admin_api/texts")

@@ -56,12 +56,14 @@ def defined_names(tree: ast.AST) -> set[str]:
                 names.add(alias.asname or alias.name.split(".")[0])
         elif isinstance(node, ast.comprehension):
             _bind_target(node.target, names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
     return names
 
 
 def main(paths: list[str]) -> int:
     failures = 0
-    builtin_names = set(dir(builtins))
+    builtin_names = set(dir(builtins)) | {"__file__", "__name__", "__doc__"}
     for path in paths:
         source = Path(path).read_text(encoding="utf-8")
         tree = ast.parse(source)

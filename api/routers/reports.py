@@ -41,8 +41,11 @@ def register(
     MAX_PAGE_SIZE = core.MAX_PAGE_SIZE
     DEFAULT_PAGE_SIZE = core.DEFAULT_PAGE_SIZE
     MAX_TEXT = core.MAX_TEXT
-    # مساعد إرسال مباشر ما زال في admin_api؛ يُربط هنا بدل الاستيراد الدائري.
-    _send_direct_message = core._send_direct_message
+
+    # غلاف يربط الاسم وقت الطلب لا وقت التركيب، فيبقى قابلاً للاستبدال
+    # في الاختبارات عبر patch على admin_api.
+    def _send_direct_message(*args, **kwargs):
+        return core._send_direct_message(*args, **kwargs)
 
     @app.get("/api/admin/reports")
     async def reports(request: Request) -> JSONResponse:
