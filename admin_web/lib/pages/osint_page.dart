@@ -4,6 +4,7 @@ import 'dart:html' as html;
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 
 class OsintPage extends StatefulWidget {
@@ -190,17 +191,22 @@ class _OsintPageState extends State<OsintPage> {
   String _formatTime(Object? raw) {
     final value = DateTime.tryParse(raw?.toString() ?? '')?.toLocal();
     if (value == null) return 'وقت غير معروف';
-    return '${value.year}-${value.month.toString().padLeft(2, '0')}-'
+    return '\u202A${value.year}-${value.month.toString().padLeft(2, '0')}-'
         '${value.day.toString().padLeft(2, '0')} '
         '${value.hour.toString().padLeft(2, '0')}:'
-        '${value.minute.toString().padLeft(2, '0')}';
+        '${value.minute.toString().padLeft(2, '0')}\u202C';
   }
 
   @override
   Widget build(BuildContext context) {
     final selected = _selectedReport;
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(
+        AdminTokens.pageInset,
+        AdminTokens.s4,
+        AdminTokens.pageInset,
+        AdminTokens.s8,
+      ),
       children: [
         SectionCard(
           'مساحة التحقق من المصادر العامة',
@@ -208,11 +214,15 @@ class _OsintPageState extends State<OsintPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
+              Text(
                 'اختر بلاغًا للاطلاع على بياناته ومرفقاته المسجلة. لا يُرسل أي نص '
                 'أو مرفق إلى موقع خارجي تلقائيًا.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: AdminTokens.gapMedium),
               Row(
                 children: [
                   Expanded(
@@ -272,14 +282,16 @@ class _OsintPageState extends State<OsintPage> {
                   onChanged: _selectReport,
                 ),
               if (selected != null) ...[
-                const SizedBox(height: 10),
+                const SizedBox(height: AdminTokens.gapMedium),
                 Container(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(AdminTokens.s3),
                   decoration: BoxDecoration(
                     color: Theme.of(
                       context,
                     ).colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(
+                      AdminTokens.controlRadius,
+                    ),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -288,7 +300,7 @@ class _OsintPageState extends State<OsintPage> {
                         '${selected['seq'] ?? 'بلاغ'} · ${selected['status'] ?? ''}',
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: AdminTokens.gapTight),
                       Text(
                         selected['description']?.toString() ??
                             'لا يوجد وصف محفوظ.',
@@ -319,7 +331,7 @@ class _OsintPageState extends State<OsintPage> {
             ],
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: AdminTokens.sectionGap),
         SectionCard(
           'بحث خارجي بموافقة صريحة',
           icon: Icons.public,
@@ -364,16 +376,19 @@ class _OsintPageState extends State<OsintPage> {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              const Text(
+              const SizedBox(height: AdminTokens.gapSmall),
+              Text(
                 'هذه الواجهة لا تجلب نتائج البحث ولا تصنف الأشخاص. تحقق من '
                 'المصدر والتاريخ والسياق يدويًا قبل الاستنتاج أو اتخاذ إجراء.',
-                style: TextStyle(fontSize: 12),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: AdminTokens.sectionGap),
         SectionCard(
           'توثيق المصادر والنتائج',
           icon: Icons.fact_check_outlined,

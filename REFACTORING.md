@@ -19,9 +19,10 @@
 | `routers/verified_reporters.py` | توثيق المراسلين والوثائق |
 | `routers/users.py` | المستخدمون والمحادثات والرسائل |
 | `routers/broadcast.py` | البثّ الجماعي والمنشورات |
-| `routers/bot_config.py` | أزرار/أوامر/قوائم البوت والملف التعريفي |
+| `routers/bot_menu.py` · `routers/bot_profile.py` | أزرار/أوامر/قوائم البوت · الملف التعريفي |
 | `routers/osint.py` · `routers/audit.py` | مصادر OSINT · سجل التدقيق |
 | `routers/platform.py` | الإصدار، الصحة، الإحصاءات، النسخ الاحتياطي، التصدير |
+| `admin_dashboard.py` | تحويل `/dashboard` إلى `/admin/` + عقد `/api/admin/dashboard` |
 
 **نمط الربط:** كل راوتر يُصدّر `register(app, *, db_of, bad)` ويستقبل مساعدات
 `admin_api` صراحةً. ما يبقى في `admin_api` من دوال مشتركة يُربط عبر أغلفة
@@ -80,12 +81,16 @@ class Database(
 
 ## 6) backlog مقصود (لم يُنفَّذ بعد)
 
-1. **توحيد واجهات الإدارة الثلاث** — `admin_web/` (Flutter) و`api/admin_dashboard.py`
-   و`desktop_panel/panel.py`. الخطة: Flutter هي الواجهة الوحيدة، والأخريان
-   تحويل/إيقاف.
-2. **تعميم نظام التصميم** على بقية صفحات `admin_web` (نُفِّذ على صفحة البلاغات
-   كنموذج: رموز، هياكل تحميل، شارات تأخير/إسناد، جدول محسّن).
+1. ~~**توحيد واجهات الإدارة الثلاث**~~ — أُنجز: `admin_web/` (Flutter) هي الواجهة
+   الوحيدة على `/admin/`، و`/dashboard` صار تحويلاً دائماً إليها، وبقيت
+   `/api/admin/dashboard` عقداً برمجياً فقط. `desktop_panel/` بديل محلي اختياري
+   غير مطوَّر ولا يُحذف.
+2. ~~**تعميم نظام التصميم**~~ — أُنجز على `overview` و`reports` و`analytics`
+   و`audit` و`health` و`osint` و`preferences`: رموز `AdminTokens`، هياكل تحميل
+   `SkeletonBox`، شارات حالة موحّدة، وحشو صفحة واحد. الصفحات الكبيرة المتبقية
+   (`messaging`, `verified_reporters`, `bot_*`) تُرحَّل عند الحاجة إليها.
 3. **`bot/texts.py`** (1,389 سطراً) — كتالوج نصوص؛ يمكن تقسيمه حسب الشاشة عند
    الحاجة، وهو منخفض المخاطر لكنه غير عاجل.
-4. **`api/routers/bot_config.py`** (1,115 سطراً) — أكبر راوتر؛ يمكن تقسيمه إلى
-   `bot_menu` و`bot_profile` و`bot_settings`.
+4. **`api/routers/bot_config.py`** — أُنجز تقسيمه إلى `bot_menu` و`bot_profile`.
+5. **تنظيف ملفات الجذر المؤقتة** — `_tmp_*.py`, `tg_*.py`, وملفات `deploy_*.txt`
+   القديمة؛ لا تؤثر على التشغيل لكنها تشوّش المستودع.

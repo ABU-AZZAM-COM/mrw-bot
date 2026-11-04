@@ -11,9 +11,9 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BOT_TOKEN", "123:TEST_TOKEN")
 
 from admin_dashboard import (
+    ADMIN_UI_PATH,
     build_dashboard_payload,
     register_dashboard,
-    render_dashboard_html,
 )
 
 
@@ -45,44 +45,31 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertEqual(result["summary"]["new_reports"], 3)
         self.assertEqual(result["workflow"]["unassigned"], 3)
 
-    def test_render_dashboard_html_contains_core_sections(self):
-        html = render_dashboard_html({
-            "generated_at": "2026-01-01T00:00:00+00:00",
-            "summary": {"total_reports": 12, "last_24_hours": 7, "total_users": 21, "blocked_users": 3},
-            "workflow": {"urgent": 1, "overdue": 2, "unassigned": 4},
-            "status_breakdown": [
-                {"label": "جديد", "value": 5, "tone": "warning"},
-                {"label": "معتمد", "value": 7, "tone": "success"},
-            ],
-        })
-        self.assertIn("لوحة التحكم الحديثة", html)
-        self.assertIn("إجمالي البلاغات", html)
-        self.assertIn("مؤشرات سير العمل", html)
-
-    def test_dashboard_page_does_not_embed_report_statistics(self):
+    def test_dashboard_redirects_to_the_flutter_admin_panel(self):
         app = FastAPI()
         register_dashboard(app)
 
-        bot_main = types.ModuleType("main")
-        bot_main.app = types.SimpleNamespace(bot_data={"db": FakeDB()})
-        with patch.dict(sys.modules, {"main": bot_main}), patch(
+        with patch(
             "admin_dashboard.build_dashboard_payload",
             new_callable=AsyncMock,
         ) as build_payload:
-            response = TestClient(app).get("/dashboard")
+            response = TestClient(app).get("/dashboard", follow_redirects=False)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("رمز المشرف", response.text)
+        self.assertEqual(response.status_code, 307)
+        self.assertEqual(response.headers["location"], ADMIN_UI_PATH)
         build_payload.assert_not_awaited()
 
     def test_dashboard_api_requires_admin_token(self):
         app = FastAPI()
         register_dashboard(app)
 
-        with patch.dict(os.environ, {
-            "ADMIN_API_TOKEN": "",
-            "ADMIN_API_TOKENS_JSON": "",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "ADMIN_API_TOKEN": "",
+                "ADMIN_API_TOKENS_JSON": "",
+            },
+        ):
             response = TestClient(app).get("/api/admin/dashboard")
 
         self.assertEqual(response.status_code, 503)
@@ -92,10 +79,13 @@ class AdminDashboardTests(unittest.TestCase):
         app = FastAPI()
         register_dashboard(app)
 
-        with patch.dict(os.environ, {
-            "ADMIN_API_TOKEN": "test-token",
-            "ADMIN_API_TOKENS_JSON": "",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "ADMIN_API_TOKEN": "test-token",
+                "ADMIN_API_TOKENS_JSON": "",
+            },
+        ):
             response = TestClient(app).get(
                 "/api/admin/dashboard?token=test-token"
             )
@@ -112,10 +102,13 @@ class AdminDashboardTests(unittest.TestCase):
         with patch.dict(
             sys.modules,
             {"app.main": bot_main},
-        ), patch.dict(os.environ, {
-            "ADMIN_API_TOKEN": "test-token",
-            "ADMIN_API_TOKENS_JSON": "",
-        }):
+        ), patch.dict(
+            os.environ,
+            {
+                "ADMIN_API_TOKEN": "test-token",
+                "ADMIN_API_TOKENS_JSON": "",
+            },
+        ):
             response = TestClient(app).get(
                 "/api/admin/dashboard",
                 headers={"x-admin-token": "test-token"},

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 import 'overview_page.dart' show fmt;
 
@@ -171,27 +172,54 @@ class _AuditPageState extends State<AuditPage> {
 
   @override
   Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          padding: const EdgeInsets.fromLTRB(
+            AdminTokens.pageInset,
+            AdminTokens.s3,
+            AdminTokens.pageInset,
+            AdminTokens.s2,
+          ),
           child: Row(
             children: [
-              Icon(
-                Icons.history,
-                size: 18,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                '${_items.length} عملية — '
-                '${_range == null ? 'أحدث السجلات' : '${_day(_range!.start)} إلى ${_day(_range!.end)}'}',
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  fontSize: 13,
+              Container(
+                width: AdminTokens.iconMedium * 2,
+                height: AdminTokens.iconMedium * 2,
+                decoration: BoxDecoration(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primary.withValues(alpha: 0.11),
+                  borderRadius: BorderRadius.circular(AdminTokens.controlRadius),
+                ),
+                child: Icon(
+                  Icons.history,
+                  size: AdminTokens.iconMedium,
+                  color: Theme.of(context).colorScheme.primary,
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: AdminTokens.s3),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${_items.length} عملية',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      _range == null
+                          ? 'أحدث السجلات'
+                          : '${_day(_range!.start)} إلى ${_day(_range!.end)}',
+                      style: TextStyle(color: muted, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
               IconButton(
                 tooltip: 'تصفية حسب التاريخ',
                 onPressed: _chooseRange,
@@ -231,10 +259,18 @@ class _AuditPageState extends State<AuditPage> {
   }
 
   Widget _body(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loading) return const _AuditSkeleton();
     if (_err != null) return ErrorView(_err!, () => _load());
-    if (_items.isEmpty) return const EmptyView('لا عمليات مسجلة بعد');
+    if (_items.isEmpty) {
+      return const EmptyView('لا عمليات مسجلة بعد', icon: Icons.history);
+    }
     return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(
+        AdminTokens.pageInset,
+        AdminTokens.s2,
+        AdminTokens.pageInset,
+        AdminTokens.s6,
+      ),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: DataTable(
@@ -242,6 +278,12 @@ class _AuditPageState extends State<AuditPage> {
           headingRowColor: WidgetStatePropertyAll(
             Theme.of(context).colorScheme.surfaceContainerHighest,
           ),
+          headingRowHeight: 44,
+          dataRowMinHeight: 48,
+          dataRowMaxHeight: 64,
+          horizontalMargin: AdminTokens.s4,
+          columnSpacing: AdminTokens.s6,
+          dividerThickness: 1,
           columns: const [
             DataColumn(label: Text('الوقت')),
             DataColumn(label: Text('المنفِّذ')),
@@ -289,6 +331,37 @@ class _AuditPageState extends State<AuditPage> {
                 ],
               ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// هيكل تحميل لجدول التدقيق بنفس أبعاد الجدول الفعلي.
+class _AuditSkeleton extends StatelessWidget {
+  const _AuditSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.separated(
+      padding: const EdgeInsets.all(AdminTokens.pageInset),
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: 6,
+      separatorBuilder: (_, _) => const SizedBox(height: AdminTokens.gapSmall),
+      itemBuilder: (_, _) => const Card(
+        child: Padding(
+          padding: EdgeInsets.all(AdminTokens.cardInset),
+          child: Row(
+            children: [
+              SkeletonBox(width: 120, height: 13),
+              SizedBox(width: AdminTokens.s4),
+              SkeletonBox(width: 90, height: 13),
+              SizedBox(width: AdminTokens.s4),
+              Expanded(child: SkeletonBox(width: double.infinity, height: 13)),
+              SizedBox(width: AdminTokens.s4),
+              SkeletonBox(width: 60, height: 13),
+            ],
+          ),
         ),
       ),
     );

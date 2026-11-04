@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../design_tokens.dart';
 import '../widgets.dart';
 
 class HealthPage extends StatefulWidget {
@@ -102,7 +103,12 @@ class _HealthPageState extends State<HealthPage> {
     return RefreshIndicator(
       onRefresh: _runChecks,
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(
+          AdminTokens.pageInset,
+          AdminTokens.s4,
+          AdminTokens.pageInset,
+          AdminTokens.s8,
+        ),
         children: [
           Row(
             children: [
@@ -111,6 +117,7 @@ class _HealthPageState extends State<HealthPage> {
                   'فحوص فعلية عبر API؛ العناصر غير المتاحة لا تُعرض كأنها سليمة.',
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
                   ),
                 ),
               ),
@@ -123,12 +130,12 @@ class _HealthPageState extends State<HealthPage> {
           ),
           if (_checkedAt != null)
             Padding(
-              padding: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.only(bottom: AdminTokens.s2),
               child: Text(
                 'آخر فحص: ${TimeOfDay.fromDateTime(_checkedAt!).format(context)}',
                 style: TextStyle(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  fontSize: 12,
+                  fontSize: 11,
                 ),
               ),
             ),
@@ -141,11 +148,14 @@ class _HealthPageState extends State<HealthPage> {
               children: [
                 for (final check in _checks.values) _CheckTile(check: check),
                 if (!_loading && _checks.isEmpty)
-                  const Text('لم تكتمل الفحوص بعد'),
+                  const EmptyView(
+                    'لم تكتمل الفحوص بعد',
+                    icon: Icons.hourglass_empty_rounded,
+                  ),
               ],
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: AdminTokens.sectionGap),
           SectionCard(
             'حالة التشغيل',
             icon: Icons.settings_suggest_outlined,
@@ -239,7 +249,7 @@ class _HealthPageState extends State<HealthPage> {
               ],
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: AdminTokens.sectionGap),
           SectionCard(
             'حدود الفحص',
             icon: Icons.info_outline,
@@ -252,7 +262,7 @@ class _HealthPageState extends State<HealthPage> {
               ),
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: AdminTokens.sectionGap),
           SectionCard(
             'الخدمات المرتبطة بالمشروع',
             icon: Icons.hub_outlined,
@@ -262,9 +272,10 @@ class _HealthPageState extends State<HealthPage> {
                   alignment: AlignmentDirectional.centerStart,
                   child: Text(
                     'زمن الاستجابة هنا مقاس من متصفحك إلى الخدمة، وليس قياسًا لسرعة الإنترنت العامة.',
+                    style: TextStyle(fontSize: 12),
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: AdminTokens.gapSmall),
                 for (final service in services)
                   ListTile(
                     contentPadding: EdgeInsets.zero,
@@ -284,7 +295,7 @@ class _HealthPageState extends State<HealthPage> {
               ],
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: AdminTokens.sectionGap),
           SectionCard(
             'سجل المستودع والدمج',
             icon: Icons.account_tree_outlined,
@@ -299,12 +310,12 @@ class _HealthPageState extends State<HealthPage> {
                 ),
                 if (github?['error'] != null)
                   const Padding(
-                    padding: EdgeInsets.only(top: 8),
+                    padding: EdgeInsets.only(top: AdminTokens.gapSmall),
                     child: Text(
                       'تعذّر التحقق من GitHub؛ لا يعني ذلك وحده وجود عطل في الخدمة.',
                     ),
                   ),
-                const SizedBox(height: 8),
+                const SizedBox(height: AdminTokens.gapSmall),
                 const Text(
                   'آخر الفحوص الآلية',
                   style: TextStyle(fontWeight: FontWeight.bold),
@@ -376,9 +387,9 @@ class _HealthPageState extends State<HealthPage> {
   };
 
   Color _statusColor(BuildContext context, String status) => switch (status) {
-    'healthy' => const Color(0xFF67D6A6),
+    'healthy' => AdminTokens.onlineOk,
     'running' => Theme.of(context).colorScheme.primary,
-    'degraded' => const Color(0xFFFFD166),
+    'degraded' => AdminTokens.onlineWarning,
     _ => Theme.of(context).colorScheme.onSurfaceVariant,
   };
 
@@ -423,7 +434,7 @@ class _CheckTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = check.ok ? const Color(0xFF67D6A6) : const Color(0xFFE06C75);
+    final color = check.ok ? AdminTokens.onlineOk : AdminTokens.onlineError;
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: Icon(
@@ -435,7 +446,7 @@ class _CheckTile extends StatelessWidget {
           ? Text('استجابة خلال ${check.durationMs} ms')
           : Text(
               check.error!,
-              style: const TextStyle(color: Color(0xFFE06C75)),
+              style: const TextStyle(color: AdminTokens.onlineError),
             ),
       trailing: Text(
         check.ok ? 'سليم' : 'فشل',
@@ -463,8 +474,8 @@ class _StateTile extends StatelessWidget {
     final color = unknown
         ? Theme.of(context).colorScheme.onSurfaceVariant
         : ok
-        ? const Color(0xFF67D6A6)
-        : const Color(0xFFFFD166);
+        ? AdminTokens.onlineOk
+        : AdminTokens.onlineWarning;
     return ListTile(
       contentPadding: EdgeInsets.zero,
       title: Text(label),

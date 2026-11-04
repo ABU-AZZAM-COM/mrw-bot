@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../design_tokens.dart';
 import '../widgets.dart';
 
 class PreferencesPage extends StatelessWidget {
@@ -61,12 +62,21 @@ class PreferencesPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.all(18),
+    padding: const EdgeInsets.fromLTRB(
+      AdminTokens.pageInset,
+      AdminTokens.s4,
+      AdminTokens.pageInset,
+      AdminTokens.s8,
+    ),
     children: [
-      const Text(
+      Text(
         'تُحفظ هذه التفضيلات على هذا المتصفح فقط ولا تغيّر إعدادات الخادم.',
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+          fontSize: 12,
+        ),
       ),
-      const SizedBox(height: 12),
+      const SizedBox(height: AdminTokens.sectionGap),
       SectionCard(
         'المظهر وإمكانية الوصول',
         icon: Icons.palette_outlined,
@@ -89,7 +99,7 @@ class PreferencesPage extends StatelessWidget {
                 value ? ThemeMode.light.name : ThemeMode.dark.name,
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: AdminTokens.gapMedium),
             DropdownButtonFormField<String>(
               initialValue: fontFamily,
               decoration: const InputDecoration(labelText: 'الخط'),
@@ -104,7 +114,7 @@ class PreferencesPage extends StatelessWidget {
                 if (value != null) _update('font', value);
               },
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: AdminTokens.gapMedium),
             Row(
               children: [
                 const Expanded(child: Text('حجم النص')),
@@ -164,7 +174,7 @@ class PreferencesPage extends StatelessWidget {
           ],
         ),
       ),
-      const SizedBox(height: 14),
+      const SizedBox(height: AdminTokens.sectionGap),
       SectionCard(
         'الإشعارات الصوتية',
         icon: Icons.notifications_active_outlined,
@@ -177,7 +187,6 @@ class PreferencesPage extends StatelessWidget {
               value: soundEnabled,
               onChanged: (value) => _update('soundEnabled', value),
             ),
-            const SizedBox(height: 8),
             for (final item in const [
               ('report_new', 'بلاغ جديد'),
               ('report_urgent', 'بلاغ عاجل'),
@@ -186,24 +195,27 @@ class PreferencesPage extends StatelessWidget {
               ('emergency', 'الإيقاف الطارئ'),
               ('heartbeat_fail', 'فشل نبضة البوت'),
             ])
-              DropdownButtonFormField<String>(
-                initialValue: soundSounds[item.$1] ?? 'report',
-                decoration: InputDecoration(labelText: item.$2),
-                items: const [
-                  DropdownMenuItem(value: 'report', child: Text('بلاغ')),
-                  DropdownMenuItem(value: 'alert', child: Text('تنبيه')),
-                  DropdownMenuItem(value: 'message', child: Text('رسالة')),
-                ],
-                onChanged: soundEnabled
-                    ? (value) {
-                        if (value != null) _update('sound_${item.$1}', value);
-                      }
-                    : null,
+              Padding(
+                padding: const EdgeInsets.only(top: AdminTokens.gapSmall),
+                child: DropdownButtonFormField<String>(
+                  initialValue: soundSounds[item.$1] ?? 'report',
+                  decoration: InputDecoration(labelText: item.$2),
+                  items: const [
+                    DropdownMenuItem(value: 'report', child: Text('بلاغ')),
+                    DropdownMenuItem(value: 'alert', child: Text('تنبيه')),
+                    DropdownMenuItem(value: 'message', child: Text('رسالة')),
+                  ],
+                  onChanged: soundEnabled
+                      ? (value) {
+                          if (value != null) _update('sound_${item.$1}', value);
+                        }
+                      : null,
+                ),
               ),
           ],
         ),
       ),
-      const SizedBox(height: 14),
+      const SizedBox(height: AdminTokens.sectionGap),
       SectionCard(
         'تنبيهات نبضة البوت',
         icon: Icons.monitor_heart_outlined,
@@ -213,7 +225,7 @@ class PreferencesPage extends StatelessWidget {
             const Text(
               'تبقى تنبيهات النبض محفوظة في سجلها المنفصل حتى عند كتم الصوت والفقاعات.',
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: AdminTokens.gapMedium),
             DropdownButtonFormField<int>(
               initialValue: _heartbeatMuteChoice(),
               decoration: const InputDecoration(labelText: 'مدة الكتم'),
