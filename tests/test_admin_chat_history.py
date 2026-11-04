@@ -9,6 +9,8 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+os.environ.setdefault("BOT_TOKEN", "123:TEST_TOKEN")
+
 from api.admin_api import register
 from database import Database
 
