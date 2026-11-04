@@ -2632,6 +2632,7 @@ failed_message_id = asyncio.run(pdb.add_user_message(
     777,
     "out",
     "محاولة فاشلة للاختبار",
+    admin_id=111,
     delivery_status="failed",
     error_code="user_blocked_bot",
 ))

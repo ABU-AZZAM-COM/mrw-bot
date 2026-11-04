@@ -3171,12 +3171,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
             return bad("not_found", 404)
         if not await db.user_contact_enabled(uid):
             return bad("direct_contact_disabled", 403)
-        rows = await db.list_user_messages(
-            uid,
-            max(0, message_id - 1),
-            1,
-            conversation_only=True,
-        )
+        rows = await db.list_user_messages(uid, max(0, message_id - 1), 1)
         if not rows or int(rows[0]["id"]) != message_id:
             return bad("not_found", 404)
         message = rows[0]
