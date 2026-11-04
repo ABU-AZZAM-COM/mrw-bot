@@ -14,9 +14,22 @@ const Map<String, (Color, IconData)> kStatusStyles = {
 };
 const List<String> kStatusOrder = ['جديد', 'قيد المراجعة', 'معتمد', 'مرفوض'];
 
+/// تنسيق طابع زمني ISO للعرض: تاريخ ووقت مقروءان، معزولان باتجاه LTR.
+///
+/// العزل مطلوب لأن الواجهة عربية RTL: بدون `U+202A … U+202C` تنقلب أجزاء
+/// التاريخ بصريًا (يظهر `04|08,10-11-2026` بدل `2026-11-04 08:10`).
 String fmt(String? iso, {int chars = 16}) {
-  if (iso == null) return '-';
-  return iso.length > chars ? iso.substring(0, chars) : iso;
+  if (iso == null || iso.isEmpty) return '-';
+  final parsed = DateTime.tryParse(iso);
+  if (parsed != null) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    final text =
+        '${parsed.year}-${two(parsed.month)}-${two(parsed.day)} '
+        '${two(parsed.hour)}:${two(parsed.minute)}';
+    return '\u202A$text\u202C';
+  }
+  final raw = iso.length > chars ? iso.substring(0, chars) : iso;
+  return '\u202A$raw\u202C';
 }
 
 class OverviewPage extends StatefulWidget {
