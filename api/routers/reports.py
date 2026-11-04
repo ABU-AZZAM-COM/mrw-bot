@@ -14,10 +14,13 @@ from database import (
     STATUS_APPROVED,
     STATUS_AWAITING_INFO,
     STATUS_CLOSED_NO_RESPONSE,
+    STATUS_CODES,
     STATUS_NEW,
     STATUS_REJECTED,
     STATUS_REVIEW,
 )
+from bot import keyboards, texts
+from services import utils
 
 
 def register(
@@ -38,6 +41,8 @@ def register(
     MAX_PAGE_SIZE = core.MAX_PAGE_SIZE
     DEFAULT_PAGE_SIZE = core.DEFAULT_PAGE_SIZE
     MAX_TEXT = core.MAX_TEXT
+    # مساعد إرسال مباشر ما زال في admin_api؛ يُربط هنا بدل الاستيراد الدائري.
+    _send_direct_message = core._send_direct_message
 
     @app.get("/api/admin/reports")
     async def reports(request: Request) -> JSONResponse:
