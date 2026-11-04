@@ -61,6 +61,7 @@ except ImportError:  # pragma: no cover - بيئة محلية بدون Hugging F
 
 from app import config, main as bot_main  # noqa: E402
 from api import admin_api, admin_dashboard  # noqa: E402
+from api.rate_limit import install_admin_auth_guard  # noqa: E402
 from bot import texts  # noqa: E402
 from services.chat_attachments import (  # noqa: E402
     MAX_CHAT_ATTACHMENT_BYTES,
@@ -366,9 +367,23 @@ def build_app() -> FastAPI:
         ).split(",")
         if origin.strip()
     ]
+    # الفشل يُغلق لا يُفتح: غياب النطاقات يعني «لا سماح عبر النطاقات»، لا «اسمح للجميع».
+    # السماح الصريح بـ``*`` ممكن لكنه يُسجَّل تحذيرًا لأنه يفتح الـAPI لأي موقع.
+    if "*" in _origins:
+        logger.warning(
+            "ADMIN_CORS_ORIGINS يتضمن * — الـAPI مفتوح لأي نطاق. حدّد النطاقات الفعلية في الإنتاج."
+        )
+    elif not _origins:
+        logger.warning(
+            "ADMIN_CORS_ORIGINS فارغ — لن يُسمح بأي طلب عبر النطاقات. اضبط النطاقات الفعلية."
+        )
+
+    # حماية محاولات المصادقة المتكررة (تُركَّب قبل CORS ليبقى CORS في الطبقة الخارجية).
+    install_admin_auth_guard(app)
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=_origins or ["*"],
+        allow_origins=_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=[
