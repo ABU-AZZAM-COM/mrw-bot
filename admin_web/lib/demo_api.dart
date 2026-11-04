@@ -799,7 +799,8 @@ class DemoApi implements AdminApi {
         'ok': true,
         'result': {'ok': true, 'command_errors': <String>[]},
       };
-    }    if (path == '/api/admin/publications/send') {
+    }
+    if (path == '/api/admin/publications/send') {
       _publicationJobId++;
       _publicationJob = {
         'job_id': _publicationJobId,
@@ -913,13 +914,6 @@ class DemoApi implements AdminApi {
     if (reportReply != null) {
       _record('panel_reply', reportReply.group(1)!);
       return {'ok': true};
-    }
-    final userMessage = RegExp(
-      r'^/api/admin/users/(\d+)/message$',
-    ).firstMatch(path);
-    if (userMessage != null) {
-      _record('user_message', userMessage.group(1)!);
-      return {'ok': true, 'sent': true};
     }
     final blockUser = RegExp(
       r'^/api/admin/users/(\d+)/block$',

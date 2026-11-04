@@ -40,10 +40,10 @@ void main() {
     await tester.tap(find.byTooltip('إرفاق صورة أو ملف'));
     await tester.pumpAndSettle();
     expect(find.text('صورة'), findsOneWidget);
-    expect(find.text('فيديو MP4'), findsOneWidget);
-    await tester.tap(find.text('رسالة صوتية محفوظة'));
+    expect(find.text('PDF أو مستند Office'), findsOneWidget);
+    await tester.tap(find.text('PDF أو مستند Office'));
     await tester.pumpAndSettle();
-    expect(selectedMediaTypes, ['voice']);
+    expect(selectedMediaTypes, ['document']);
 
     await tester.tap(find.byIcon(Icons.emoji_emotions_outlined));
     await tester.pumpAndSettle();
