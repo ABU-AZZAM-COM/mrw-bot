@@ -1,11 +1,10 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:html' as html;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../platform/picked_file.dart';
 import '../widgets.dart';
 import 'publication_composer.dart';
 
@@ -68,19 +67,12 @@ class _PublicationsPageState extends State<PublicationsPage> {
   }
 
   Future<void> _pickFile() async {
-    final accept = switch (_mediaType) {
-      'photo' => 'image/jpeg,image/png,image/gif,image/webp',
-      _ => 'application/pdf,.docx,.xlsx,.pptx',
+    final extensions = switch (_mediaType) {
+      'photo' => const ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+      _ => const ['pdf', 'docx', 'xlsx', 'pptx'],
     };
-    final picker = html.FileUploadInputElement()
-      ..accept = accept
-      ..multiple = false;
-    picker.click();
-    await picker.onChange.first;
-    final files = picker.files;
-    if (files == null) return;
-    if (files.isEmpty) return;
-    final file = files.first;
+    final file = await pickSingleFile(extensions);
+    if (file == null) return;
     const maxBytes = 20 * 1024 * 1024;
     if (file.size > maxBytes) {
       if (mounted) {
@@ -92,26 +84,7 @@ class _PublicationsPageState extends State<PublicationsPage> {
       }
       return;
     }
-    final reader = html.FileReader();
-    reader.readAsDataUrl(file);
-    await reader.onLoad.first;
-    final result = reader.result;
-    if (result is! String) {
-      if (mounted) toast(context, 'تعذرت قراءة الملف', error: true);
-      return;
-    }
-    final separator = result.indexOf(',');
-    if (separator < 0) {
-      if (mounted) toast(context, 'تعذر تحليل الملف المحدد', error: true);
-      return;
-    }
-    late final Uint8List bytes;
-    try {
-      bytes = base64Decode(result.substring(separator + 1));
-    } on FormatException {
-      if (mounted) toast(context, 'تعذر تحليل الملف المحدد', error: true);
-      return;
-    }
+    final bytes = file.bytes;
     if (bytes.isEmpty) {
       if (mounted) {
         toast(context, 'الملف المحدد فارغ أو تعذرت قراءته', error: true);

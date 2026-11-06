@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:html' as html;
 
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../api.dart';
 import '../design_tokens.dart';
@@ -121,7 +121,7 @@ class _OsintPageState extends State<OsintPage> {
     setState(() => _allowExternalSearch = false);
   }
 
-  void _openSearch(String host) {
+  Future<void> _openSearch(String host) async {
     final query = _searchText.text.trim();
     if (!_allowExternalSearch || query.isEmpty) {
       toast(
@@ -132,7 +132,25 @@ class _OsintPageState extends State<OsintPage> {
       return;
     }
     final url = Uri.https(host, '/search', {'q': query});
-    html.window.open(url.toString(), '_blank');
+    await _openExternalUrl(url.toString());
+  }
+
+  Future<void> _openExternalUrl(String? rawUrl) async {
+    final uri = Uri.tryParse(rawUrl?.trim() ?? '');
+    if (uri == null ||
+        (uri.scheme != 'https' && uri.scheme != 'http') ||
+        uri.host.isEmpty) {
+      toast(context, 'رابط المصدر غير صالح', error: true);
+      return;
+    }
+    try {
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened && mounted) {
+        toast(context, 'تعذر فتح الرابط في المتصفح', error: true);
+      }
+    } catch (error) {
+      if (mounted) toast(context, errMsg(error), error: true);
+    }
   }
 
   Future<void> _saveSource() async {
@@ -461,9 +479,8 @@ class _OsintPageState extends State<OsintPage> {
                       overflow: TextOverflow.ellipsis,
                     ),
                     isThreeLine: true,
-                    onTap: () => html.window.open(
-                      source['url']?.toString() ?? '',
-                      '_blank',
+                    onTap: () => _openExternalUrl(
+                      source['url']?.toString(),
                     ),
                     trailing: IconButton(
                       tooltip: 'حذف المرجع',

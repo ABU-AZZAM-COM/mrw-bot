@@ -1,9 +1,9 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:web/web.dart' as web;
 
 import 'design_tokens.dart';
+import 'platform/admin_storage.dart';
 
 /// ثيمات لوحة الإدارة — أربعة أوضاع داكنة بهوية خضراء موحّدة.
 ///
@@ -173,7 +173,7 @@ abstract final class AdminPreferences {
 
   static Map<String, dynamic> load() {
     try {
-      final raw = web.window.localStorage.getItem(_key);
+      final raw = AdminStorage.getValue(_key);
       final parts = raw?.split('|') ?? const <String>[];
       final visual = parts.length == 5
           ? {
@@ -184,7 +184,7 @@ abstract final class AdminPreferences {
               'seed': int.tryParse(parts[4]) ?? AdminTheme.accent.toARGB32(),
             }
           : <String, dynamic>{};
-      final soundRaw = web.window.localStorage.getItem(_soundKey);
+      final soundRaw = AdminStorage.getValue(_soundKey);
       final sound = soundRaw == null
           ? <String, dynamic>{}
           : jsonDecode(soundRaw) as Map<String, dynamic>;
@@ -211,7 +211,7 @@ abstract final class AdminPreferences {
   };
 
   static void save(Map<String, dynamic> values) {
-    web.window.localStorage.setItem(
+    AdminStorage.setValue(
       _key,
       [
         values['mode'] ?? 'dark',
@@ -221,7 +221,7 @@ abstract final class AdminPreferences {
         values['seed'] ?? AdminTheme.accent.toARGB32(),
       ].join('|'),
     );
-    web.window.localStorage.setItem(
+    AdminStorage.setValue(
       _soundKey,
       jsonEncode({
         'soundEnabled': values['soundEnabled'] ?? true,
@@ -268,7 +268,7 @@ class ThemeController extends ValueNotifier<String> {
 
   static String _read() {
     try {
-      final saved = web.window.localStorage.getItem(storageKey);
+      final saved = AdminStorage.getValue(storageKey);
       if (saved != null && AdminTheme.names.contains(saved)) return saved;
     } catch (_) {
       // التخزين قد يكون معطّلًا — نكمل بالافتراضي.
@@ -280,7 +280,7 @@ class ThemeController extends ValueNotifier<String> {
     if (!AdminTheme.names.contains(name) || name == value) return;
     value = name;
     try {
-      web.window.localStorage.setItem(storageKey, name);
+      AdminStorage.setValue(storageKey, name);
     } catch (_) {
       // يبقى الثيم فعّالًا لهذه الجلسة فقط.
     }

@@ -1,12 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:html' as html;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../design_tokens.dart';
+import '../platform/picked_file.dart';
 import '../widgets.dart';
 import 'message_composer.dart';
 import 'shared_dialogs.dart';
@@ -877,20 +876,14 @@ class _ConversationDialogState extends State<_ConversationDialog> {
   }
 
   Future<void> _pickMedia() async {
-    final accept = switch (_mediaType) {
-      'photo' => 'image/jpeg,image/png,image/gif,image/webp',
-      _ => 'application/pdf,.docx,.xlsx,.pptx',
+    final extensions = switch (_mediaType) {
+      'photo' => const ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+      _ => const ['pdf', 'docx', 'xlsx', 'pptx'],
     };
-    final picker = html.FileUploadInputElement()
-      ..accept = accept
-      ..multiple = false;
-    picker.click();
-    await picker.onChange.first;
-    final files = picker.files;
-    if (files == null || files.isEmpty) return;
-    final file = files.first;
+    final file = await pickSingleFile(extensions);
+    if (file == null) return;
     const maxBytes = 20 * 1024 * 1024;
-    if (file.size <= 0 || file.size > maxBytes) {
+    if (file.size <= 0 || file.size > maxBytes || file.bytes.isEmpty) {
       if (mounted) {
         toast(
           context,
@@ -902,23 +895,11 @@ class _ConversationDialogState extends State<_ConversationDialog> {
       }
       return;
     }
-    final reader = html.FileReader()..readAsDataUrl(file);
-    await reader.onLoad.first;
-    final result = reader.result;
-    if (result is! String || !result.contains(',')) {
-      if (mounted) toast(context, 'تعذرت قراءة الملف', error: true);
-      return;
-    }
-    try {
-      final bytes = base64Decode(result.substring(result.indexOf(',') + 1));
-      if (!mounted) return;
-      setState(() {
-        _mediaBytes = bytes;
-        _filename = file.name;
-      });
-    } on FormatException {
-      if (mounted) toast(context, 'تعذر تحليل الملف المحدد', error: true);
-    }
+    if (!mounted) return;
+    setState(() {
+      _mediaBytes = file.bytes;
+      _filename = file.name;
+    });
   }
 
   Widget _buildComposer(double dialogWidth) {

@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:html' as html;
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -17,7 +17,6 @@ import 'pages/verified_reporters_page.dart';
 import 'design_tokens.dart';
 import 'theme_menu.dart';
 import 'widgets.dart';
-import 'web_api.dart';
 
 class MainShell extends StatefulWidget {
   const MainShell({
@@ -26,12 +25,14 @@ class MainShell extends StatefulWidget {
     required this.onLogout,
     required this.preferences,
     required this.onPreferencesChanged,
+    required this.onOwnerTokenChanged,
   });
 
   final AdminApi api;
   final VoidCallback onLogout;
   final Map<String, dynamic> preferences;
   final ValueChanged<Map<String, dynamic>> onPreferencesChanged;
+  final Future<void> Function(String) onOwnerTokenChanged;
 
   @override
   State<MainShell> createState() => _MainShellState();
@@ -54,6 +55,7 @@ class _MainShellState extends State<MainShell> {
   int? _pendingVerificationId;
   StreamSubscription<Map<String, dynamic>>? _eventsSubscription;
   Timer? _reconnectTimer;
+  final AudioPlayer _audioPlayer = AudioPlayer();
 
   @override
   void initState() {
@@ -63,9 +65,21 @@ class _MainShellState extends State<MainShell> {
   }
 
   @override
+  void didUpdateWidget(covariant MainShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.api != widget.api) {
+      _reconnectTimer?.cancel();
+      _eventsSubscription?.cancel();
+      _loadRole();
+      _connectEvents();
+    }
+  }
+
+  @override
   void dispose() {
     _reconnectTimer?.cancel();
     _eventsSubscription?.cancel();
+    unawaited(_audioPlayer.dispose());
     super.dispose();
   }
 
@@ -264,13 +278,12 @@ class _MainShellState extends State<MainShell> {
 
   void _playSound(String sound) {
     if (!const {'report', 'alert', 'message'}.contains(sound)) return;
-    final audio = html.AudioElement()
-      ..src = 'assets/assets/sounds/$sound.mp3'
-      ..preload = 'auto';
     unawaited(
-      audio.play().catchError((Object error) {
-        debugPrint('تعذر تشغيل صوت الإشعار: $error');
-      }),
+      _audioPlayer
+          .play(AssetSource('sounds/$sound.mp3'))
+          .catchError((Object error) {
+            debugPrint('تعذر تشغيل صوت الإشعار: $error');
+          }),
     );
   }
 
@@ -670,10 +683,7 @@ class _MainShellState extends State<MainShell> {
     if (_role == 'owner')
       AdminsPage(
         api: widget.api,
-        onUseOwnerToken: (token) {
-          Api.saveToken(token);
-          html.window.location.reload();
-        },
+        onUseOwnerToken: widget.onOwnerTokenChanged,
       ),
   ];
 
@@ -769,10 +779,7 @@ class _MainShellState extends State<MainShell> {
           ),
           IconButton(
             tooltip: 'تسجيل الخروج',
-            onPressed: () {
-              Api.clearToken();
-              widget.onLogout();
-            },
+            onPressed: widget.onLogout,
             icon: const Icon(Icons.logout),
           ),
           const SizedBox(width: 8),

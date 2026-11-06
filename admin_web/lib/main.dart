@@ -1,16 +1,21 @@
 // لوحة الإدارة — Flutter Web تُخدم من المساحة على /admin.
 // العربية RTL أولاً: شاشة اتصال بالتوكن ثم الهيكل الرئيسي بثماني صفحات.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'api.dart';
 import 'admin_shell.dart';
 import 'app_credits.dart';
 import 'app_theme.dart';
+import 'platform/admin_api_client.dart';
+import 'platform/admin_storage.dart';
 import 'theme_menu.dart';
-import 'web_api.dart';
 import 'widgets.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AdminStorage.initialize();
   runApp(const AdminApp());
 }
 
@@ -101,28 +106,49 @@ class AdminGate extends StatefulWidget {
 
 class _AdminGateState extends State<AdminGate> {
   AdminApi? _api;
+  bool _loading = true;
+  String? _storageError;
 
   @override
   void initState() {
     super.initState();
-    final t = Api.loadToken();
-    if (t != null && t.isNotEmpty) {
-      _api = Api(token: t, onUnauthorized: _logout, baseUrl: Api.loadBaseUrl());
+    unawaited(_restoreSession());
+  }
+
+  Future<void> _restoreSession() async {
+    try {
+      final token = await Api.loadToken();
+      if (token != null && token.isNotEmpty) {
+        _api = Api(
+          token: token,
+          onUnauthorized: _logout,
+          baseUrl: Api.loadBaseUrl(),
+        );
+      }
+    } catch (error, stackTrace) {
+      debugPrint('تعذرت استعادة جلسة الإدارة: $error\n$stackTrace');
+      _storageError = 'تعذرت قراءة جلسة الإدارة المحفوظة';
     }
+    if (mounted) setState(() => _loading = false);
   }
 
   void _logout() {
-    Api.clearToken();
+    unawaited(Api.clearToken());
     if (mounted) setState(() => _api = null);
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
     final api = _api;
     if (api == null) {
       return LoginScreen(
-        onConnected: (t) {
-          Api.saveToken(t);
+        storageError: _storageError,
+        onConnected: (t) async {
+          await Api.saveToken(t);
+          if (!mounted) return;
           setState(
             () => _api = Api(
               token: t,
@@ -138,6 +164,17 @@ class _AdminGateState extends State<AdminGate> {
       onLogout: _logout,
       preferences: widget.preferences,
       onPreferencesChanged: widget.onPreferencesChanged,
+      onOwnerTokenChanged: (token) async {
+        await Api.saveToken(token);
+        if (!mounted) return;
+        setState(
+          () => _api = Api(
+            token: token,
+            onUnauthorized: _logout,
+            baseUrl: Api.loadBaseUrl(),
+          ),
+        );
+      },
     );
   }
 }
@@ -146,9 +183,14 @@ class _AdminGateState extends State<AdminGate> {
 // شاشة الاتصال: فحص التوكن ضد /overview قبل الدخول
 // ==================================================================
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.onConnected});
+  const LoginScreen({
+    super.key,
+    required this.onConnected,
+    this.storageError,
+  });
 
-  final ValueChanged<String> onConnected;
+  final Future<void> Function(String) onConnected;
+  final String? storageError;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -223,7 +265,7 @@ class _LoginScreenState extends State<LoginScreen> {
         throw ApiException(502, (result['error'] ?? 'bad_response').toString());
       }
       if (!mounted) return;
-      widget.onConnected(token);
+      await widget.onConnected(token);
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -329,7 +371,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'يُحفظ في هذا المتصفح ويُرسل إلى خدمة الإدارة عبر HTTPS فقط',
+                          'يُحفظ على هذا الجهاز ويُرسل إلى خدمة الإدارة عبر HTTPS',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Theme.of(
@@ -338,6 +380,16 @@ class _LoginScreenState extends State<LoginScreen> {
                             fontSize: 12,
                           ),
                         ),
+                        if (widget.storageError != null) ...[
+                          const SizedBox(height: 10),
+                          Text(
+                            widget.storageError!,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Color(0xFFE06C75),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),

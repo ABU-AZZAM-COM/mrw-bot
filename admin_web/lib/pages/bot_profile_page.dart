@@ -1,12 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:html' as html;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../bot_profile_validation.dart';
+import '../platform/picked_file.dart';
 import '../widgets.dart';
 
 class BotProfilePage extends StatefulWidget {
@@ -103,73 +102,35 @@ class _BotProfilePageState extends State<BotProfilePage> {
   }
 
   Future<void> _pickPhoto() async {
-    final picker = html.FileUploadInputElement()
-      ..accept = 'image/jpeg,.jpg,.jpeg'
-      ..multiple = false;
-    picker.click();
-    await picker.onChange.first;
-    final files = picker.files;
-    if (files == null || files.isEmpty) return;
-    final file = files.first;
+    final file = await pickSingleFile(const ['jpg', 'jpeg']);
+    if (file == null) return;
     if (file.size > 10 * 1024 * 1024) {
       if (mounted) {
         toast(context, 'يجب ألا يتجاوز حجم الصورة 10 ميغابايت', error: true);
       }
       return;
     }
-    final reader = html.FileReader()..readAsDataUrl(file);
-    await reader.onLoad.first;
-    final result = reader.result;
-    if (result is! String) {
-      if (mounted) toast(context, 'تعذرت قراءة الصورة', error: true);
-      return;
-    }
-    final separator = result.indexOf(',');
-    if (separator < 0) {
-      if (mounted) toast(context, 'تعذر تحليل الصورة المحددة', error: true);
-      return;
-    }
-    late final Uint8List bytes;
-    try {
-      bytes = base64Decode(result.substring(separator + 1));
-    } on FormatException {
-      if (mounted) toast(context, 'تعذر تحليل الصورة المحددة', error: true);
-      return;
-    }
-    if (bytes.isEmpty) {
+    if (file.bytes.isEmpty) {
       if (mounted) toast(context, 'الصورة المحددة فارغة', error: true);
       return;
     }
     if (!mounted) return;
     setState(() {
-      _photoBytes = bytes;
+      _photoBytes = file.bytes;
       _photoName = file.name;
     });
   }
 
   Future<void> _pickWelcomePhoto() async {
-    final picker = html.FileUploadInputElement()
-      ..accept = 'image/jpeg,image/png,.jpg,.jpeg,.png'
-      ..multiple = false;
-    picker.click();
-    await picker.onChange.first;
-    final files = picker.files;
-    if (files == null || files.isEmpty) return;
-    final file = files.first;
+    final file = await pickSingleFile(const ['jpg', 'jpeg', 'png']);
+    if (file == null) return;
     if (file.size > 10 * 1024 * 1024) {
       if (mounted) {
         toast(context, 'يجب ألا يتجاوز حجم الصورة 10 ميغابايت', error: true);
       }
       return;
     }
-    final reader = html.FileReader()..readAsArrayBuffer(file);
-    await reader.onLoad.first;
-    final result = reader.result;
-    if (result is! ByteBuffer) {
-      if (mounted) toast(context, 'تعذرت قراءة الصورة', error: true);
-      return;
-    }
-    final bytes = result.asUint8List();
+    final bytes = file.bytes;
     final isJpeg =
         bytes.length >= 3 &&
         bytes[0] == 0xff &&
@@ -200,25 +161,12 @@ class _BotProfilePageState extends State<BotProfilePage> {
   }
 
   Future<void> _uploadBlockedWords() async {
-    final picker = html.FileUploadInputElement()
-      ..accept = '.txt,text/plain'
-      ..multiple = false;
-    picker.click();
-    await picker.onChange.first;
-    final files = picker.files;
-    if (files == null || files.isEmpty) return;
-    final file = files.first;
+    final file = await pickSingleFile(const ['txt']);
+    if (file == null) return;
     if (!file.name.toLowerCase().endsWith('.txt') || file.size > 100 * 1024) {
       if (mounted) {
         toast(context, 'اختر ملف TXT لا يتجاوز 100 كيلوبايت', error: true);
       }
-      return;
-    }
-    final reader = html.FileReader()..readAsArrayBuffer(file);
-    await reader.onLoad.first;
-    final result = reader.result;
-    if (result is! ByteBuffer) {
-      if (mounted) toast(context, 'تعذرت قراءة الملف', error: true);
       return;
     }
     setState(() => _saving = true);
@@ -227,7 +175,7 @@ class _BotProfilePageState extends State<BotProfilePage> {
         '/api/admin/bot-profile/blocked-words',
         fields: const {},
         filename: file.name,
-        bytes: result.asUint8List(),
+        bytes: file.bytes,
       );
       final current = await widget.api.get(
         '/api/admin/bot-profile/blocked-words',

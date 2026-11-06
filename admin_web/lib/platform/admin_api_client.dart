@@ -1,16 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html;
-import 'dart:js_interop';
 import 'dart:typed_data';
 
+import 'package:file_saver/file_saver.dart';
 import 'package:http/http.dart' as http;
-import 'package:web/web.dart' as web;
 
-import 'api.dart';
+import '../api.dart';
+import 'admin_storage.dart';
 
 class Api implements AdminApi {
-  Api({required this.token, required this.onUnauthorized, this.baseUrl});
+  Api({
+    required this.token,
+    required this.onUnauthorized,
+    this.baseUrl,
+    http.Client? client,
+  }) : _client = client ?? http.Client();
 
   static const _configuredBase = String.fromEnvironment(
     'ADMIN_API_BASE_URL',
@@ -21,11 +25,8 @@ class Api implements AdminApi {
   final String token;
   final void Function()? onUnauthorized;
   final String? baseUrl;
-  final http.Client _client = http.Client();
+  final http.Client _client;
 
-  /// منبع الـ API:
-  /// - فارغ (الافتراضي) → نفس منبع الصفحة، وهو الأنسب على Render.
-  /// - عنوان صريح → عند تشغيل اللوحة محليًا وربطها بخادم Render.
   String get base {
     final explicit = (baseUrl ?? loadBaseUrl() ?? '').trim();
     if (explicit.isNotEmpty) {
@@ -33,38 +34,28 @@ class Api implements AdminApi {
     }
     final configured = _configuredBase.trim().replaceFirst(RegExp(r'/+$'), '');
     if (configured.isNotEmpty) return configured;
-    return web.window.location.origin;
+    return AdminStorage.origin;
   }
 
-  static const String _tokenKey = 'mrw_admin_token';
-
   static String? loadBaseUrl() {
-    try {
-      final value = web.window.localStorage.getItem(_baseUrlKey);
-      if (value == null || value.trim().isEmpty) return null;
-      return value.trim();
-    } catch (_) {
-      return null;
-    }
+    final value = AdminStorage.getValue(_baseUrlKey);
+    if (value == null || value.trim().isEmpty) return null;
+    return value.trim();
   }
 
   static void saveBaseUrl(String baseUrl) =>
-      web.window.localStorage.setItem(_baseUrlKey, baseUrl.trim());
+      AdminStorage.setValue(_baseUrlKey, baseUrl.trim());
 
-  static String? loadToken() {
-    try {
-      final value = web.window.localStorage.getItem(_tokenKey);
-      if (value == null || value.trim().isEmpty) return null;
-      return value.trim();
-    } catch (_) {
-      return null;
-    }
+  static Future<String?> loadToken() async {
+    final value = await AdminStorage.readToken();
+    if (value == null || value.trim().isEmpty) return null;
+    return value.trim();
   }
 
-  static void saveToken(String token) =>
-      web.window.localStorage.setItem(_tokenKey, token.trim());
+  static Future<void> saveToken(String token) =>
+      AdminStorage.writeToken(token.trim());
 
-  static void clearToken() => web.window.localStorage.removeItem(_tokenKey);
+  static Future<void> clearToken() => AdminStorage.clearToken();
 
   Uri _uri(String path, [Map<String, String>? query]) {
     final uri = Uri.parse('$base$path');
@@ -88,12 +79,18 @@ class Api implements AdminApi {
     try {
       final request = http.Request(method, _uri(path, query))
         ..headers.addAll(_headers);
-      if (body != null) request.body = jsonEncode(body);
+      if (body != null) {
+        request.headers['content-type'] = 'application/json; charset=utf-8';
+        request.body = jsonEncode(body);
+      }
       response = await http.Response.fromStream(await _client.send(request));
-    } catch (_) {
+    } catch (error) {
       throw ApiException(0, 'network_error');
     }
+    return _decodeJsonResponse(response);
+  }
 
+  Map<String, dynamic> _decodeJsonResponse(http.Response response) {
     Map<String, dynamic> json;
     try {
       final decoded = jsonDecode(response.body);
@@ -126,8 +123,7 @@ class Api implements AdminApi {
   @override
   Stream<Map<String, dynamic>> watchEvents() {
     late final StreamController<Map<String, dynamic>> controller;
-    final request = html.HttpRequest();
-    var offset = 0;
+    StreamSubscription<String>? subscription;
     var pending = '';
 
     void consume(String chunk) {
@@ -146,44 +142,51 @@ class Api implements AdminApi {
         try {
           final decoded = jsonDecode(data);
           if (decoded is Map<String, dynamic>) controller.add(decoded);
-        } catch (_) {
+        } on FormatException {
           controller.addError(ApiException(502, 'invalid_event'));
         }
       }
     }
 
     controller = StreamController<Map<String, dynamic>>(
-      onListen: () {
-        request
-          ..open('GET', _uri('/api/admin/events/stream').toString())
-          ..setRequestHeader('Authorization', 'Bearer $token');
-        request.onProgress.listen((_) {
-          final response = request.responseText ?? '';
-          if (response.length < offset) offset = 0;
-          consume(response.substring(offset));
-          offset = response.length;
-        });
-        request.onLoad.listen((_) {
-          if (request.status == 401) {
+      onListen: () async {
+        final request = http.Request('GET', _uri('/api/admin/events/stream'))
+          ..headers.addAll(_headers)
+          ..headers['accept'] = 'text/event-stream';
+        try {
+          final response = await _client.send(request);
+          if (response.statusCode == 401) {
             onUnauthorized?.call();
             controller.addError(ApiException(401, 'unauthorized'));
-          } else if (request.status != 200) {
-            controller.addError(
-              ApiException(request.status ?? 0, 'event_stream_failed'),
-            );
+            await controller.close();
+            return;
           }
-          controller.close();
-        });
-        request.onError.listen((_) {
+          if (response.statusCode != 200) {
+            controller.addError(
+              ApiException(response.statusCode, 'event_stream_failed'),
+            );
+            await controller.close();
+            return;
+          }
+          subscription = response.stream
+              .transform(utf8.decoder)
+              .listen(
+                consume,
+                onError: (Object error, StackTrace stackTrace) {
+                  controller.addError(
+                    ApiException(0, 'event_stream_disconnected'),
+                    stackTrace,
+                  );
+                  unawaited(controller.close());
+                },
+                onDone: () => unawaited(controller.close()),
+              );
+        } catch (error) {
           controller.addError(ApiException(0, 'event_stream_disconnected'));
-          controller.close();
-        });
-        request.onAbort.listen((_) => controller.close());
-        request.send();
+          await controller.close();
+        }
       },
-      onCancel: () {
-        request.abort();
-      },
+      onCancel: () => subscription?.cancel(),
     );
     return controller.stream;
   }
@@ -193,7 +196,7 @@ class Api implements AdminApi {
     http.Response response;
     try {
       response = await _client.get(_uri(path), headers: _headers);
-    } catch (_) {
+    } catch (error) {
       throw ApiException(0, 'network_error');
     }
     if (response.statusCode == 401) {
@@ -201,16 +204,7 @@ class Api implements AdminApi {
       throw ApiException(401, 'unauthorized');
     }
     if (response.statusCode >= 400) {
-      var code = 'error';
-      try {
-        final decoded = jsonDecode(response.body);
-        if (decoded is Map<String, dynamic>) {
-          code = (decoded['error'] ?? code).toString();
-        }
-      } catch (_) {
-        code = 'error';
-      }
-      throw ApiException(response.statusCode, code);
+      throw ApiException(response.statusCode, _errorCode(response.body));
     }
     if (!(response.headers['content-type'] ?? '').startsWith('image/')) {
       throw ApiException(response.statusCode, 'invalid_image_response');
@@ -241,35 +235,13 @@ class Api implements AdminApi {
         ),
       );
     }
-    http.Response response;
     try {
-      response = await http.Response.fromStream(await _client.send(request));
-    } catch (_) {
+      final response = await http.Response.fromStream(await _client.send(request));
+      return _decodeJsonResponse(response);
+    } catch (error) {
+      if (error is ApiException) rethrow;
       throw ApiException(0, 'network_error');
     }
-    Map<String, dynamic> json;
-    try {
-      final decoded = jsonDecode(response.body);
-      json = decoded is Map<String, dynamic>
-          ? decoded
-          : <String, dynamic>{'ok': false, 'error': 'bad_response'};
-    } catch (_) {
-      json = <String, dynamic>{'ok': false, 'error': 'bad_response'};
-    }
-    if (response.statusCode == 401) {
-      onUnauthorized?.call();
-      throw ApiException(401, 'unauthorized');
-    }
-    if (response.statusCode == 404) {
-      throw ApiException(404, 'service_not_found');
-    }
-    if (response.statusCode >= 400) {
-      throw ApiException(
-        response.statusCode,
-        (json['error'] ?? 'error').toString(),
-      );
-    }
-    return json;
   }
 
   @override
@@ -293,7 +265,7 @@ class Api implements AdminApi {
     http.Response response;
     try {
       response = await _client.get(_uri(path), headers: _headers);
-    } catch (_) {
+    } catch (error) {
       throw ApiException(0, 'network_error');
     }
     if (response.statusCode == 401) {
@@ -301,39 +273,41 @@ class Api implements AdminApi {
       throw ApiException(401, 'unauthorized');
     }
     if (response.statusCode >= 400) {
-      var code = 'error';
-      try {
-        final decoded = jsonDecode(response.body);
-        if (decoded is Map<String, dynamic>) {
-          code = (decoded['error'] ?? code).toString();
-        }
-      } catch (_) {
-        code = 'error';
-      }
-      throw ApiException(response.statusCode, code);
+      throw ApiException(response.statusCode, _errorCode(response.body));
     }
 
-    final pathSegments = Uri.parse(path).pathSegments;
+    final segments = Uri.parse(path).pathSegments;
     final filename = _downloadFilename(
       response.headers['content-disposition'],
-      pathSegments.isEmpty ? 'download' : pathSegments.last,
+      segments.isEmpty ? 'download' : segments.last,
     );
-    final blob = web.Blob(
-      <web.BlobPart>[response.bodyBytes.toJS as web.BlobPart].toJS,
+    final extension = filename.contains('.') ? filename.split('.').last : '';
+    final name = extension.isEmpty
+        ? filename
+        : filename.substring(0, filename.length - extension.length - 1);
+    final contentType = response.headers['content-type']?.split(';').first.trim();
+    await FileSaver.instance.saveAs(
+      name: name,
+      bytes: response.bodyBytes,
+      fileExtension: extension,
+      mimeType: MimeType.custom,
+      customMimeType: contentType?.isNotEmpty == true
+          ? contentType!
+          : 'application/octet-stream',
+      dialogTitle: 'حفظ الملف',
     );
-    final objectUrl = web.URL.createObjectURL(blob);
-    final anchor = web.document.createElement('a') as web.HTMLAnchorElement
-      ..href = objectUrl
-      ..download = filename;
-    web.document.body?.append(anchor);
-    anchor.click();
-    anchor.remove();
-    unawaited(
-      Future<void>.delayed(
-        const Duration(seconds: 1),
-        () => web.URL.revokeObjectURL(objectUrl),
-      ),
-    );
+  }
+
+  String _errorCode(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        return (decoded['error'] ?? 'error').toString();
+      }
+    } on FormatException {
+      return 'error';
+    }
+    return 'error';
   }
 
   String _downloadFilename(String? contentDisposition, String fallback) {
