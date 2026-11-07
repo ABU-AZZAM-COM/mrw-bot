@@ -279,11 +279,11 @@ class _MainShellState extends State<MainShell> {
   void _playSound(String sound) {
     if (!const {'report', 'alert', 'message'}.contains(sound)) return;
     unawaited(
-      _audioPlayer
-          .play(AssetSource('sounds/$sound.mp3'))
-          .catchError((Object error) {
-            debugPrint('تعذر تشغيل صوت الإشعار: $error');
-          }),
+      _audioPlayer.play(AssetSource('sounds/$sound.mp3')).catchError((
+        Object error,
+      ) {
+        debugPrint('تعذر تشغيل صوت الإشعار: $error');
+      }),
     );
   }
 
@@ -633,6 +633,7 @@ class _MainShellState extends State<MainShell> {
     OsintPage(api: widget.api),
     SettingsPage(
       api: widget.api,
+      isOwner: _role == 'owner',
       mode: ThemeMode.values.firstWhere(
         (value) => value.name == widget.preferences['mode'],
         orElse: () => ThemeMode.dark,
@@ -681,10 +682,7 @@ class _MainShellState extends State<MainShell> {
       ),
     const WhatsNewPage(),
     if (_role == 'owner')
-      AdminsPage(
-        api: widget.api,
-        onUseOwnerToken: widget.onOwnerTokenChanged,
-      ),
+      AdminsPage(api: widget.api, onUseOwnerToken: widget.onOwnerTokenChanged),
   ];
 
   void _select(int index) {

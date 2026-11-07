@@ -533,6 +533,7 @@ from api.routers import broadcast as broadcast_router  # noqa: E402
 from api.routers import bot_menu as bot_menu_router  # noqa: E402
 from api.routers import bot_profile as bot_profile_router  # noqa: E402
 from api.routers import platform as platform_router  # noqa: E402
+from api.routers import mobile_app as mobile_app_router  # noqa: E402
 def register(app) -> None:  # noqa: ANN001 — FastAPI
     OK = JSONResponse({"ok": True})
 
@@ -548,6 +549,23 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
     @app.middleware("http")
     async def load_admin_auth_state(request: Request, call_next):
         if request.url.path.startswith("/api/admin/"):
+            if request.headers.get("x-admin-client", "").lower() == "android":
+                from api.routers.mobile_app import load_mobile_policy
+
+                policy = await load_mobile_policy(db_of())
+                if policy["status"] != "active":
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error": (
+                                "mobile_app_paused"
+                                if policy["status"] == "paused"
+                                else "mobile_app_disabled"
+                            ),
+                            "message": policy["status_message"],
+                        },
+                        status_code=503,
+                    )
             try:
                 request.state.admin_auth_snapshot = await asyncio.to_thread(
                     db_of().admin_auth_snapshot
@@ -595,6 +613,7 @@ def register(app) -> None:  # noqa: ANN001 — FastAPI
     broadcast_router.register(app, db_of=db_of, bad=bad)
     bot_menu_router.register(app, db_of=db_of, bad=bad)
     bot_profile_router.register(app, db_of=db_of, bad=bad)
+    mobile_app_router.register(app, db_of=db_of, bad=bad)
 # ==================================================================
 # أدوات مساعدة
 # ==================================================================

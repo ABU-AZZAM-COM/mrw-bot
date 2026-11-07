@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import 'mobile_app_page.dart';
 import 'operations_page.dart';
 import 'preferences_page.dart';
 
@@ -8,6 +9,7 @@ class SettingsPage extends StatelessWidget {
   const SettingsPage({
     super.key,
     required this.api,
+    required this.isOwner,
     required this.mode,
     required this.textScale,
     required this.fontFamily,
@@ -22,6 +24,7 @@ class SettingsPage extends StatelessWidget {
   });
 
   final AdminApi api;
+  final bool isOwner;
   final ThemeMode mode;
   final double textScale;
   final String fontFamily;
@@ -36,15 +39,20 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => DefaultTabController(
-    length: 2,
+    length: isOwner ? 3 : 2,
     child: Column(
       children: [
         Material(
           color: Theme.of(context).colorScheme.surface,
-          child: const TabBar(
+          child: TabBar(
             tabs: [
               Tab(icon: Icon(Icons.tune_outlined), text: 'إعدادات النظام'),
               Tab(icon: Icon(Icons.palette_outlined), text: 'التفضيلات'),
+              if (isOwner)
+                Tab(
+                  icon: Icon(Icons.phone_android_outlined),
+                  text: 'تطبيق الهاتف',
+                ),
             ],
           ),
         ),
@@ -65,6 +73,7 @@ class SettingsPage extends StatelessWidget {
                 onHeartbeatMuteHours: onHeartbeatMuteHours,
                 soundSounds: soundSounds,
               ),
+              if (isOwner) MobileAppPage(api: api),
             ],
           ),
         ),

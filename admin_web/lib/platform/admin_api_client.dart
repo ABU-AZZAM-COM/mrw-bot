@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_saver/file_saver.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../api.dart';
@@ -32,9 +32,12 @@ class Api implements AdminApi {
     if (explicit.isNotEmpty) {
       return explicit.replaceFirst(RegExp(r'/+$'), '');
     }
-    final configured = _configuredBase.trim().replaceFirst(RegExp(r'/+$'), '');
-    if (configured.isNotEmpty) return configured;
-    return AdminStorage.origin;
+    return defaultBaseUrl.replaceFirst(RegExp(r'/+$'), '');
+  }
+
+  static String get defaultBaseUrl {
+    final configured = _configuredBase.trim();
+    return configured.isNotEmpty ? configured : AdminStorage.origin;
   }
 
   static String? loadBaseUrl() {
@@ -69,6 +72,11 @@ class Api implements AdminApi {
     'Authorization': 'Bearer $token',
   };
 
+  Map<String, String> get _platformHeaders =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android
+      ? const {'X-Admin-Client': 'android'}
+      : const {};
+
   Future<Map<String, dynamic>> _go(
     String method,
     String path, {
@@ -78,7 +86,8 @@ class Api implements AdminApi {
     http.Response response;
     try {
       final request = http.Request(method, _uri(path, query))
-        ..headers.addAll(_headers);
+        ..headers.addAll(_headers)
+        ..headers.addAll(_platformHeaders);
       if (body != null) {
         request.headers['content-type'] = 'application/json; charset=utf-8';
         request.body = jsonEncode(body);
@@ -152,6 +161,7 @@ class Api implements AdminApi {
       onListen: () async {
         final request = http.Request('GET', _uri('/api/admin/events/stream'))
           ..headers.addAll(_headers)
+          ..headers.addAll(_platformHeaders)
           ..headers['accept'] = 'text/event-stream';
         try {
           final response = await _client.send(request);
@@ -195,7 +205,10 @@ class Api implements AdminApi {
   Future<Uint8List> getBytes(String path) async {
     http.Response response;
     try {
-      response = await _client.get(_uri(path), headers: _headers);
+      response = await _client.get(
+        _uri(path),
+        headers: {..._headers, ..._platformHeaders},
+      );
     } catch (error) {
       throw ApiException(0, 'network_error');
     }
@@ -225,6 +238,7 @@ class Api implements AdminApi {
   }) async {
     final request = http.MultipartRequest('POST', _uri(path))
       ..headers.addAll(_headers)
+      ..headers.addAll(_platformHeaders)
       ..fields.addAll(fields);
     if (bytes != null) {
       request.files.add(
@@ -236,7 +250,9 @@ class Api implements AdminApi {
       );
     }
     try {
-      final response = await http.Response.fromStream(await _client.send(request));
+      final response = await http.Response.fromStream(
+        await _client.send(request),
+      );
       return _decodeJsonResponse(response);
     } catch (error) {
       if (error is ApiException) rethrow;
@@ -264,7 +280,10 @@ class Api implements AdminApi {
   Future<void> download(String path) async {
     http.Response response;
     try {
-      response = await _client.get(_uri(path), headers: _headers);
+      response = await _client.get(
+        _uri(path),
+        headers: {..._headers, ..._platformHeaders},
+      );
     } catch (error) {
       throw ApiException(0, 'network_error');
     }
@@ -285,7 +304,10 @@ class Api implements AdminApi {
     final name = extension.isEmpty
         ? filename
         : filename.substring(0, filename.length - extension.length - 1);
-    final contentType = response.headers['content-type']?.split(';').first.trim();
+    final contentType = response.headers['content-type']
+        ?.split(';')
+        .first
+        .trim();
     await FileSaver.instance.saveAs(
       name: name,
       bytes: response.bodyBytes,
